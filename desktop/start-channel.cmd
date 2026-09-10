@@ -7,6 +7,7 @@ REM cannot create further child processes (spawning codex.exe fails with ENOENT)
 REM while a directly launched one can. Double-clicking this file uses that working path.
 REM
 REM The channel keeps running in this window; close the window to stop the channel.
+REM Pass --no-pause when starting it from a script (the watchdog does that).
 
 setlocal
 set "ROOT=%~dp0.."
@@ -20,4 +21,4 @@ node "bridges\codex-channel.js" --agent codex --workdir "%ROOT%"
 
 echo.
 echo Channel exited with code %errorlevel%.
-pause
+if /i not "%~1"=="--no-pause" pause
