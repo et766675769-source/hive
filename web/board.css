@@ -536,6 +536,22 @@ textarea:focus {
   color: var(--accent);
 }
 
+/* 有头像的成员：圆牌内显示图片 */
+.mono__img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  border-radius: 50%;
+}
+
+.msg__mono--img,
+.member__mono--img {
+  overflow: hidden;
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
 .msg__body {
   min-width: 0;
 }

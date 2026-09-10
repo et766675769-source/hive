@@ -21,6 +21,7 @@ export function agentCard(agent, presenceById) {
     constraints: agent.constraints,
     channel: agent.channel,
     kind: agent.kind,
+    avatar: agent.avatar || '',
     selfDeclared: Boolean(agent.selfDeclared),
     joinedAt: agent.joinedAt,
     state: presence ? presence.state : 'offline',

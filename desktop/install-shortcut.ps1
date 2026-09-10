@@ -1,10 +1,11 @@
-# 在桌面创建「Message Board」快捷方式。
+# Create a "Message Board" shortcut on the desktop (ASCII only on purpose:
+# Windows PowerShell 5.1 reads .ps1 as ANSI unless it has a BOM).
 #
-# 目标选择顺序：
-#   1) WPF 外壳 exe（desktop/shell/bin/Release/net8.0-windows/MessageBoard.Shell.exe）—— 若已构建
-#   2) 无控制台启动器 MessageBoard.vbs（wscript 拉起，独立应用窗口）
+# Target priority:
+#   1) the WPF shell exe (desktop/shell/bin/Release/net8.0-windows/MessageBoard.Shell.exe) if built;
+#   2) otherwise the console-less launcher MessageBoard.vbs (wscript + app window).
 #
-# 用法：powershell -ExecutionPolicy Bypass -File desktop\install-shortcut.ps1
+# Usage: powershell -ExecutionPolicy Bypass -File desktop\install-shortcut.ps1
 
 $ErrorActionPreference = 'Stop'
 
@@ -20,16 +21,16 @@ if (Test-Path $exe) {
   $lnk.TargetPath = $exe
   $lnk.Arguments = ''
   $lnk.WorkingDirectory = Split-Path -Parent $exe
-  $mode = 'WPF 外壳 exe'
+  $mode = 'WPF shell exe'
 } else {
   $lnk.TargetPath = 'wscript.exe'
   $lnk.Arguments = '"' + (Join-Path $here 'MessageBoard.vbs') + '"'
   $lnk.WorkingDirectory = $root
-  $mode = '无控制台启动器（wscript + 独立应用窗口）'
+  $mode = 'console-less launcher (wscript + app window)'
 }
 
-$lnk.Description = 'Message Board · 留言板（本地多 AI 协作黑板）'
+$lnk.Description = 'Message Board - local multi-AI collaboration board'
 $lnk.Save()
 
-Write-Host "已在桌面创建快捷方式：$lnkPath"
-Write-Host "指向：$mode"
+Write-Host "Desktop shortcut created: $lnkPath"
+Write-Host "Target: $mode"

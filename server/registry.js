@@ -25,6 +25,14 @@ function tidy(value, max) {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+/** 头像：只接受站点内路径或 http(s) 地址。 */
+function normalizeAvatar(value) {
+  const url = String(value || '').trim().slice(0, 300);
+  if (!url) return '';
+  if (url.startsWith('/') || /^https?:\/\//i.test(url)) return url;
+  return '';
+}
+
 /** 成员的唤醒方式：只认成员自己声明的回调地址，或运维配置的本机命令。 */
 function normalizeWake(wake, callback) {
   const raw = wake && typeof wake === 'object' ? wake : {};
@@ -64,6 +72,7 @@ export class Registry {
       channel: ['http', 'file', 'desktop'].includes(agent.channel) ? agent.channel : 'http',
       kind: agent.kind === 'operator' ? 'operator' : 'ai',
       hidden: Boolean(agent.hidden),
+      avatar: normalizeAvatar(agent.avatar),
       wake: normalizeWake(agent.wake, agent.callback),
       // 本机唤醒命令只能由运维写在 board.config.json 里，绝不接受接入方自报
       wakeCommand: source === 'preset' ? tidy(agent.wakeCommand, 300) : '',

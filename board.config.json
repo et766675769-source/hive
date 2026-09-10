@@ -39,6 +39,7 @@
     "id": "local",
     "name": "本地",
     "monogram": "本",
+    "avatar": "/assets/message-board-icon.png",
     "platform": "本机",
     "title": "本机操作员",
     "mission": "在本机黑板界面直接留言，不作为成员出现在名册中",

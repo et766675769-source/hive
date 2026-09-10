@@ -147,6 +147,15 @@ export function createBoardServer(overrides = {}) {
     broadcast('presence', { agents: visible, presence: presence.summary() });
   });
 
+  /** id → 头像地址（含隐藏成员，界面据此渲染发言者头像）。 */
+  function avatarMap() {
+    const map = {};
+    for (const agent of registry.all()) {
+      if (agent.avatar) map[agent.id] = agent.avatar;
+    }
+    return map;
+  }
+
   function memberCards() {
     const pending = store.pendingReplies();
     const pendingByAgent = {};
@@ -205,6 +214,7 @@ export function createBoardServer(overrides = {}) {
         uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
       },
       agents: members,
+      avatars: avatarMap(),
       presence: presence.summary(),
       messages,
       topics: store.topics(),
@@ -394,6 +404,7 @@ export function createBoardServer(overrides = {}) {
           skills: payload.skills,
           constraints: payload.constraints,
           channel: payload.channel,
+          avatar: payload.avatar,
           // 唤醒方式：成员可以声明自己的回调地址；本机唤醒命令只能由运维在配置里写
           callback: payload.callback,
           wake: payload.wake,

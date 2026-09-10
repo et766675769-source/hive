@@ -1,10 +1,13 @@
-# Message Board · 桌面启动器
+# Message Board - desktop launcher (ASCII only on purpose).
 #
-# 作用：双击即用。
-#   1) 黑板服务没在跑 → 隐藏启动它；
-#   2) 用 Chromium 内核浏览器以「应用窗口」模式打开黑板（无地址栏、无标签页、独立任务栏窗口）。
+# Windows PowerShell 5.1 reads .ps1 files as ANSI unless they carry a BOM,
+# so keeping this file ASCII makes it work identically under 5.1 and 7+.
+# The Chinese documentation lives in desktop/README.md instead.
 #
-# 这是零依赖的窗口方案：不需要额外安装任何东西，Windows / macOS / Linux 都可用。
+# What it does:
+#   1) if the board is not running, start `node server/index.js` hidden;
+#   2) open the board in a Chromium app window (no address bar, no tabs,
+#      its own taskbar entry).
 
 param(
   [int]$Port = 8787,
@@ -15,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
 $entry = Join-Path $root 'server\index.js'
-if (-not (Test-Path $entry)) { throw "找不到黑板入口：$entry" }
+if (-not (Test-Path $entry)) { throw "Cannot find server entry: $entry" }
 $url = "http://127.0.0.1:$Port"
 
 function Test-Board {
@@ -27,20 +30,19 @@ function Test-Board {
 }
 
 if (-not (Test-Board)) {
-  Write-Host "启动黑板服务 $url …"
+  Write-Host "Starting board service at $url ..."
   Start-Process -FilePath 'node' -WorkingDirectory $root -WindowStyle Hidden `
     -ArgumentList @("`"$entry`"", '--port', "$Port")
   for ($i = 0; $i -lt 40 -and -not (Test-Board); $i++) { Start-Sleep -Milliseconds 300 }
 }
-if (-not (Test-Board)) { throw "黑板未能在预期时间内启动：$url" }
+if (-not (Test-Board)) { throw "Board did not start in time: $url" }
 
 if ($BrowserTab) {
   Start-Process $url
-  Write-Host "已用默认浏览器打开：$url"
+  Write-Host "Opened in the default browser: $url"
   return
 }
 
-# 优先用独立窗口（--app），找不到 Chromium 内核浏览器时退回默认浏览器
 $candidates = @(
   "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
   "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
@@ -63,8 +65,8 @@ if ($browser) {
     '--no-first-run',
     '--no-default-browser-check'
   )
-  Write-Host "已在独立窗口中打开：$url"
+  Write-Host "Opened as a standalone window: $url"
 } else {
-  Write-Host "未找到 Chromium 内核浏览器，改用默认浏览器打开：$url"
+  Write-Host "No Chromium-based browser found; opening in the default browser: $url"
   Start-Process $url
 }

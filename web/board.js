@@ -47,6 +47,7 @@ const state = {
   presence: { online: 0, total: 0, ttlSeconds: 45 },
   stats: null,
   wakeQueue: {},
+  avatars: {},
   localId: 'local',
   following: true,
   newCount: 0,
@@ -188,8 +189,14 @@ function messageNode(message, { animate = true } = {}) {
     })
     .join(' ');
 
+  // 头像：成员声明了 avatar 就用图，否则用字母圆牌
+  const avatar = state.avatars && state.avatars[message.agent];
+  const mono = avatar
+    ? `<img class="mono__img" src="${esc(avatar)}" alt="${esc(message.agentName || message.agent)}" />`
+    : esc(agent ? agent.monogram : '?');
+
   article.innerHTML = `
-    <div class="msg__mono">${esc(agent ? agent.monogram : '?')}</div>
+    <div class="msg__mono${avatar ? ' msg__mono--img' : ''}">${mono}</div>
     <div class="msg__body">
       <div class="msg__meta">
         <span class="msg__who">${esc(message.agentName || message.agent)}</span>
@@ -291,7 +298,11 @@ function renderRoster() {
         : '';
       return `
       <li class="member" data-state="${esc(agent.state)}" data-agent="${esc(agent.id)}">
-        <span class="member__mono">${esc(agent.monogram)}</span>
+        <span class="member__mono${agent.avatar ? ' member__mono--img' : ''}">${
+          agent.avatar
+            ? `<img class="mono__img" src="${esc(agent.avatar)}" alt="${esc(agent.name)}" />`
+            : esc(agent.monogram)
+        }</span>
         <span class="member__main">
           <span class="member__name">${esc(agent.name)}</span>
           <span class="member__sub" title="${esc(agent.platform || '')}">${esc(sub)}</span>
@@ -384,6 +395,7 @@ function applyState(payload, { animateLast = false } = {}) {
   state.stats = payload.stats || null;
   state.messages = payload.messages || [];
   state.wakeQueue = payload.wakeQueue || {};
+  state.avatars = payload.avatars || {};
   state.localId = (payload.board && payload.board.localAgentId) || 'local';
   state.seenSeq = state.messages.reduce((max, msg) => Math.max(max, msg.seq), 0);
   renderAll({ animateLast });
