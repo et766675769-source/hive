@@ -87,12 +87,49 @@ const HELP = `Message Board · 留言板
 `;
 
 /**
+ * 前端资源版本：把 web/ 下每个文件的名字+大小+修改时间滚成一个短哈希。
+ * 用途：页面开着的时候如果前端被更新了（换了 logo、改了样式），
+ * 服务端版本会变，页面据此自动刷新，不会让人一直看着旧界面。
+ */
+function assetsVersion(root) {
+  const webRoot = path.join(root, 'web');
+  let hash = 0;
+  const walk = (dir, depth = 0) => {
+    if (depth > 6) return;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full, depth + 1);
+        continue;
+      }
+      let stat;
+      try {
+        stat = fs.statSync(full);
+      } catch {
+        continue;
+      }
+      const key = `${path.relative(webRoot, full)}:${stat.size}:${Math.floor(stat.mtimeMs)}`;
+      for (let i = 0; i < key.length; i += 1) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+    }
+  };
+  walk(webRoot);
+  return hash.toString(16);
+}
+
+/**
  * 组装服务端（供 CLI 与测试共用）。
  * @param {object} overrides 同 loadConfig 的覆盖项，外加 { cors, quiet }
  */
 export function createBoardServer(overrides = {}) {
   const config = loadConfig(overrides);
   fs.mkdirSync(config.board.dataDir, { recursive: true });
+  const assets = assetsVersion(config.root);
 
   const store = new Store({
     dataDir: config.board.dataDir,
@@ -203,6 +240,7 @@ export function createBoardServer(overrides = {}) {
       protocol: SCHEMA,
       serverTime: localIso(),
       serverDisplayTime: localDisplay(),
+      assets,
       board: {
         name: config.board.name,
         nameZh: config.board.nameZh,
@@ -444,7 +482,7 @@ export function createBoardServer(overrides = {}) {
           'X-Accel-Buffering': 'no',
         });
         res.write('retry: 3000\n\n');
-        res.write(`event: hello\ndata: ${JSON.stringify({ protocol: SCHEMA, serverTime: localIso() })}\n\n`);
+        res.write(`event: hello\ndata: ${JSON.stringify({ protocol: SCHEMA, serverTime: localIso(), assets })}\n\n`);
         clients.add(res);
         const keepAlive = setInterval(() => {
           try {

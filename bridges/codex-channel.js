@@ -23,9 +23,39 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 
 import { stripBom } from '../server/protocol.js';
+
+/**
+ * 找出本机应给 Codex 用的 HTTP 代理。
+ * 背景：Windows 的"系统代理"设置（注册表 Internet Settings）很多 CLI 并不读取，
+ * Codex 的 HTTP 客户端只看环境变量，于是直连 chatgpt.com 会超时并退避重连 5 次，
+ * 白白多花 60–90 秒。这里把系统代理读出来喂给它。
+ */
+function detectProxy() {
+  const explicit = flag('proxy');
+  if (explicit === 'off' || explicit === 'none') return '';
+  if (explicit) return explicit;
+  for (const name of ['HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy']) {
+    const value = process.env[name];
+    if (value) return value;
+  }
+  if (process.platform !== 'win32') return '';
+  try {
+    const out = execSync(
+      'reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer',
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const match = out.match(/ProxyServer\s+REG_SZ\s+(\S+)/);
+    if (!match) return '';
+    const raw = match[1].trim();
+    const value = /^[a-z]+:\/\//i.test(raw) ? raw : `http://${raw}`;
+    return value;
+  } catch {
+    return '';
+  }
+}
 
 /* ── 参数 ───────────────────────────────────────────────── */
 
@@ -45,6 +75,10 @@ const AGENT = String(flag('agent', 'codex')).toLowerCase();
 const WORKDIR = flag('workdir', process.cwd());
 const WAIT_SECONDS = Math.max(5, Math.min(Number(flag('wait', 25)), 60));
 const QUIET = args.includes('--quiet');
+// 默认关掉 responses 的 WebSocket 传输：本机到 wss://chatgpt.com/... 的链路不通，
+// Codex 会先退避重连 5 次（每次约 15s）再回落 HTTPS，白白多花 60–90 秒。
+// 需要时用 --ws 打开。
+const USE_WS = args.includes('--ws');
 
 const IDENTITY = {
   id: AGENT,
@@ -58,6 +92,7 @@ const IDENTITY = {
 
 const RUNTIME_DIR = flag('runtime', path.join(process.cwd(), 'data', 'runner', AGENT));
 const THREADS_FILE = () => path.join(RUNTIME_DIR, 'threads.json');
+const PROXY = detectProxy();
 
 const log = (...parts) => {
   if (!QUIET) console.log(`[codex-channel ${new Date().toLocaleTimeString()}]`, ...parts);
@@ -143,8 +178,19 @@ class CodexChannel {
   }
 
   async start() {
-    this.child = spawn('codex', ['app-server', '--listen', 'stdio://'], {
+    const serverArgs = ['app-server', '--listen', 'stdio://'];
+    if (!USE_WS) serverArgs.push('-c', 'features.responses_websockets=false');
+    const env = { ...process.env };
+    if (PROXY) {
+      env.HTTPS_PROXY = env.HTTPS_PROXY || PROXY;
+      env.HTTP_PROXY = env.HTTP_PROXY || PROXY;
+      env.ALL_PROXY = env.ALL_PROXY || PROXY;
+      // 本机黑板/回环流量不要走代理
+      env.NO_PROXY = env.NO_PROXY || '127.0.0.1,localhost,::1';
+    }
+    this.child = spawn('codex', serverArgs, {
       cwd: this.cwd,
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: true,
       windowsHide: true,
@@ -168,7 +214,8 @@ class CodexChannel {
     });
     this.#write({ method: 'initialized' });
     this.ready = true;
-    log('已连接 Codex app-server（JSON-RPC over stdio）');
+    log(`已连接 Codex app-server（JSON-RPC over stdio${USE_WS ? '' : '，已关闭 responses websocket'}）`);
+    log(PROXY ? `Codex 走代理：${PROXY}（NO_PROXY=${env.NO_PROXY}）` : 'Codex 未配置代理（直连）');
   }
 
   #write(message) {

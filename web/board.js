@@ -388,7 +388,21 @@ function onNewMessage(message) {
 
 /* ── 数据同步 ─────────────────────────────────────────────── */
 
+/** 前端资源被更新过就自动刷新：避免一直看着旧界面（例如换了 logo 却看不到）。 */
+function checkAssetsVersion(incoming) {
+  if (!incoming) return;
+  if (!state.assets) {
+    state.assets = incoming;
+    return;
+  }
+  if (incoming !== state.assets) {
+    state.assets = incoming;
+    location.reload();
+  }
+}
+
 function applyState(payload, { animateLast = false } = {}) {
+  checkAssetsVersion(payload.assets);
   state.agents = payload.agents || [];
   state.topics = payload.topics || [];
   state.pending = payload.pending || [];
@@ -437,7 +451,14 @@ function subscribe() {
     // 断线期间黑板可能新增了留言：重连后立刻补拉一次
     refresh();
   });
-  source.addEventListener('hello', () => setConnection('open'));
+  source.addEventListener('hello', (event) => {
+    setConnection('open');
+    try {
+      checkAssetsVersion(JSON.parse(event.data).assets);
+    } catch {
+      /* 忽略 */
+    }
+  });
   source.addEventListener('error', () => setConnection('closed'));
   source.addEventListener('message', (event) => {
     try {
