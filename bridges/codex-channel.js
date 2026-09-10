@@ -79,6 +79,9 @@ const QUIET = args.includes('--quiet');
 // Codex 会先退避重连 5 次（每次约 15s）再回落 HTTPS，白白多花 60–90 秒。
 // 需要时用 --ws 打开。
 const USE_WS = args.includes('--ws');
+// 沙箱模式：默认 read-only —— 成员能读文件、能跑只读命令、能检索，但不许改动工作目录。
+// 需要它产出文件（例如写审计报告）时用 --sandbox workspace-write 打开。
+const SANDBOX_MODE = flag('sandbox', 'read-only');
 
 const IDENTITY = {
   id: AGENT,
@@ -180,13 +183,8 @@ class CodexChannel {
   async start() {
     const serverArgs = ['app-server', '--listen', 'stdio://'];
     if (!USE_WS) serverArgs.push('-c', 'features.responses_websockets=false');
-    // 让成员能真的干活：工作目录可写，且不因等待人工批准而卡住（否则只会回"尚未完成"）
-    serverArgs.push(
-      '-c',
-      'sandbox_mode="workspace-write"',
-      '-c',
-      'approval_policy="never"',
-    );
+    // 审批永不询问（无人值守时等待批准 = 永远不回），沙箱按配置（默认只读）
+    serverArgs.push('-c', `sandbox_mode="${SANDBOX_MODE}"`, '-c', 'approval_policy="never"');
     const env = { ...process.env };
     if (PROXY) {
       env.HTTPS_PROXY = env.HTTPS_PROXY || PROXY;
@@ -319,7 +317,7 @@ function buildPrompt(envelope, recent, threadId) {
     .join('\n');
 
   return `你是本地协作黑板「Message Board」上的成员：${IDENTITY.name}（id: ${AGENT}）。职位：${IDENTITY.title}。
-你的工作目录：${WORKDIR}（你有读写权限，可以真的改文件、跑命令）。
+你的工作目录：${WORKDIR}（沙箱模式：${SANDBOX_MODE}——${SANDBOX_MODE === 'read-only' ? '可以读文件、跑只读命令、检索，但**不能修改文件**；这不影响你交付结论，别拿它当借口' : '可以读写文件，请把产物落盘并给出路径'}）。
 你当前所处的 Codex 会话 thread id 是：${threadId}（回复里引用它时用这个 id，不要凭印象编）。
 
 ## 这是一件要交付的工作，不是一场讨论
@@ -341,7 +339,7 @@ function buildPrompt(envelope, recent, threadId) {
 1. **结论 / 产物**：可以直接使用的结果。若写了文件，给出**绝对路径**；若是清单，直接列出来。
 2. **证据**：文件路径+行号、命令+关键输出片段、链接——可复核，不要只给判断。
 3. **剩余风险或未覆盖面**：明确说清哪部分没做、为什么。
-4. 篇幅不限，但不要注水；长内容优先落到文件里，黑板给摘要 + 路径。
+4. 篇幅不限，但不要注水。${SANDBOX_MODE === 'read-only' ? '只读环境下请把完整内容直接贴在黑板上（不要把"不能写文件"当阻塞点）。' : '长内容优先落到文件里，黑板给摘要 + 绝对路径。'}
 
 ${others ? `黑板最近的留言（上下文，含你自己此前说过的话）：\n${others}\n` : ''}
 有人点名你（#${envelope.seq}，来自 @${envelope.from}${envelope.topic ? `，议题 ${envelope.topic}` : ''}）：
