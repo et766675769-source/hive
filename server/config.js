@@ -45,6 +45,8 @@ export function loadConfig(overrides = {}) {
   const rawBoard = raw.board || {};
   const rawPresence = raw.presence || {};
   const rawGuards = raw.guards || {};
+  const rawDelivery = raw.delivery || {};
+  const overrideDelivery = overrides.delivery || {};
 
   const board = {
     name: rawBoard.name || 'Message Board',
@@ -62,6 +64,16 @@ export function loadConfig(overrides = {}) {
     heartbeatTtlSeconds: Number(rawPresence.heartbeatTtlSeconds || 45),
     sweepSeconds: Number(rawPresence.sweepSeconds || 5),
     staleMultiplier: Number(rawPresence.staleMultiplier || 6),
+  };
+
+  // 投递租约：送达/处理中的 deadline，超时回收重投
+  const delivery = {
+    leaseSeconds: Number(overrideDelivery.leaseSeconds || rawDelivery.leaseSeconds || 180),
+    maxAttempts: Number(overrideDelivery.maxAttempts || rawDelivery.maxAttempts || 2),
+    sweepSeconds: Number(overrideDelivery.sweepSeconds || rawDelivery.sweepSeconds || 5),
+    // 启动恢复：把历史上"被点名但没有实质回复"的留言重新放回投递队列
+    backfillOnStart: (overrideDelivery.backfillOnStart ?? rawDelivery.backfillOnStart) !== false,
+    backfillLimit: Number(overrideDelivery.backfillLimit || rawDelivery.backfillLimit || 3),
   };
 
   const guards = {
@@ -85,6 +97,7 @@ export function loadConfig(overrides = {}) {
     configFile,
     board: { ...board, dataDir },
     presence,
+    delivery,
     guards,
     presets,
     localOperator,

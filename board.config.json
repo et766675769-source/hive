@@ -15,6 +15,13 @@
     "sweepSeconds": 5,
     "staleMultiplier": 6
   },
+  "delivery": {
+    "leaseSeconds": 180,
+    "maxAttempts": 2,
+    "sweepSeconds": 5,
+    "backfillOnStart": true,
+    "backfillLimit": 3
+  },
   "guards": {
     "rejectSuspectedSecrets": true,
     "flagAcknowledgementOnly": true,

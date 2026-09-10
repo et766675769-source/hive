@@ -23,6 +23,7 @@ import { Store } from './store.js';
 import { Presence } from './presence.js';
 import { Registry } from './registry.js';
 import { WakeHub } from './wake.js';
+import { DeliveryLedger } from './delivery.js';
 import { agentCard, draftAgent, joinPrompt } from './agents.js';
 import { SCHEMA, STATUSES, KINDS, validateMessage, localDisplay, localIso } from './protocol.js';
 
@@ -175,6 +176,63 @@ export function createBoardServer(overrides = {}) {
     onEvent: (result) => broadcast('wake', result),
   });
 
+  // 投递台账：queued → delivered → working → replied | expired，带租约与超时回收
+  const delivery = new DeliveryLedger({
+    file: path.join(config.board.dataDir, 'deliveries.jsonl'),
+    leaseSeconds: config.delivery.leaseSeconds,
+    maxAttempts: config.delivery.maxAttempts,
+  });
+
+  /** 租约巡检：到期的投递回收重投（再入唤醒队列），并在界面上可见。 */
+  function sweepDeliveries() {
+    const { expired, reclaimed } = delivery.sweep();
+    for (const record of reclaimed) {
+      const message = store.list({ limit: store.historyInMemory }).find((item) => item.id === record.messageId);
+      if (!message) continue;
+      wake.requeue(record.agent, wake.envelope(message, record.agent));
+      broadcast('delivery', { ...record, state: 'queued', note: '租约到期，已回收重投' });
+    }
+    for (const record of expired) {
+      if (!reclaimed.some((item) => item.messageId === record.messageId && item.agent === record.agent)) {
+        broadcast('delivery', { ...record, state: 'expired' });
+      }
+    }
+  }
+  const deliveryTimer = setInterval(sweepDeliveries, Math.max(1, config.delivery.sweepSeconds) * 1000);
+  if (typeof deliveryTimer.unref === 'function') deliveryTimer.unref();
+
+  /**
+   * 启动恢复：进程重启会让内存里的唤醒队列清空，但"被点名却没有实质回复"是黑板上的事实。
+   * 启动时把它们按成员（每人最多 backfillLimit 条）重新登记为投递并放回队列，
+   * 成员下次长轮询就会取到——重启不再意味着点名永久丢失。
+   */
+  function backfillDeliveries() {
+    if (!config.delivery.backfillOnStart) return 0;
+    const pending = store.pendingReplies();
+    const perAgent = new Map();
+    for (const item of [...pending].reverse()) {
+      const list = perAgent.get(item.agent) || [];
+      if (list.length >= config.delivery.backfillLimit) continue;
+      list.push(item);
+      perAgent.set(item.agent, list);
+    }
+    const all = store.list({ limit: store.historyInMemory });
+    let recovered = 0;
+    for (const [agentId, items] of perAgent) {
+      const agent = registry.get(agentId);
+      if (!agent || agent.hidden) continue;
+      for (const item of items) {
+        const message = all.find((entry) => entry.id === item.messageId);
+        if (!message) continue;
+        delivery.ensure(message, [agentId]);
+        wake.requeue(agentId, wake.envelope(message, agentId));
+        recovered += 1;
+      }
+    }
+    return recovered;
+  }
+  const recovered = backfillDeliveries();
+
   let presenceSignature = '';
   presence.onChange((snapshot) => {
     const visible = snapshot.filter((item) => !item.hidden);
@@ -227,6 +285,7 @@ export function createBoardServer(overrides = {}) {
       members: registry.visible().map((agent) => ({
         ...agentCard(agent, presenceMap),
         pending: pendingByAgent[agent.id] || 0,
+        openDeliveries: delivery.openForAgent(agent.id).length,
         acceptance: acceptanceFor(agent, presenceMap.get(agent.id), mentionReplies[agent.id]),
       })),
       pending,
@@ -259,6 +318,7 @@ export function createBoardServer(overrides = {}) {
     const messages = rawMessages.map((message) => ({
       ...message,
       wake: wakesByMessage.get(message.id) || [],
+      delivery: delivery.forMessage(message.id),
     }));
 
     const { members, pending } = memberCards();
@@ -289,6 +349,7 @@ export function createBoardServer(overrides = {}) {
       topics: store.topics(),
       pending,
       wakeQueue: wake.queueDepth(),
+      deliverySummary: delivery.summary(),
       stats: store.stats(),
       enums: { statuses: STATUSES, kinds: KINDS },
     };
@@ -546,6 +607,21 @@ export function createBoardServer(overrides = {}) {
         });
         if (!check.ok) return json(res, 400, { ok: false, code: check.code, error: check.error });
 
+        // 幂等：同一个 idempotencyKey 只落一条留言（重试不再产生重复）
+        const idempotencyKey = payload.idempotencyKey ? String(payload.idempotencyKey).slice(0, 200) : '';
+        if (idempotencyKey) {
+          const existing = store.findByIdempotencyKey(idempotencyKey);
+          if (existing) {
+            return json(res, 200, {
+              ok: true,
+              duplicate: true,
+              message: existing,
+              wakes: [],
+              warnings: [],
+            });
+          }
+        }
+
         const message = store.append({
           agent,
           text: check.text,
@@ -556,9 +632,19 @@ export function createBoardServer(overrides = {}) {
           flags: check.flags,
           replyTo: payload.replyTo ? String(payload.replyTo) : null,
           evidence: payload.evidence ? String(payload.evidence).slice(0, 2000) : null,
-          client: payload.client && typeof payload.client === 'object' ? payload.client : null,
+          client: {
+            ...(payload.client && typeof payload.client === 'object' ? payload.client : {}),
+            ...(idempotencyKey ? { idempotencyKey } : {}),
+          },
         });
         presence.beat(agent.id, { state: 'online', note: '正在发言', session: payload.session });
+
+        // 投递台账：本条点名了谁，就给谁建一条投递记录（幂等）
+        delivery.ensure(message, check.mentions);
+
+        // 对方回话：notice → working（续租），实质内容 → replied（终态）
+        const transitioned = message.kind === 'notice' ? delivery.markWorking(message) : delivery.markReplied(message);
+        if (transitioned) broadcast('delivery', transitioned);
 
         // 点名即唤醒：立刻把点名送到被点名成员（长轮询 / 回调 / 本机命令 / 入队）
         const wakes = await Promise.all(
@@ -567,11 +653,16 @@ export function createBoardServer(overrides = {}) {
             .filter(Boolean)
             .map((target) => wake.deliver(target, wake.envelope(message, target.id))),
         );
+        for (const result of wakes) {
+          const record = delivery.markDelivered(message.id, result.agent, result);
+          if (record) broadcast('delivery', record);
+        }
 
         return json(res, 200, {
           ok: true,
           message,
           wakes,
+          delivery: delivery.forMessage(message.id),
           warnings: [
             ...(check.flags.includes('ACK_ONLY')
               ? ['本条只有寒暄、没有实质内容：被 @ 时请给结论、依据与下一步。']
@@ -605,6 +696,30 @@ export function createBoardServer(overrides = {}) {
           wake: result.envelope,
           source: result.from,
           waitedMs: Date.now() - started,
+        });
+      }
+
+      // ---- 打断某成员正在进行的任务 ----
+      if (pathname === '/api/interrupt' && req.method === 'POST') {
+        const payload = await readJson(req, res);
+        if (!payload) return undefined;
+        const agentId = String(payload.agent || '').trim().toLowerCase();
+        const agent = registry.get(agentId);
+        if (!agent) {
+          return json(res, 404, { ok: false, code: 'UNKNOWN_AGENT', error: `名册中没有成员 ${agentId}。` });
+        }
+        const open = delivery.openForAgent(agent.id);
+        const depth = wake.pushControl(agent.id, {
+          action: 'interrupt',
+          reason: payload.reason,
+          issuedBy: payload.by || 'local',
+        });
+        return json(res, 200, {
+          ok: true,
+          agent: agent.id,
+          queueDepth: depth,
+          openDeliveries: open.length,
+          hint: '打断指令已进入该成员的 inbox；成员取到后会尝试中断当前回合。',
         });
       }
 
@@ -652,7 +767,7 @@ export function createBoardServer(overrides = {}) {
     }
   });
 
-  return { server, config, store, presence, registry, statePayload };
+  return { server, config, store, presence, registry, wake, delivery, recovered, statePayload };
 }
 
 function main() {
@@ -661,7 +776,7 @@ function main() {
     process.stdout.write(HELP);
     return;
   }
-  const { server, config, registry, store } = createBoardServer(args);
+  const { server, config, registry, store, recovered } = createBoardServer(args);
   server.listen(config.board.port, config.board.host, () => {
     const url = `http://${config.board.host}:${config.board.port}`;
     if (!args.quiet) {
@@ -675,6 +790,7 @@ function main() {
           `  协议       ${config.board.protocol}`,
           `  成员       ${members.length ? members.map((a) => `${a.name}(${a.id})`).join(' · ') : '暂无 —— 点「接入」复制提示词，发给任意 AI'}`,
           `  已有留言   ${stats.latestSeq} 条（镜像 ${path.relative(process.cwd(), stats.mirrorFile)}）`,
+          recovered ? `  启动恢复   ${recovered} 条历史点名已放回投递队列` : '',
           `  接入方式   ${url} 侧栏「接入」按钮，或 GET /api/prompt?agent=<id>`,
           args.token ? '  访问口令   已启用（--token）' : '',
           '',

@@ -1,0 +1,257 @@
+// Message Board · 投递台账（delivery ledger）
+//
+// 把「点名 → 回应」变成一条**有状态、可观测、可回收**的投递记录，而不是只看有没有回复：
+//
+//   queued     已产生点名，但还没送出去（当时没有可用通道）
+//   delivered  已送达某个通道（长轮询 / 回调 / 本机命令）——对方至少收到了
+//   working    对方声明"正在处理"（它发了 kind=notice 且 replyTo 指向该条）
+//   replied    对方给出了实质回复（kind != notice 且 replyTo 指向该条）——终态
+//   expired    租约到期仍无实质回复；若还有重试次数，会自动回到 queued 重投
+//
+// 纪律：
+//   - 只追加：每次状态变化写一行到 data/deliveries.jsonl，内存里是它的投影；进程重启可完整重建；
+//   - 幂等：以 messageId + agent 为键，重复投递不会产生第二条记录；
+//   - 租约：送达/处理中各有一个 deadline，到期由 sweep() 判定过期；最多重投 maxAttempts 次，不做无限循环。
+
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { stripBom } from './protocol.js';
+
+export const DELIVERY_STATES = ['queued', 'delivered', 'working', 'replied', 'expired'];
+const TERMINAL = new Set(['replied']);
+
+export class DeliveryLedger {
+  /**
+   * @param {{ file: string, leaseSeconds?: number, maxAttempts?: number, now?: () => number }} options
+   */
+  constructor({ file, leaseSeconds = 180, maxAttempts = 2, now = () => Date.now() }) {
+    this.file = file;
+    this.leaseSeconds = leaseSeconds;
+    this.maxAttempts = maxAttempts;
+    this.now = now;
+    this.records = new Map(); // key → record
+    this.order = []; // key 的创建顺序（用于稳定输出）
+    this.#load();
+  }
+
+  static keyOf(messageId, agent) {
+    return `${messageId}|${agent}`;
+  }
+
+  #load() {
+    if (!fs.existsSync(this.file)) return;
+    let lines = [];
+    try {
+      lines = stripBom(fs.readFileSync(this.file, 'utf8')).split('\n');
+    } catch {
+      return;
+    }
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let entry;
+      try {
+        entry = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      this.#apply(entry, { persist: false });
+    }
+  }
+
+  #persist(entry) {
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      fs.appendFileSync(this.file, `${JSON.stringify(entry)}\n`, 'utf8');
+    } catch {
+      /* 台账落盘失败不影响主流程，内存投影仍可用 */
+    }
+  }
+
+  /** 把一条事件应用到内存投影。 */
+  #apply(entry, { persist = true } = {}) {
+    const key = DeliveryLedger.keyOf(entry.messageId, entry.agent);
+    const existing = this.records.get(key);
+    const record = existing || {
+      messageId: entry.messageId,
+      agent: entry.agent,
+      seq: entry.seq ?? null,
+      topic: entry.topic ?? null,
+      state: 'queued',
+      channel: null,
+      attempts: 0,
+      createdAt: entry.at || this.now(),
+      updatedAt: entry.at || this.now(),
+      deadlineAt: null,
+      note: '',
+      history: [],
+    };
+
+    if (entry.state) record.state = entry.state;
+    if (entry.channel !== undefined) record.channel = entry.channel;
+    if (entry.note !== undefined) record.note = entry.note || '';
+    if (entry.seq != null) record.seq = entry.seq;
+    if (entry.topic !== undefined) record.topic = entry.topic;
+    if (entry.attempts != null) record.attempts = entry.attempts;
+    else if (entry.state === 'delivered') record.attempts += 1;
+    if (entry.deadlineAt !== undefined) record.deadlineAt = entry.deadlineAt;
+    record.updatedAt = entry.at || this.now();
+
+    record.history.push({ at: record.updatedAt, state: record.state, channel: record.channel, note: record.note });
+    if (record.history.length > 6) record.history.shift();
+
+    if (!existing) {
+      this.records.set(key, record);
+      this.order.push(key);
+    }
+    if (persist) this.#persist({ ...entry, at: record.updatedAt });
+    return record;
+  }
+
+  #set(messageId, agent, state, { channel, note, deadlineAt, attempts, seq, topic } = {}) {
+    if (!DELIVERY_STATES.includes(state)) throw new Error(`未知投递状态：${state}`);
+    const at = this.now();
+    return this.#apply({ messageId, agent, state, channel, note, deadlineAt, attempts, seq, topic, at });
+  }
+
+  /** 为一条带点名的留言建立投递记录（幂等：已存在就返回原记录）。 */
+  ensure(message, agents) {
+    const created = [];
+    for (const agent of agents) {
+      const key = DeliveryLedger.keyOf(message.id, agent);
+      if (this.records.has(key)) continue;
+      created.push(
+        this.#set(message.id, agent, 'queued', {
+          note: '点名已产生，等待投递',
+          seq: message.seq,
+          topic: message.topic || null,
+          deadlineAt: null,
+        }),
+      );
+    }
+    return created;
+  }
+
+  /**
+   * 投递结果回填。
+   * 注意：channel=queued 表示"没人接，先进队列"——那是**没送到**，状态保持 queued，
+   * 不能算 delivered，否则界面上会把"没人听"显示成"已送达"。
+   */
+  markDelivered(messageId, agent, { channel, ok, error } = {}) {
+    const reachedSomeone = Boolean(ok) && Boolean(channel) && channel !== 'queued';
+    if (!reachedSomeone) {
+      return this.#set(messageId, agent, 'queued', {
+        channel: channel || null,
+        note: error
+          ? `投递失败：${error}`
+          : channel === 'queued'
+            ? '暂无可用通道，已入队等对方取走'
+            : '尚未投递',
+        deadlineAt: null,
+      });
+    }
+    return this.#set(messageId, agent, 'delivered', {
+      channel,
+      note: `已送达（${channel}）`,
+      deadlineAt: this.now() + this.leaseSeconds * 1000,
+    });
+  }
+
+  /** 对方回了「处理中」通知 → working（同时把租约续上）。 */
+  markWorking(message) {
+    if (!message.replyTo) return null;
+    const key = DeliveryLedger.keyOf(message.replyTo, message.agent);
+    if (!this.records.has(key)) return null;
+    return this.#set(message.replyTo, message.agent, 'working', {
+      note: '对方已开始处理',
+      deadlineAt: this.now() + this.leaseSeconds * 1000,
+    });
+  }
+
+  /** 对方回了实质内容 → replied（终态）。 */
+  markReplied(message) {
+    if (!message.replyTo) return null;
+    const key = DeliveryLedger.keyOf(message.replyTo, message.agent);
+    if (!this.records.has(key)) return null;
+    return this.#set(message.replyTo, message.agent, 'replied', {
+      note: '已收到实质回复',
+      deadlineAt: null,
+    });
+  }
+
+  /** 某条留言的全部投递记录。 */
+  forMessage(messageId) {
+    return this.order
+      .map((key) => this.records.get(key))
+      .filter((record) => record && record.messageId === messageId)
+      .map((record) => this.#view(record));
+  }
+
+  /** 某成员尚未终结的投递（新的在前）。 */
+  openForAgent(agent) {
+    return this.order
+      .map((key) => this.records.get(key))
+      .filter((record) => record && record.agent === agent && !TERMINAL.has(record.state) && record.state !== 'expired')
+      .map((record) => this.#view(record))
+      .reverse();
+  }
+
+  #view(record) {
+    return {
+      messageId: record.messageId,
+      agent: record.agent,
+      seq: record.seq,
+      topic: record.topic,
+      state: record.state,
+      channel: record.channel,
+      attempts: record.attempts,
+      note: record.note,
+      updatedAt: record.updatedAt,
+      deadlineAt: record.deadlineAt,
+      overdue: Boolean(record.deadlineAt && this.now() > record.deadlineAt),
+    };
+  }
+
+  /**
+   * 租约巡检：到期的 delivered / working 记为 expired；还有重试次数的自动回到 queued 等待重投。
+   * @returns {{ expired: object[], reclaimed: object[] }}
+   */
+  sweep() {
+    const now = this.now();
+    const expired = [];
+    const reclaimed = [];
+    for (const record of [...this.records.values()]) {
+      if (TERMINAL.has(record.state) || record.state === 'expired') continue;
+      if (!record.deadlineAt || now < record.deadlineAt) continue;
+
+      const view = this.#view(record);
+      expired.push(view);
+      if (record.attempts < this.maxAttempts) {
+        this.#set(record.messageId, record.agent, 'queued', {
+          attempts: record.attempts,
+          note: `租约到期（${this.leaseSeconds}s）未收到实质回复，已回收重投`,
+          deadlineAt: null,
+        });
+        reclaimed.push(view);
+      } else {
+        this.#set(record.messageId, record.agent, 'expired', {
+          attempts: record.attempts,
+          note: `租约到期且已达重试上限（${this.maxAttempts} 次）`,
+          deadlineAt: null,
+        });
+      }
+    }
+    return { expired, reclaimed };
+  }
+
+  summary() {
+    const counts = { queued: 0, delivered: 0, working: 0, replied: 0, expired: 0 };
+    for (const record of this.records.values()) counts[record.state] = (counts[record.state] || 0) + 1;
+    return { counts, leaseSeconds: this.leaseSeconds, maxAttempts: this.maxAttempts };
+  }
+
+  snapshot() {
+    return this.order.map((key) => this.#view(this.records.get(key)));
+  }
+}

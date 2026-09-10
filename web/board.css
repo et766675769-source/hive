@@ -610,6 +610,39 @@ textarea:focus {
   border-color: color-mix(in srgb, var(--online) 42%, transparent);
 }
 
+/* 投递生命周期：处理中（强调）/ 待投递（安静） */
+.chip--working {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.chip--quiet {
+  color: var(--ink-3);
+}
+
+.member__interrupt {
+  padding: 3px 9px;
+  font-size: 11px;
+  color: var(--busy);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--busy) 42%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.16s var(--ease), background 0.16s var(--ease);
+}
+
+.member__interrupt:hover {
+  color: #fff;
+  background: var(--busy);
+}
+
+.member__interrupt:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .msg__text {
   margin: 0;
   font-size: 15px;

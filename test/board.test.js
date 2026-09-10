@@ -471,6 +471,124 @@ test('唤醒：未登记成员不能长轮询', async () => {
   });
 });
 
+/* ── 投递生命周期 / 幂等 / 打断 ─────────────────────────── */
+
+test('投递：queued → delivered → working → replied 逐级推进', async () => {
+  await withBoard(async ({ base, join, post, state }) => {
+    await join({ agent: 'deepseek', name: 'DeepSeek' });
+    await join({ agent: 'codex', name: 'Codex' });
+
+    // 先让 codex 挂上长轮询，保证能即时送达
+    const waiting = fetch(`${base}/api/inbox?agent=codex&wait=5`).then((r) => r.json());
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const asked = await (await post('/api/message', { agent: 'deepseek', text: '@codex 请处理。' })).json();
+    assert.equal(asked.delivery.length, 1);
+    assert.equal(asked.delivery[0].state, 'delivered');
+    assert.equal(asked.delivery[0].attempts, 1);
+    assert.ok(asked.delivery[0].deadlineAt, '送达后开始计租约');
+
+    await post('/api/message', { agent: 'codex', kind: 'notice', text: '正在处理…', replyTo: asked.message.id });
+    let payload = await state();
+    let record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
+    assert.equal(record.state, 'working');
+    assert.equal(payload.deliverySummary.counts.working, 1);
+
+    await post('/api/message', { agent: 'codex', kind: 'reply', text: '结论：已完成。', replyTo: asked.message.id });
+    payload = await state();
+    record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
+    assert.equal(record.state, 'replied');
+    assert.equal(record.deadlineAt, null, '终态不再计租约');
+    assert.equal(payload.deliverySummary.counts.replied, 1);
+
+    await waiting;
+  });
+});
+
+test('投递：没有可用通道时停在 queued，并计入该成员的未完成投递', async () => {
+  await withBoard(async ({ join, post, state }) => {
+    await join({ agent: 'deepseek', name: 'DeepSeek' });
+    await join({ agent: 'marvis', name: 'Marvis' });
+
+    const asked = await (await post('/api/message', { agent: 'deepseek', text: '@marvis 请确认。' })).json();
+    assert.equal(asked.delivery[0].state, 'queued');
+    assert.equal(asked.delivery[0].deadlineAt, null);
+
+    const payload = await state();
+    assert.equal(payload.deliverySummary.counts.queued, 1);
+    assert.equal(payload.agents.find((a) => a.id === 'marvis').openDeliveries, 1);
+  });
+});
+
+test('投递：租约到期自动回收重投', async () => {
+  await withBoard(
+    async ({ base, join, post, state }) => {
+      await join({ agent: 'deepseek', name: 'DeepSeek' });
+      await join({ agent: 'marvis', name: 'Marvis' });
+
+      const waiting = fetch(`${base}/api/inbox?agent=marvis&wait=3`).then((r) => r.json());
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const asked = await (await post('/api/message', { agent: 'deepseek', text: '@marvis 请确认。' })).json();
+      assert.equal(asked.delivery[0].state, 'delivered');
+      await waiting;
+
+      // 租约 1 秒 + 巡检 1 秒：等它自然过期
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      const payload = await state();
+      const record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
+      assert.equal(record.state, 'queued', '过期后应回收为 queued 等待重投');
+      assert.match(record.note, /回收重投/);
+      assert.equal(record.attempts, 1, '重投前仍算 1 次送达记录');
+    },
+    { delivery: { leaseSeconds: 1, maxAttempts: 2, sweepSeconds: 1 } },
+  );
+});
+
+test('幂等：同一 idempotencyKey 只落一条留言', async () => {
+  await withBoard(async ({ join, post, state }) => {
+    await join({ agent: 'deepseek', name: 'DeepSeek' });
+    const body = { agent: 'deepseek', text: '只此一条。', idempotencyKey: 'reply-token-1' };
+    const first = await (await post('/api/message', body)).json();
+    const second = await (await post('/api/message', body)).json();
+    assert.equal(first.duplicate, undefined);
+    assert.equal(second.duplicate, true);
+    assert.equal(second.message.id, first.message.id);
+    const payload = await state();
+    assert.equal(payload.messages.length, 1);
+  });
+});
+
+test('打断：下发控制指令后成员能从 inbox 取到 control 信封', async () => {
+  await withBoard(async ({ base, join }) => {
+    await join({ agent: 'codex', name: 'Codex' });
+    const response = await fetch(`${base}/api/interrupt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: 'codex', reason: '测试打断' }),
+    });
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.queueDepth, 1);
+
+    const inbox = await (await fetch(`${base}/api/inbox?agent=codex&wait=1`)).json();
+    assert.equal(inbox.wake.type, 'control');
+    assert.equal(inbox.wake.action, 'interrupt');
+    assert.equal(inbox.wake.reason, '测试打断');
+    assert.equal(inbox.wake.issuedBy, 'local');
+  });
+});
+
+test('打断：未知成员被拒', async () => {
+  await withBoard(async ({ base }) => {
+    const response = await fetch(`${base}/api/interrupt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: 'ghost' }),
+    });
+    assert.equal(response.status, 404);
+  });
+});
+
 /* ── 接入验收 ───────────────────────────────────────────── */
 
 test('接入验收：心跳 / 唤醒通道 / 点名闭环 三项逐项点亮', async () => {

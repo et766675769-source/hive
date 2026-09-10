@@ -233,6 +233,16 @@ export class Store {
     return out;
   }
 
+  /** 幂等：按 client.idempotencyKey 找已有留言（只看内存窗口）。 */
+  findByIdempotencyKey(key) {
+    if (!key) return null;
+    for (let i = this.messages.length - 1; i >= 0; i -= 1) {
+      const message = this.messages[i];
+      if (message.client && message.client.idempotencyKey === key) return message;
+    }
+    return null;
+  }
+
   stats() {
     const byAgent = {};
     for (const msg of this.messages) byAgent[msg.agent] = (byAgent[msg.agent] || 0) + 1;

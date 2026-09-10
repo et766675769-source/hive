@@ -340,22 +340,41 @@ channel.onEvent(async (message) => {
     const finished = active;
     active = null;
     const text = (finished.finalText || '').trim();
-    const body = text
-      ? `${text}\n\n（Codex thread ${finished.threadId} —— 在 Codex 里打开同一次对话：codex resume ${finished.threadId}；本轮 ${Math.round((params.turn?.durationMs || 0) / 1000)}s）`
-      : `【${IDENTITY.name} 通道】本轮结束但没有产出最终消息${finished.lastError ? `：${finished.lastError}` : ''}。本条为失败回执。`;
-    try {
-      const posted = await postBoard({
-        agent: AGENT,
-        text: body,
-        kind: text ? 'reply' : 'notice',
-        status: text ? '进行中' : '阻塞',
-        topic: finished.topic || null,
-        replyTo: finished.replyTo,
-        client: { channel: 'codex-app-server', threadId: finished.threadId, turnId: finished.turnId },
-      });
-      log(`已回复 #${posted.message.seq}（回应 #${finished.seq}，thread ${finished.threadId}）`);
-    } catch (error) {
-      log(`回复写回失败：${error.message}`);
+    if (finished.interrupted) {
+      try {
+        await postBoard({
+          agent: AGENT,
+          kind: 'notice',
+          status: '阻塞',
+          topic: finished.topic || null,
+          replyTo: finished.replyTo,
+          idempotencyKey: `codex-app-server:${finished.replyTo}:interrupted`,
+          text: `本轮已被人类打断（thread ${finished.threadId}，turn ${finished.turnId}）${text ? `。打断前已产出的内容：${text.slice(0, 300)}` : '。'}`,
+          client: { channel: 'codex-app-server', threadId: finished.threadId, interrupted: true },
+        });
+        log(`已回报打断：#${finished.seq}`);
+      } catch (error) {
+        log(`打断回报失败：${error.message}`);
+      }
+    } else {
+      const body = text
+        ? `${text}\n\n（Codex thread ${finished.threadId} —— 在 Codex 里打开同一次对话：codex resume ${finished.threadId}；本轮 ${Math.round((params.turn?.durationMs || 0) / 1000)}s）`
+        : `【${IDENTITY.name} 通道】本轮结束但没有产出最终消息${finished.lastError ? `：${finished.lastError}` : ''}。本条为失败回执。`;
+      try {
+        const posted = await postBoard({
+          agent: AGENT,
+          text: body,
+          kind: text ? 'reply' : 'notice',
+          status: text ? '进行中' : '阻塞',
+          topic: finished.topic || null,
+          replyTo: finished.replyTo,
+          idempotencyKey: `codex-app-server:${finished.replyTo}:${text ? 'reply' : 'failed'}`,
+          client: { channel: 'codex-app-server', threadId: finished.threadId, turnId: finished.turnId },
+        });
+        log(`已回复 #${posted.message.seq}（回应 #${finished.seq}，thread ${finished.threadId}）`);
+      } catch (error) {
+        log(`回复写回失败：${error.message}`);
+      }
     }
     // 排队中的点名：这一轮结束后接着处理
     if (deferred.length) {
@@ -457,11 +476,52 @@ async function handleMention(envelope) {
       status: '进行中',
       topic: envelope.topic || null,
       replyTo: envelope.messageId,
+      idempotencyKey: `codex-app-server:${envelope.messageId}:ack`,
       text: `已收到 #${envelope.seq} 的点名，正在 thread ${threadId} 的这一轮里处理（会流式产出，完成后把结论写回黑板）。本条为处理中通知，不是结论。`,
       client: { channel: 'codex-app-server', threadId, turnId: active.turnId },
     },
     { label: '处理中通知' },
   );
+}
+
+/** 控制指令：目前支持「打断」正在进行的回合。 */
+async function handleControl(control) {
+  log(`收到控制指令：${control.action}${control.reason ? `（${control.reason}）` : ''}`);
+  if (control.action !== 'interrupt') return;
+  if (!active) {
+    await postBoard(
+      {
+        agent: AGENT,
+        kind: 'notice',
+        status: '进行中',
+        topic: null,
+        idempotencyKey: `codex-app-server:control:${control.at}`,
+        text: '收到打断指令，但当前没有正在进行的回合，无需打断。',
+        client: { channel: 'codex-app-server', control: control.action },
+      },
+      { label: '打断回执' },
+    );
+    return;
+  }
+  try {
+    await channel.interrupt(active.threadId, active.turnId);
+    active.interrupted = true;
+    log(`已打断 thread ${active.threadId} 的 turn ${active.turnId}`);
+  } catch (error) {
+    log(`打断失败：${error.message}`);
+    await postBoard(
+      {
+        agent: AGENT,
+        kind: 'notice',
+        status: '阻塞',
+        topic: null,
+        idempotencyKey: `codex-app-server:control:${control.at}:failed`,
+        text: `打断失败：${error.message}。本条为失败回执。`,
+        client: { channel: 'codex-app-server', control: control.action, ok: false },
+      },
+      { label: '打断失败回执' },
+    );
+  }
 }
 
 async function main() {
@@ -480,6 +540,8 @@ async function main() {
       kind: 'notice',
       status: '进行中',
       topic: null,
+      // 稳定幂等键：通道重启不该在黑板上刷出第二张自检表
+      idempotencyKey: 'codex-app-server:selfcheck',
       text: [
         `接入自检表（${IDENTITY.name}）`,
         '',
@@ -505,7 +567,9 @@ async function main() {
         body: JSON.stringify({ agent: AGENT, state: 'online', note: active ? '正在处理点名' : 'Codex 通道在线' }),
       });
       const result = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=${WAIT_SECONDS}`);
-      if (result.wake && result.wake.from !== AGENT) {
+      if (result.wake?.type === 'control') {
+        await handleControl(result.wake);
+      } else if (result.wake && result.wake.from !== AGENT) {
         await handleMention(result.wake);
       }
       if (!channel.ready) throw new Error('通道未就绪');

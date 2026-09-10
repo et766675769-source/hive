@@ -47,6 +47,7 @@ const state = {
   presence: { online: 0, total: 0, ttlSeconds: 45 },
   stats: null,
   wakeQueue: {},
+  deliverySummary: {},
   avatars: {},
   localId: 'local',
   following: true,
@@ -69,6 +70,22 @@ const WAKE_LABEL = {
   callback: '已推送到回调',
   command: '已拉起进程',
   queued: '已入队等待唤醒',
+};
+
+// 投递生命周期：queued → delivered → working → replied | expired
+const DELIVERY_LABEL = {
+  queued: '待投递',
+  delivered: '已送达',
+  working: '处理中',
+  replied: '已回应',
+  expired: '超时未回',
+};
+const DELIVERY_CLASS = {
+  replied: 'chip--wake',
+  working: 'chip--working',
+  expired: 'chip--flag',
+  queued: 'chip--quiet',
+  delivered: '',
 };
 
 /* ── 工具 ─────────────────────────────────────────────────── */
@@ -190,6 +207,17 @@ function messageNode(message, { animate = true } = {}) {
     })
     .join(' ');
 
+  // 投递生命周期徽标：比"唤醒成功"更准 —— 已送达 / 处理中 / 已回应 / 超时未回
+  const deliveryChips = (message.delivery || [])
+    .map((item) => {
+      const cls = DELIVERY_CLASS[item.state] || '';
+      const extra = item.state === 'working' ? '' : item.attempts > 1 ? ` ×${item.attempts}` : '';
+      return `<span class="chip ${cls}" data-delivery="${esc(item.agent)}" title="${esc(item.note || '')}">@${esc(
+        item.agent,
+      )} ${esc(DELIVERY_LABEL[item.state] || item.state)}${esc(extra)}</span>`;
+    })
+    .join(' ');
+
   // 头像：成员声明了 avatar 就用图，否则用字母圆牌
   const avatar = state.avatars && state.avatars[message.agent];
   const mono = avatar
@@ -206,11 +234,31 @@ function messageNode(message, { animate = true } = {}) {
         ${chips.join('')}
         <span class="chip chip--latest" data-role="latest" hidden>最新</span>
         <span data-role="wakes">${wakeChips}</span>
+        <span data-role="deliveries">${deliveryChips}</span>
       </div>
       <p class="msg__text">${linkifyMentions(esc(message.text))}</p>
       ${mentions}
     </div>`;
   return article;
+}
+
+/** SSE 收到投递状态变化：把对应留言上的投递徽标就地更新。 */
+function applyDelivery(record) {
+  const node = el.stream.querySelector(`.msg[data-id="${record.messageId}"]`);
+  if (!node) return;
+  const holder = node.querySelector('[data-role="deliveries"]');
+  if (!holder) return;
+  let chip = holder.querySelector(`[data-delivery="${record.agent}"]`);
+  if (!chip) {
+    chip = document.createElement('span');
+    chip.dataset.delivery = record.agent;
+    holder.appendChild(chip);
+  }
+  chip.className = `chip ${DELIVERY_CLASS[record.state] || ''}`;
+  chip.title = record.note || '';
+  chip.textContent = `@${record.agent} ${DELIVERY_LABEL[record.state] || record.state}${
+    record.attempts > 1 && record.state !== 'working' ? ` ×${record.attempts}` : ''
+  }`;
 }
 
 /** SSE 收到唤醒结果时，把徽标补到对应留言上。 */
@@ -320,6 +368,13 @@ function renderRoster() {
           ${pending ? `<span class="pending" title="被点名但尚无实质回复">待回应 ${pending}</span>` : ''}
           ${queuedBadge}
           ${undeclared}
+          ${
+            agent.openDeliveries
+              ? `<button class="member__interrupt" type="button" data-interrupt="${esc(agent.id)}" title="打断它正在进行的任务（${
+                  agent.openDeliveries
+                } 条投递未完成）">打断</button>`
+              : ''
+          }
         </span>
       </li>`;
     })
@@ -328,9 +383,13 @@ function renderRoster() {
   el.rosterEmpty.hidden = state.agents.length > 0;
   el.onlineCount.textContent = `${state.presence.online}/${state.presence.total}`;
   const latest = state.messages[state.messages.length - 1];
+  const counts = (state.deliverySummary && state.deliverySummary.counts) || {};
+  const pendingDelivery = (counts.queued || 0) + (counts.delivered || 0) + (counts.working || 0);
   el.railMeta.innerHTML = [
     `留言 ${state.stats ? state.stats.total : state.messages.length} 条`,
     latest ? `最新 ${esc(clockOf(latest.ts))}` : '',
+    `投递中 ${pendingDelivery}`,
+    counts.expired ? `超时未回 ${counts.expired}` : '',
     `在线判定 ${state.presence.ttlSeconds}s`,
   ]
     .filter(Boolean)
@@ -418,6 +477,7 @@ function applyState(payload, { animateLast = false } = {}) {
   state.stats = payload.stats || null;
   state.messages = payload.messages || [];
   state.wakeQueue = payload.wakeQueue || {};
+  state.deliverySummary = payload.deliverySummary || {};
   state.avatars = payload.avatars || {};
   state.localId = (payload.board && payload.board.localAgentId) || 'local';
   state.seenSeq = state.messages.reduce((max, msg) => Math.max(max, msg.seq), 0);
@@ -488,6 +548,13 @@ function subscribe() {
   source.addEventListener('wake', (event) => {
     try {
       applyWakeResult(JSON.parse(event.data));
+    } catch {
+      /* 忽略 */
+    }
+  });
+  source.addEventListener('delivery', (event) => {
+    try {
+      applyDelivery(JSON.parse(event.data));
     } catch {
       /* 忽略 */
     }
@@ -797,6 +864,27 @@ function bind() {
   });
 
   el.composer.addEventListener('submit', sendMessage);
+
+  // 打断：向成员发出控制指令，由它自己的通道执行 turn/interrupt
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-interrupt]');
+    if (!button) return;
+    const agentId = button.dataset.interrupt;
+    if (!window.confirm(`打断 @${agentId} 正在进行的任务？`)) return;
+    button.disabled = true;
+    api('/api/interrupt', {
+      method: 'POST',
+      body: JSON.stringify({ agent: agentId, reason: '人类在黑板界面上打断' }),
+    })
+      .then((result) => {
+        toast(`已向 @${agentId} 发出打断指令（inbox 队列 ${result.queueDepth}）`);
+        refresh();
+      })
+      .catch((error) => toast(`打断失败：${error.message}`))
+      .finally(() => {
+        button.disabled = false;
+      });
+  });
 
   // 输入 @ 时浮出成员列表
   el.composerText.addEventListener('input', openMentions);

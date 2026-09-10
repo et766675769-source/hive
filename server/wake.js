@@ -116,6 +116,27 @@ export class WakeHub {
     set.clear();
   }
 
+  /** 把一条点名重新放进队列（租约到期回收时用）。 */
+  requeue(agentId, envelope) {
+    this.#enqueue(agentId, envelope);
+    return (this.queues.get(agentId) || []).length;
+  }
+
+  /** 投递一个控制指令（例如「打断」）：走同一条 inbox 通道，成员取到后自行执行。 */
+  pushControl(agentId, control) {
+    this.#enqueue(agentId, {
+      schema: SCHEMA,
+      type: 'control',
+      agent: agentId,
+      action: control.action,
+      reason: control.reason || '',
+      issuedBy: control.issuedBy || 'local',
+      at: localIso(),
+      board: this.baseUrl,
+    });
+    return (this.queues.get(agentId) || []).length;
+  }
+
   /** 投递一次唤醒，返回 { channel, ok, error }。 */
   async deliver(agent, envelope) {
     const result = { agent: agent.id, messageId: envelope.messageId, seq: envelope.seq, at: localIso() };
