@@ -97,6 +97,50 @@ const RUNTIME_DIR = flag('runtime', path.join(process.cwd(), 'data', 'runner', A
 const THREADS_FILE = () => path.join(RUNTIME_DIR, 'threads.json');
 const PROXY = detectProxy();
 
+/**
+ * 找出 codex.exe 本体，直接 spawn 它——绕开 cmd.exe。
+ * npm 装的 codex 是个 .cmd 垫片，以往只能经 cmd.exe 调用，于是踩了两个坑：
+ *   ① shell 包裹导致引号拼接出错；② 自启动环境里 ComSpec 为空时 spawn cmd.exe 直接 ENOENT。
+ * 直接调 exe 两个问题一起消失，还少一层进程。
+ */
+function resolveCodexBinary() {
+  const explicit = flag('codex-bin') || process.env.MB_CODEX_BIN || process.env.CODEX_CLI_PATH;
+  const candidates = [];
+  if (explicit) candidates.push(explicit);
+  candidates.push(
+    path.join(
+      process.env.APPDATA || '',
+      'npm',
+      'node_modules',
+      '@openai',
+      'codex',
+      'node_modules',
+      '@openai',
+      'codex-win32-x64',
+      'vendor',
+      'x86_64-pc-windows-msvc',
+      'bin',
+      'codex.exe',
+    ),
+  );
+  try {
+    const base = path.join(process.env.LOCALAPPDATA || '', 'OpenAI', 'Codex', 'bin');
+    for (const dir of fs.readdirSync(base)) candidates.push(path.join(base, dir, 'codex.exe'));
+  } catch {
+    /* 桌面 App 未安装 */
+  }
+  for (const candidate of candidates) {
+    try {
+      if (candidate && fs.existsSync(candidate)) return candidate;
+    } catch {
+      /* 继续找下一个 */
+    }
+  }
+  return '';
+}
+
+const CODEX_BIN = resolveCodexBinary();
+
 const log = (...parts) => {
   if (!QUIET) console.log(`[codex-channel ${new Date().toLocaleTimeString()}]`, ...parts);
 };
@@ -183,9 +227,23 @@ class CodexChannel {
   async start() {
     const serverArgs = ['app-server', '--listen', 'stdio://'];
     if (!USE_WS) serverArgs.push('-c', 'features.responses_websockets=false');
-    // 审批永不询问（无人值守时等待批准 = 永远不回），沙箱按配置（默认只读）
-    serverArgs.push('-c', `sandbox_mode="${SANDBOX_MODE}"`, '-c', 'approval_policy="never"');
+    // 注意：不要在这里嵌双引号。这个命令串最终经 shell:true 交给 cmd.exe，
+    // Node 会把整串再包一层引号，内层引号会让 cmd 解析崩溃（曾导致 spawn cmd.exe ENOENT）。
+    // Codex 对不符合 TOML 的值按字面量处理，所以 sandbox_mode=read-only 这样写是合法的。
+    serverArgs.push('-c', `sandbox_mode=${SANDBOX_MODE}`, '-c', 'approval_policy=never');
     const env = { ...process.env };
+    // Windows 上环境块缺关键变量（尤其是 SystemRoot）会让 CreateProcess 直接报 ENOENT，
+    // 看起来像"文件不存在"，其实只是环境不完整。这里补齐必需项。
+    const essentials = {
+      SystemRoot: process.env.SystemRoot || 'C:\\Windows',
+      windir: process.env.windir || process.env.SystemRoot || 'C:\\Windows',
+      ComSpec: process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe',
+      PATHEXT: process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD',
+    };
+    for (const [key, value] of Object.entries(essentials)) {
+      if (!env[key]) env[key] = value;
+    }
+    if (!env.PATH) env.PATH = `${essentials.SystemRoot}\\System32;${essentials.SystemRoot}`;
     if (PROXY) {
       env.HTTPS_PROXY = env.HTTPS_PROXY || PROXY;
       env.HTTP_PROXY = env.HTTP_PROXY || PROXY;
@@ -193,13 +251,54 @@ class CodexChannel {
       // 本机黑板/回环流量不要走代理
       env.NO_PROXY = env.NO_PROXY || '127.0.0.1,localhost,::1';
     }
-    this.child = spawn('codex', serverArgs, {
+    // 先带自定义 env 试一次；若 spawn 失败（Windows 上环境不完整会报 ENOENT），
+    // 再用原样环境重试一次——宁可少注入代理，也要先把通道接上。
+    const attempts = [
+      { label: '注入 env', env },
+      { label: '原样 env', env: process.env },
+    ];
+    let lastError = null;
+    for (const attempt of attempts) {
+      try {
+        await this.#spawnAndHandshake(serverArgs, attempt.env);
+        log(`已连接 Codex app-server（JSON-RPC over stdio${USE_WS ? '' : '，已关闭 responses websocket'}；${attempt.label}）`);
+        log(PROXY && attempt.env === env ? `Codex 走代理：${PROXY}（NO_PROXY=${env.NO_PROXY}）` : 'Codex 未走代理注入');
+        return;
+      } catch (error) {
+        lastError = error;
+        log(`启动失败（${attempt.label}）：${error.message}`);
+        try {
+          this.child?.kill();
+        } catch {
+          /* 忽略 */
+        }
+      }
+    }
+    throw lastError || new Error('无法启动 Codex app-server');
+  }
+
+  /** 起一个 app-server 并完成握手；spawn 失败/握手超时都会 reject。 */
+  async #spawnAndHandshake(serverArgs, childEnv) {
+    const command = ['codex', ...serverArgs].join(' ');
+    const comspec = childEnv.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
+    const spawnOptions = {
       cwd: this.cwd,
-      env,
+      env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: true,
       windowsHide: true,
-    });
+    };
+
+    // 优先直接 spawn codex.exe（不经过 shell）；找不到 exe 才回退到 cmd.exe 调 .cmd 垫片。
+    if (CODEX_BIN) {
+      this.child = spawn(CODEX_BIN, serverArgs, spawnOptions);
+      log(`启动 app-server：${CODEX_BIN}`);
+    } else if (process.platform === 'win32') {
+      this.child = spawn(comspec, ['/d', '/s', '/c', command], spawnOptions);
+      log(`启动 app-server（经 cmd.exe 回退）：${command}`);
+    } else {
+      this.child = spawn('/bin/sh', ['-c', command], spawnOptions);
+      log(`启动 app-server：${command}`);
+    }
 
     this.child.stdout.on('data', (chunk) => this.#ingest(chunk.toString('utf8')));
     this.child.stderr.on('data', (chunk) => {
@@ -214,13 +313,24 @@ class CodexChannel {
       this.#emit({ method: 'transport/exit', params: { code } });
     });
 
-    await this.request('initialize', {
-      clientInfo: { name: 'message-board', title: 'Message Board', version: '0.1.0' },
+    // 关键：spawn 失败必须被接住。未处理的 'error' 事件会直接崩掉整个通道进程
+    // （这正是自启动场景下通道静默消失的原因）。
+    const spawnFailed = new Promise((_, reject) => {
+      this.child.once('error', (error) => reject(new Error(`spawn 失败：${error.code || ''} ${error.message}`)));
     });
-    this.#write({ method: 'initialized' });
-    this.ready = true;
-    log(`已连接 Codex app-server（JSON-RPC over stdio${USE_WS ? '' : '，已关闭 responses websocket'}）`);
-    log(PROXY ? `Codex 走代理：${PROXY}（NO_PROXY=${env.NO_PROXY}）` : 'Codex 未配置代理（直连）');
+
+    await Promise.race([
+      (async () => {
+        await this.request(
+          'initialize',
+          { clientInfo: { name: 'message-board', title: 'Message Board', version: '0.1.0' } },
+          { timeoutMs: 25000 },
+        );
+        this.#write({ method: 'initialized' });
+        this.ready = true;
+      })(),
+      spawnFailed,
+    ]);
   }
 
   #write(message) {
