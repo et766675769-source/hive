@@ -193,15 +193,42 @@ export function createBoardServer(overrides = {}) {
     return map;
   }
 
+  /**
+   * 接入验收：不问自述，只看服务端能观测到的三件事——
+   *   ① 心跳（在 TTL 内）  ② 唤醒通道（长轮询在挂/最近挂过、回调成功、或配了本机命令）  ③ 点名闭环（被 @ 后回过实质内容）
+   */
+  function acceptanceFor(agent, presenceItem, replies) {
+    const channel = wake.channelState(agent);
+    const heartbeat = Boolean(presenceItem && presenceItem.lastSeen) &&
+      presenceItem.state !== 'stale' && presenceItem.state !== 'offline';
+    const channelOk = Boolean(
+      channel.inbox.waiting || channel.inbox.recent || (channel.callback && channel.callback.ok) || channel.command,
+    );
+    const loop = Boolean(replies && replies.count > 0);
+    const checks = { heartbeat, channel: channelOk, loop };
+    const passed = Object.values(checks).filter(Boolean).length;
+    return {
+      checks,
+      passed,
+      total: 3,
+      status: passed === 3 ? 'verified' : passed === 0 ? 'unverified' : 'partial',
+      channel,
+      replies: replies || { count: 0, lastAt: null, lastSeq: 0 },
+    };
+  }
+
   function memberCards() {
     const pending = store.pendingReplies();
     const pendingByAgent = {};
     for (const item of pending) pendingByAgent[item.agent] = (pendingByAgent[item.agent] || 0) + 1;
+    const mentionReplies = store.mentionReplies();
     const presenceMap = new Map(presence.snapshot().map((item) => [item.id, item]));
     return {
-      members: registry
-        .visible()
-        .map((agent) => ({ ...agentCard(agent, presenceMap), pending: pendingByAgent[agent.id] || 0 })),
+      members: registry.visible().map((agent) => ({
+        ...agentCard(agent, presenceMap),
+        pending: pendingByAgent[agent.id] || 0,
+        acceptance: acceptanceFor(agent, presenceMap.get(agent.id), mentionReplies[agent.id]),
+      })),
       pending,
     };
   }
@@ -253,6 +280,10 @@ export function createBoardServer(overrides = {}) {
       },
       agents: members,
       avatars: avatarMap(),
+      acceptance: {
+        verified: members.filter((item) => item.acceptance && item.acceptance.status === 'verified').length,
+        total: members.length,
+      },
       presence: presence.summary(),
       messages,
       topics: store.topics(),

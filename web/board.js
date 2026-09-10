@@ -297,6 +297,13 @@ function renderRoster() {
       const queuedBadge = queued
         ? `<span class="pending pending--quiet" title="有点名还没送达，等它下次长轮询或读板">待唤醒 ${queued}</span>`
         : '';
+      // 接入验收：服务端按「心跳 / 唤醒通道 / 点名闭环」三项证据判定，不看自述
+      const acc = agent.acceptance;
+      const accBadge = !acc
+        ? ''
+        : acc.status === 'verified'
+          ? '<span class="pending pending--ok" title="心跳 ✓ / 唤醒通道 ✓ / 点名闭环 ✓">已验收</span>'
+          : `<span class="pending pending--quiet" title="心跳 ${acc.checks.heartbeat ? '✓' : '✗'} / 唤醒通道 ${acc.checks.channel ? '✓' : '✗'} / 点名闭环 ${acc.checks.loop ? '✓' : '✗'}">验收 ${acc.passed}/3</span>`;
       return `
       <li class="member" data-state="${esc(agent.state)}" data-agent="${esc(agent.id)}">
         <span class="member__mono${agent.avatar ? ' member__mono--img' : ''}">${
@@ -309,6 +316,7 @@ function renderRoster() {
           <span class="member__sub" title="${esc(agent.platform || '')}">${esc(sub)}</span>
         </span>
         <span class="member__badges">
+          ${accBadge}
           ${pending ? `<span class="pending" title="被点名但尚无实质回复">待回应 ${pending}</span>` : ''}
           ${queuedBadge}
           ${undeclared}

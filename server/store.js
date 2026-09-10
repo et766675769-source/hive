@@ -213,6 +213,26 @@ export class Store {
     return pending;
   }
 
+  /**
+   * 点名闭环统计：谁真的"被 @ 之后回过实质内容"。
+   * 只认「留言带 replyTo → 指向一条点名了自己的留言 → 且不是 notice/空话」。
+   */
+  mentionReplies() {
+    const byId = new Map(this.messages.map((msg) => [msg.id, msg]));
+    const out = {};
+    for (const msg of this.messages) {
+      if (msg.kind === 'notice' || msg.flags.includes('ACK_ONLY')) continue;
+      const target = msg.replyTo ? byId.get(msg.replyTo) : null;
+      if (!target || !Array.isArray(target.mentions) || !target.mentions.includes(msg.agent)) continue;
+      const entry = out[msg.agent] || { count: 0, lastAt: null, lastSeq: 0 };
+      entry.count += 1;
+      entry.lastAt = msg.ts;
+      entry.lastSeq = msg.seq;
+      out[msg.agent] = entry;
+    }
+    return out;
+  }
+
   stats() {
     const byAgent = {};
     for (const msg of this.messages) byAgent[msg.agent] = (byAgent[msg.agent] || 0) + 1;

@@ -471,6 +471,58 @@ test('唤醒：未登记成员不能长轮询', async () => {
   });
 });
 
+/* ── 接入验收 ───────────────────────────────────────────── */
+
+test('接入验收：心跳 / 唤醒通道 / 点名闭环 三项逐项点亮', async () => {
+  await withBoard(async ({ base, join, post, state }) => {
+    // 只登记 → 只有心跳这一项
+    await join({ agent: 'codex', name: 'Codex', title: '项目主 Agent' });
+    let payload = await state();
+    let acc = payload.agents.find((a) => a.id === 'codex').acceptance;
+    assert.equal(acc.checks.heartbeat, true, '登记即心跳');
+    assert.equal(acc.checks.channel, false, '还没挂过长轮询');
+    assert.equal(acc.checks.loop, false, '还没回过点名');
+    assert.equal(acc.passed, 1);
+    assert.equal(acc.status, 'partial');
+
+    // 挂一次带等待的长轮询 → 唤醒通道点亮
+    await fetch(`${base}/api/inbox?agent=codex&wait=1`);
+    payload = await state();
+    acc = payload.agents.find((a) => a.id === 'codex').acceptance;
+    assert.equal(acc.checks.channel, true);
+    assert.equal(acc.checks.loop, false);
+    assert.equal(acc.passed, 2);
+
+    // 被 @ 之后回一条带 replyTo 的实质内容 → 闭环点亮
+    await join({ agent: 'deepseek', name: 'DeepSeek' });
+    const asked = await (await post('/api/message', { agent: 'deepseek', text: '@codex 请确认。' })).json();
+    await post('/api/message', { agent: 'codex', kind: 'reply', text: '结论：已确认。', replyTo: asked.message.id });
+
+    payload = await state();
+    acc = payload.agents.find((a) => a.id === 'codex').acceptance;
+    assert.equal(acc.checks.loop, true);
+    assert.equal(acc.status, 'verified');
+    assert.equal(acc.replies.count, 1);
+    assert.equal(payload.acceptance.verified, 1);
+    assert.equal(payload.acceptance.total, 2, 'deepseek 只登记过，未通过验收');
+  });
+});
+
+test('接入验收：处理中通知（notice）不算点名闭环', async () => {
+  await withBoard(async ({ base, join, post, state }) => {
+    await join({ agent: 'codex', name: 'Codex' });
+    await fetch(`${base}/api/inbox?agent=codex&wait=1`);
+    await join({ agent: 'deepseek', name: 'DeepSeek' });
+    const asked = await (await post('/api/message', { agent: 'deepseek', text: '@codex 请处理。' })).json();
+    await post('/api/message', { agent: 'codex', kind: 'notice', text: '正在处理…', replyTo: asked.message.id });
+
+    const payload = await state();
+    const acc = payload.agents.find((a) => a.id === 'codex').acceptance;
+    assert.equal(acc.checks.loop, false, '只回"处理中"不算闭环');
+    assert.equal(payload.acceptance.verified, 0);
+  });
+});
+
 /* ── 静态资源与存储 ─────────────────────────────────────── */
 
 test('黑板页面与静态资源可访问，越权路径被挡', async () => {

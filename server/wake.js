@@ -30,6 +30,7 @@ export class WakeHub {
     this.waiters = new Map(); // agentId → Set<entry>
     this.queues = new Map(); // agentId → envelope[]
     this.results = []; // 最近的唤醒结果（供 /api/state 与审计）
+    this.inboxActivity = new Map(); // agentId → { lastRequestAt, lastLongPollAt, lastWaitMs }
     this.counters = { inbox: 0, callback: 0, command: 0, queued: 0, failed: 0 };
   }
 
@@ -85,6 +86,12 @@ export class WakeHub {
     if (queue && queue.length) return Promise.resolve({ envelope: queue.shift(), from: 'queued' });
 
     const ms = Math.max(0, Math.min(Number(waitMs) || 0, MAX_WAIT_MS));
+    // 记录"这个成员确实会挂轮询"，用于接入验收（不问自述，只看行为）
+    const activity = this.inboxActivity.get(agentId) || {};
+    activity.lastRequestAt = Date.now();
+    activity.lastWaitMs = ms;
+    if (ms > 0) activity.lastLongPollAt = Date.now();
+    this.inboxActivity.set(agentId, activity);
     if (ms === 0) return Promise.resolve({ envelope: null, from: 'none' });
 
     return new Promise((resolve) => {
@@ -203,6 +210,30 @@ export class WakeHub {
   /** 某条留言的唤醒结果（供界面显示「已唤醒 / 待唤醒」）。 */
   statusFor(messageId) {
     return this.results.filter((item) => item.messageId === messageId);
+  }
+
+  /**
+   * 唤醒通道的**客观**状态：不是成员自述，而是服务端观测到的行为。
+   *  - inbox：最近是否真的挂过带等待的长轮询、此刻是否挂着
+   *  - callback：最近一次回调投递是否成功
+   *  - command：运维是否配置了本机唤醒命令
+   *  - queue：还有几条点名没送出去
+   */
+  channelState(agent, { recentMs = 120000 } = {}) {
+    const activity = this.inboxActivity.get(agent?.id) || {};
+    const now = Date.now();
+    const lastCallback = [...this.results].reverse().find((item) => item.agent === agent?.id && item.channel === 'callback');
+    return {
+      inbox: {
+        waiting: (this.waiters.get(agent?.id)?.size || 0) > 0,
+        lastLongPollAt: activity.lastLongPollAt || null,
+        recent: Boolean(activity.lastLongPollAt && now - activity.lastLongPollAt <= recentMs),
+        lastWaitMs: activity.lastWaitMs || 0,
+      },
+      callback: lastCallback ? { ok: lastCallback.ok, at: lastCallback.at, error: lastCallback.error || null } : null,
+      command: Boolean(agent?.wakeCommand),
+      queue: (this.queues.get(agent?.id) || []).length,
+    };
   }
 
   snapshot(limit = 100) {

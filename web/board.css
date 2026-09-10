@@ -301,6 +301,12 @@ code {
   background: var(--surface-2);
 }
 
+/* 接入验收通过：三项证据齐全 */
+.pending--ok {
+  color: var(--online);
+  background: color-mix(in srgb, var(--online) 13%, transparent);
+}
+
 .roster__empty {
   margin: 4px 0 0;
   padding: 16px 14px;
