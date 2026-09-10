@@ -74,17 +74,27 @@ if (-not (Test-Board)) {
   exit 1
 }
 
-# 2) members - ask the board who already has a working wake channel
+# 2) members - ask the board who is *actually* listening right now.
+#    Do not trust "state -ne offline": a killed process keeps a fresh heartbeat for up to the TTL,
+#    and the channel check accepts "recently attached" for 120s, which would skip a needed start.
+#    The only reliable signal is: is a long-poll attached at this very moment.
 $state = Get-State
 $alreadyOnline = @()
 if ($state) {
   foreach ($agent in $state.agents) {
-    if ($agent.acceptance -and $agent.acceptance.checks -and $agent.acceptance.checks.channel -and $agent.state -ne 'offline') {
-      $alreadyOnline += $agent.id
+    if (-not $agent.acceptance) { continue }
+    $waiting = $false
+    if ($agent.acceptance.channel -and $agent.acceptance.channel.inbox) {
+      $waiting = [bool]$agent.acceptance.channel.inbox.waiting
     }
+    $callbackOk = $false
+    if ($agent.acceptance.channel -and $agent.acceptance.channel.callback) {
+      $callbackOk = [bool]$agent.acceptance.channel.callback.ok
+    }
+    if ($waiting -or $callbackOk) { $alreadyOnline += $agent.id }
   }
 }
-Write-Log ("autostart: members with a live channel: " + (($alreadyOnline | Sort-Object) -join ', '))
+Write-Log ("autostart: members listening now: " + (($alreadyOnline | Sort-Object) -join ', '))
 
 if ($alreadyOnline -notcontains 'codex') {
   Write-Log "autostart: starting codex channel"
@@ -95,23 +105,36 @@ if ($alreadyOnline -notcontains 'codex') {
   Write-Log "autostart: codex channel already live"
 }
 
-# 备用拉起：有些环境里 Start-Process 出来的孙进程无法再创建子进程（表现为 codex.exe ENOENT），
-# 这时改用 cmd start 换一条启动路径再试一次。
+# Fallback start: in some environments a grandchild process started via Start-Process
+# cannot create further child processes (it surfaces as codex.exe ENOENT).
+# In that case retry through "cmd start", which uses a different launch path.
 if ($alreadyOnline -notcontains 'codex') {
   for ($i = 0; $i -lt 20; $i++) {
     Start-Sleep -Seconds 1
     $probe = Get-State
-    if ($probe -and ($probe.agents | Where-Object { $_.id -eq 'codex' -and $_.state -ne 'offline' })) { break }
+    $codexWaiting = $false
+    if ($probe) {
+      $entry = $probe.agents | Where-Object { $_.id -eq 'codex' }
+      if ($entry -and $entry.acceptance -and $entry.acceptance.channel -and $entry.acceptance.channel.inbox) {
+        $codexWaiting = [bool]$entry.acceptance.channel.inbox.waiting
+      }
+    }
+    if ($codexWaiting) { break }
   }
   $probe = Get-State
   $codexUp = $false
-  if ($probe) { $codexUp = [bool]($probe.agents | Where-Object { $_.id -eq 'codex' -and $_.state -ne 'offline' }) }
+  if ($probe) {
+    $entry = $probe.agents | Where-Object { $_.id -eq 'codex' }
+    if ($entry -and $entry.acceptance -and $entry.acceptance.channel -and $entry.acceptance.channel.inbox) {
+      $codexUp = [bool]$entry.acceptance.channel.inbox.waiting
+    }
+  }
   if (-not $codexUp) {
-    Write-Log "autostart: codex channel not up yet - retrying via cmd start"
-    $node = (Get-Command node).Source
-    $cmdline = '"' + $node + '" bridges\codex-channel.js --agent codex --workdir "' + $root + '"'
-    # 注意：Start-Process 的 -ArgumentList 不接受空字符串元素，start 的窗口标题参数必须给非空值
-    Start-Process -FilePath 'cmd.exe' -WorkingDirectory $root -WindowStyle Hidden -ArgumentList @('/c', 'start', '/b', 'MessageBoardChannel', $cmdline) | Out-Null
+    # Deliberately no second launch attempt here. In this environment a grandchild process
+    # started from this script cannot create further child processes (codex.exe spawn -> ENOENT),
+    # and a "cmd start" retry produced a visible Windows error dialog. Log the exact manual step instead.
+    Write-Log "autostart: codex channel did NOT get up (see data\logs\codex-channel.log)"
+    Write-Log "autostart: fix manually by double-clicking desktop\start-channel.cmd"
   }
 }
 
