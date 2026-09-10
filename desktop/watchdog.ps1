@@ -24,8 +24,21 @@ $logDir = Join-Path $root 'data\logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $log = Join-Path $logDir 'watchdog.log'
 
-function Write-Log([string]$message) {
+# -ConsoleOnly: print progress to the screen but do not grow the log file
+# (the per-cycle status line would otherwise write a line every interval, forever).
+function Write-Log([string]$message, [switch]$ConsoleOnly) {
   $line = "{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $message
+  Write-Host $line
+  if ($ConsoleOnly) { return }
+
+  # Cheap rotation so a long-running watchdog cannot grow one file without bound.
+  try {
+    if ((Test-Path $log) -and ((Get-Item $log).Length -gt 1MB)) {
+      Move-Item -LiteralPath $log -Destination "$log.1" -Force
+    }
+  } catch {
+    # rotation is best effort
+  }
   Add-Content -LiteralPath $log -Value $line -Encoding UTF8
 }
 
@@ -70,11 +83,14 @@ function Test-Listening($state, [string]$id) {
 }
 
 Write-Log "watchdog: start (port=$Port interval=${IntervalSeconds}s root=$root)"
+Write-Log "watchdog: press Ctrl+C to stop. Each line below is one check." -ConsoleOnly
 
 # Do not hammer the board while it is still coming up.
 Start-Sleep -Seconds 5
 
+$round = 0
 while ($true) {
+  $round += 1
   try {
     $state = Get-State
     if (-not $state) {
@@ -86,6 +102,15 @@ while ($true) {
 
     if ($state) {
       $online = ($state.agents | ForEach-Object { "$($_.id)=$($_.state)" }) -join ' '
+      $listening = ($state.agents | ForEach-Object {
+          $w = $false
+          if ($_.acceptance -and $_.acceptance.channel -and $_.acceptance.channel.inbox) {
+            $w = [bool]$_.acceptance.channel.inbox.waiting
+          }
+          "$($_.id)=" + $(if ($w) { 'listening' } else { 'silent' })
+        }) -join '  '
+      Write-Log "check #$round - $listening  (states: $online)" -ConsoleOnly
+
       if (-not (Test-Listening $state 'codex')) {
         Write-Log "watchdog: codex is not listening (state: $online) - starting channel"
         Start-CodexChannel
