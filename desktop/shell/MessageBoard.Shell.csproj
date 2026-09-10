@@ -11,6 +11,8 @@
     <Product>Message Board</Product>
     <Description>Message Board · 留言板 桌面外壳（WPF + WebView2）</Description>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- 项目 logo（与站点 favicon 同一份矢量母版）：exe 图标 / 任务栏 / 窗口图标 -->
+    <ApplicationIcon>..\..\web\assets\message-board-logo.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

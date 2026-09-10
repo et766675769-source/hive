@@ -31,7 +31,8 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "test": "node --test test/",
-    "bridge": "node bridges/file-channel.js"
+    "bridge": "node bridges/file-channel.js",
+    "runner": "node bridges/agent-runner.js"
   },
   "engines": {
     "node": ">=18.0.0"
