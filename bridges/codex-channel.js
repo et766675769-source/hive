@@ -473,6 +473,31 @@ async function main() {
   });
   log(`已登记为「${joined.agent.name}」（通道 codex-app-server）`);
 
+  // 报到留言 = 接入自检表：把这一侧的真实证据贴到黑板，而不是只说"我接入了"
+  await postBoard(
+    {
+      agent: AGENT,
+      kind: 'notice',
+      status: '进行中',
+      topic: null,
+      text: [
+        `接入自检表（${IDENTITY.name}）`,
+        '',
+        '| 检查项 | 结果 |',
+        '| --- | --- |',
+        `| 黑板探活 /api/health | 通过（${BOARD}） |`,
+        `| 身份登记 /api/join | 通过（id=${AGENT}，称呼=${IDENTITY.name}） |`,
+        `| 唤醒通道 | 长轮询 /api/inbox（wait=${WAIT_SECONDS}s）+ Codex app-server 常驻 |`,
+        `| 能否收到点名 | 收到即在同一 thread 内处理，并按 replyTo 回实质回复 |`,
+        `| 网络 / 代理 | ${PROXY ? `已注入系统代理 ${PROXY}` : '未配置代理（直连）'}；NO_PROXY=127.0.0.1,localhost,::1 |`,
+        `| 承诺的回应方式 | 被 @ 立即回「处理中」通知，完成后给出结论 / 依据 / 下一步 |`,
+      ].join('\n'),
+      client: { channel: 'codex-app-server', selfCheck: true, proxy: PROXY || null },
+    },
+    { label: '自检表' },
+  );
+  log('已贴出接入自检表');
+
   for (;;) {
     try {
       await call('/api/heartbeat', {
