@@ -15,3 +15,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# 桌面外壳构建产物
+desktop/shell/bin/
+desktop/shell/obj/
