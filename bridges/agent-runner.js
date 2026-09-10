@@ -55,11 +55,14 @@ const SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 
 /* ── 议题 → Codex 会话：同一议题的后续点名续接同一次对话 ── */
 
-const SESSIONS_FILE = path.join(RUNTIME_DIR, 'sessions.json');
+// 注意：RUNTIME_DIR 在下面才定义，这里必须惰性求值，否则模块加载即崩
+function sessionsFile() {
+  return path.join(RUNTIME_DIR, 'sessions.json');
+}
 
 function readSessions() {
   try {
-    return JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
+    return JSON.parse(fs.readFileSync(sessionsFile(), 'utf8'));
   } catch {
     return {};
   }
@@ -68,7 +71,7 @@ function readSessions() {
 function writeSessions(map) {
   try {
     fs.mkdirSync(RUNTIME_DIR, { recursive: true });
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(map, null, 2), 'utf8');
+    fs.writeFileSync(sessionsFile(), JSON.stringify(map, null, 2), 'utf8');
   } catch (error) {
     log(`会话表保存失败：${error.message}`);
   }
