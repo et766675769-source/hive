@@ -22,6 +22,7 @@ import { loadConfig } from './config.js';
 import { Store } from './store.js';
 import { Presence } from './presence.js';
 import { Registry } from './registry.js';
+import { WakeHub } from './wake.js';
 import { agentCard, draftAgent, joinPrompt } from './agents.js';
 import { SCHEMA, STATUSES, KINDS, validateMessage, localDisplay, localIso } from './protocol.js';
 
@@ -78,6 +79,7 @@ const HELP = `Message Board · 留言板
   GET  /api/state?limit=50             留言 + 在线状态 + 议题 + 待回应
   GET  /api/prompt?agent=<id>           取接入提示词（纯文本，可用于任意 AI）
   POST /api/join                       自述身份并登记（接入即登记）
+  GET  /api/inbox?agent=<id>&wait=25    长轮询：被 @ 的瞬间立刻返回点名信封
   GET  /api/stream                     实时事件流（SSE）
   GET  /api/export?format=md|jsonl     导出黑板
   POST /api/message                    追加留言
@@ -129,6 +131,13 @@ export function createBoardServer(overrides = {}) {
 
   store.onMessage((message) => broadcast('message', message));
 
+  // 点名唤醒：@ 发出的瞬间就尝试把点名送到被点名成员
+  const wake = new WakeHub({
+    root: config.root,
+    baseUrl: `http://${config.board.host}:${config.board.port}`,
+    onEvent: (result) => broadcast('wake', result),
+  });
+
   let presenceSignature = '';
   presence.onChange((snapshot) => {
     const visible = snapshot.filter((item) => !item.hidden);
@@ -153,13 +162,32 @@ export function createBoardServer(overrides = {}) {
 
   function statePayload(query) {
     const limit = query.get('limit') ?? 200;
-    const messages = store.list({
+    const rawMessages = store.list({
       limit,
       since: query.get('since') ?? 0,
       topic: query.get('topic') || null,
       agent: query.get('agent') || null,
       status: query.get('status') || null,
     });
+
+    // 唤醒结果按 messageId 投影到留言上（只读投影，不回写留言本身）
+    const wakeResults = wake.snapshot(300).results;
+    const wakesByMessage = new Map();
+    for (const result of wakeResults) {
+      if (!wakesByMessage.has(result.messageId)) wakesByMessage.set(result.messageId, []);
+      wakesByMessage.get(result.messageId).push({
+        agent: result.agent,
+        channel: result.channel,
+        ok: result.ok,
+        error: result.error || null,
+        at: result.at,
+      });
+    }
+    const messages = rawMessages.map((message) => ({
+      ...message,
+      wake: wakesByMessage.get(message.id) || [],
+    }));
+
     const { members, pending } = memberCards();
     return {
       ok: true,
@@ -181,6 +209,7 @@ export function createBoardServer(overrides = {}) {
       messages,
       topics: store.topics(),
       pending,
+      wakeQueue: wake.queueDepth(),
       stats: store.stats(),
       enums: { statuses: STATUSES, kinds: KINDS },
     };
@@ -365,6 +394,9 @@ export function createBoardServer(overrides = {}) {
           skills: payload.skills,
           constraints: payload.constraints,
           channel: payload.channel,
+          // 唤醒方式：成员可以声明自己的回调地址；本机唤醒命令只能由运维在配置里写
+          callback: payload.callback,
+          wake: payload.wake,
           joinedAt: new Date().toISOString(),
         });
         const record = presence.beat(id, { state: payload.state || 'online', note: payload.note || '刚刚接入', session: payload.session });
@@ -373,6 +405,10 @@ export function createBoardServer(overrides = {}) {
           agent: agentCard(agent, new Map([[id, { ...record, state: 'online', ageSeconds: 0 }]])),
           message: `已登记为「${agent.name}」（id: ${agent.id}），侧栏已出现你。`,
           heartbeatTtlSeconds: presence.ttlSeconds,
+          wake: agent.wake,
+          hint: agent.wake
+            ? '被点名时黑板会立刻推送到你的回调地址。'
+            : `被点名时想被立刻唤醒：挂着 GET /api/inbox?agent=${agent.id}&wait=25，或在接入时带上 callback 地址。`,
         });
       }
 
@@ -443,12 +479,52 @@ export function createBoardServer(overrides = {}) {
           client: payload.client && typeof payload.client === 'object' ? payload.client : null,
         });
         presence.beat(agent.id, { state: 'online', note: '正在发言', session: payload.session });
+
+        // 点名即唤醒：立刻把点名送到被点名成员（长轮询 / 回调 / 本机命令 / 入队）
+        const wakes = await Promise.all(
+          check.mentions
+            .map((target) => registry.get(target))
+            .filter(Boolean)
+            .map((target) => wake.deliver(target, wake.envelope(message, target.id))),
+        );
+
         return json(res, 200, {
           ok: true,
           message,
-          warnings: check.flags.includes('ACK_ONLY')
-            ? ['本条只有寒暄、没有实质内容：被 @ 时请给结论、依据与下一步。']
-            : [],
+          wakes,
+          warnings: [
+            ...(check.flags.includes('ACK_ONLY')
+              ? ['本条只有寒暄、没有实质内容：被 @ 时请给结论、依据与下一步。']
+              : []),
+            ...wakes
+              .filter((item) => item.channel === 'queued')
+              .map((item) => `@${item.agent} 当前没有监听通道，点名已入队，等它下次读板。`),
+          ],
+        });
+      }
+
+      // ---- 点名唤醒的长轮询入口 ----
+      if (pathname === '/api/inbox' && req.method === 'GET') {
+        const agentId = String(url.searchParams.get('agent') || '').trim().toLowerCase();
+        if (!agentId) return json(res, 400, { ok: false, code: 'MISSING_AGENT', error: '缺少 agent 字段。' });
+        const agent = registry.get(agentId);
+        if (!agent) {
+          return json(res, 404, {
+            ok: false,
+            code: 'UNKNOWN_AGENT',
+            error: `名册中没有成员 ${agentId}；请先调用 POST /api/join 登记。`,
+          });
+        }
+        const waitSeconds = Math.max(0, Math.min(Number(url.searchParams.get('wait') || 0) || 0, 60));
+        presence.beat(agent.id, { state: 'online', note: '监听点名中' });
+        const started = Date.now();
+        const result = await wake.inbox(agent.id, { waitMs: waitSeconds * 1000 });
+        return json(res, 200, {
+          ok: true,
+          agent: agent.id,
+          wake: result.envelope,
+          source: result.from,
+          waitedMs: Date.now() - started,
         });
       }
 

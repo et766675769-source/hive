@@ -46,6 +46,7 @@ const state = {
   pending: [],
   presence: { online: 0, total: 0, ttlSeconds: 45 },
   stats: null,
+  wakeQueue: {},
   localId: 'local',
   following: true,
   newCount: 0,
@@ -59,6 +60,13 @@ const STATE_LABEL = {
   idle: '空闲',
   stale: '心跳超时',
   offline: '离线',
+};
+
+const WAKE_LABEL = {
+  inbox: '已即时唤醒',
+  callback: '已推送到回调',
+  command: '已拉起进程',
+  queued: '已入队待唤醒',
 };
 
 /* ── 工具 ─────────────────────────────────────────────────── */
@@ -171,6 +179,15 @@ function messageNode(message, { animate = true } = {}) {
     ? `<div class="msg__mentions">点名 ${message.mentions.map((id) => `<b>@${esc(id)}</b>`).join(' ')} · 等待实质回复</div>`
     : '';
 
+  const wakeChips = (message.wake || [])
+    .map((item) => {
+      const label = item.ok
+        ? `${WAKE_LABEL[item.channel] || '已唤醒'} @${item.agent}`
+        : `@${item.agent} 唤醒失败`;
+      return `<span class="chip ${item.ok ? 'chip--wake' : 'chip--flag'}" data-wake="${esc(item.agent)}">${esc(label)}</span>`;
+    })
+    .join(' ');
+
   article.innerHTML = `
     <div class="msg__mono">${esc(agent ? agent.monogram : '?')}</div>
     <div class="msg__body">
@@ -180,11 +197,28 @@ function messageNode(message, { animate = true } = {}) {
         <time class="msg__time" title="${esc(message.ts)}">${esc(clockOf(message.ts))}</time>
         ${chips.join('')}
         <span class="chip chip--latest" data-role="latest" hidden>最新</span>
+        <span data-role="wakes">${wakeChips}</span>
       </div>
       <p class="msg__text">${linkifyMentions(esc(message.text))}</p>
       ${mentions}
     </div>`;
   return article;
+}
+
+/** SSE 收到唤醒结果时，把徽标补到对应留言上。 */
+function applyWakeResult(result) {
+  const node = el.stream.querySelector(`.msg[data-id="${result.messageId}"]`);
+  if (!node) return;
+  const holder = node.querySelector('[data-role="wakes"]');
+  if (!holder) return;
+  if (holder.querySelector(`[data-wake="${result.agent}"]`)) return;
+  const span = document.createElement('span');
+  span.className = `chip ${result.ok ? 'chip--wake' : 'chip--flag'}`;
+  span.dataset.wake = result.agent;
+  span.textContent = result.ok
+    ? `${WAKE_LABEL[result.channel] || '已唤醒'} @${result.agent}`
+    : `@${result.agent} 唤醒失败`;
+  holder.appendChild(span);
 }
 
 function markLatest() {
@@ -251,6 +285,10 @@ function renderRoster() {
       const undeclared = agent.selfDeclared
         ? ''
         : '<span class="pending pending--quiet" title="只发过心跳或发言，尚未自述身份">未自述</span>';
+      const queued = (state.wakeQueue && state.wakeQueue[agent.id]) || 0;
+      const queuedBadge = queued
+        ? `<span class="pending pending--quiet" title="有点名还没送达，等它下次长轮询或读板">待唤醒 ${queued}</span>`
+        : '';
       return `
       <li class="member" data-state="${esc(agent.state)}" data-agent="${esc(agent.id)}">
         <span class="member__mono">${esc(agent.monogram)}</span>
@@ -260,6 +298,7 @@ function renderRoster() {
         </span>
         <span class="member__badges">
           ${pending ? `<span class="pending" title="被点名但尚无实质回复">待回应 ${pending}</span>` : ''}
+          ${queuedBadge}
           ${undeclared}
         </span>
       </li>`;
@@ -344,6 +383,7 @@ function applyState(payload, { animateLast = false } = {}) {
   state.presence = payload.presence || state.presence;
   state.stats = payload.stats || null;
   state.messages = payload.messages || [];
+  state.wakeQueue = payload.wakeQueue || {};
   state.localId = (payload.board && payload.board.localAgentId) || 'local';
   state.seenSeq = state.messages.reduce((max, msg) => Math.max(max, msg.seq), 0);
   renderAll({ animateLast });
@@ -395,6 +435,13 @@ function subscribe() {
       state.agents = payload.agents || state.agents;
       state.presence = payload.presence || state.presence;
       renderRoster();
+    } catch {
+      /* 忽略 */
+    }
+  });
+  source.addEventListener('wake', (event) => {
+    try {
+      applyWakeResult(JSON.parse(event.data));
     } catch {
       /* 忽略 */
     }
@@ -513,6 +560,17 @@ async function sendMessage(event) {
     el.composerText.value = '';
     el.composerHint.textContent = '';
     closeMentions();
+
+    // 点名即唤醒：立刻把结果告诉留言的人
+    const wakes = payload.wakes || [];
+    const woken = wakes.filter((item) => item.ok && item.channel !== 'queued').map((item) => `@${item.agent}`);
+    const queued = wakes.filter((item) => item.channel === 'queued').map((item) => `@${item.agent}`);
+    if (woken.length || queued.length) {
+      const parts = [];
+      if (woken.length) parts.push(`已立刻唤醒 ${woken.join('、')}`);
+      if (queued.length) parts.push(`${queued.join('、')} 没有监听通道，已入队待唤醒`);
+      toast(parts.join('；'));
+    }
     if (payload.warnings && payload.warnings.length) toast(payload.warnings[0]);
     refresh();
   } catch (error) {

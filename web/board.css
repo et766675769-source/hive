@@ -585,6 +585,11 @@ textarea:focus {
   border-color: color-mix(in srgb, var(--busy) 40%, transparent);
 }
 
+.chip--wake {
+  color: var(--online);
+  border-color: color-mix(in srgb, var(--online) 42%, transparent);
+}
+
 .msg__text {
   margin: 0;
   font-size: 15px;

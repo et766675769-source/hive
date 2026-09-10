@@ -25,6 +25,17 @@ function tidy(value, max) {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+/** 成员的唤醒方式：只认成员自己声明的回调地址，或运维配置的本机命令。 */
+function normalizeWake(wake, callback) {
+  const raw = wake && typeof wake === 'object' ? wake : {};
+  const url = String(raw.url || callback || '').trim();
+  if ((raw.type === 'callback' || url) && /^https?:\/\//i.test(url)) {
+    return { type: 'callback', url: url.slice(0, 300) };
+  }
+  if (raw.type === 'inbox') return { type: 'inbox' };
+  return null;
+}
+
 export class Registry {
   /**
    * @param {{ file: string, presets?: object[], localOperator?: object|null }} options
@@ -53,6 +64,9 @@ export class Registry {
       channel: ['http', 'file', 'desktop'].includes(agent.channel) ? agent.channel : 'http',
       kind: agent.kind === 'operator' ? 'operator' : 'ai',
       hidden: Boolean(agent.hidden),
+      wake: normalizeWake(agent.wake, agent.callback),
+      // 本机唤醒命令只能由运维写在 board.config.json 里，绝不接受接入方自报
+      wakeCommand: source === 'preset' ? tidy(agent.wakeCommand, 300) : '',
       joinedAt: agent.joinedAt || null,
       selfDeclared: Boolean(agent.selfDeclared),
       source,
@@ -112,12 +126,14 @@ export class Registry {
   }
 
   /** 接入即登记：写入或更新成员身份。 */
-  upsert(identity, { selfDeclared = true } = {}) {
-    const id = Registry.normalizeId(identity.id || identity.agent);
+  upsert(identityIn, { selfDeclared = true } = {}) {
+    const id = Registry.normalizeId(identityIn.id || identityIn.agent);
     if (!AGENT_ID_RE.test(id)) {
       throw Object.assign(new Error('成员 id 只能是小写字母、数字、下划线或短横线（2–32 位）'), { code: 'BAD_AGENT_ID' });
     }
     const existing = this.dynamic.get(id);
+    // 唤醒命令不接受自报：接入方只能声明自己的回调地址
+    const { wakeCommand: _ignored, ...identity } = identityIn;
     const agent = this.#normalize(
       {
         ...(existing || {}),

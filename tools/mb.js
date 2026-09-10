@@ -92,7 +92,9 @@ async function main() {
         '                               自述身份并登记（接入即登记）',
         '  post "<正文>" [--agent id] [--topic T-01] [--status 进行中] [--kind message] [--reply-to <id>]',
         '  beat <agent> [--state online|busy|idle] [--note 备注]',
-        '  watch <agent> [--interval 秒]  常驻心跳，并在被点名时提示',
+        '  watch <agent> [--wait 25] [--once]',
+        '                               心跳 + 长轮询：被 @ 的瞬间立刻打印点名（--once 收到一次就退出）',
+        '  inbox <agent> [--wait 25]    单次长轮询，返回点名信封（JSON）',
         '  prompt <agent>               打印接入提示词',
         '',
         '公共参数：--board <url>（默认 http://127.0.0.1:8787）、--token <口令>',
@@ -166,37 +168,61 @@ async function main() {
     return;
   }
 
+  if (command === 'inbox') {
+    const agent = args[1] || flag('agent');
+    if (!agent) throw new Error('缺少成员 id：node tools/mb.js inbox codex --wait 25');
+    const waitSeconds = Math.max(0, Math.min(Number(flag('wait', 25)), 60));
+    const result = await call(`/api/inbox?agent=${encodeURIComponent(agent)}&wait=${waitSeconds}`);
+    if (!result.wake) {
+      console.log(`等待 ${result.waitedMs}ms，没有点名（source=${result.source}）。`);
+      return;
+    }
+    console.log(JSON.stringify(result.wake, null, 2));
+    return;
+  }
+
   if (command === 'watch') {
     const agent = args[1] || flag('agent');
     if (!agent) throw new Error('缺少成员 id：node tools/mb.js watch codex');
-    const interval = Math.max(5, Number(flag('interval', 15))) * 1000;
-    console.log(`开始为 ${agent} 常驻心跳（每 ${interval / 1000}s），Ctrl+C 退出。`);
-    let lastPending = '';
+    const once = args.includes('--once');
+    const waitSeconds = Math.max(5, Math.min(Number(flag('wait', 25)), 60));
+    const state = flag('state', 'online');
+    const note = flag('note', '监听点名中');
+
+    const report = (wake) => {
+      console.log(`\n[${new Date().toLocaleTimeString()}] 被点名 —— 立刻处理：`);
+      console.log(`  来自     ${wake.fromName || wake.from}（@${wake.from}）`);
+      console.log(`  留言     #${wake.seq} ${wake.messageId}${wake.topic ? ` [${wake.topic}]` : ''}`);
+      console.log(`  正文     ${String(wake.text).replace(/\s+/g, ' ').slice(0, 300)}`);
+      console.log(`  下一步   ${wake.next}`);
+    };
+
     const tick = async () => {
-      try {
-        await call('/api/heartbeat', {
-          method: 'POST',
-          body: JSON.stringify({ agent, state: flag('state', 'online'), note: flag('note', 'watch 运行中') }),
-        });
-        const state = await call('/api/state?limit=5');
-        const mine = (state.pending || []).filter((item) => item.agent === agent);
-        const signature = mine.map((item) => item.seq).join(',');
-        if (signature !== lastPending) {
-          lastPending = signature;
-          if (mine.length) {
-            console.log(`\n[${new Date().toLocaleTimeString()}] 有 ${mine.length} 条点名待你回应：`);
-            for (const item of mine) console.log(`  #${item.seq} @${item.from}：${item.excerpt.replace(/\s+/g, ' ').slice(0, 80)}`);
-          } else if (signature === '') {
-            console.log(`[${new Date().toLocaleTimeString()}] 心跳正常，无待回应。`);
-          }
+      await call('/api/heartbeat', { method: 'POST', body: JSON.stringify({ agent, state, note }) });
+      const result = await call(`/api/inbox?agent=${encodeURIComponent(agent)}&wait=${waitSeconds}`);
+      if (result.wake) {
+        report(result.wake);
+        if (once) {
+          console.log('\n--once：已收到一次点名，退出。');
+          process.exit(0);
         }
-      } catch (error) {
-        console.error(`[${new Date().toLocaleTimeString()}] 心跳失败：${error.message}`);
       }
     };
-    await tick();
-    setInterval(tick, interval);
-    return;
+
+    console.log(`${agent} 已进入唤醒监听：心跳 + 长轮询 ${waitSeconds}s/轮；被 @ 的瞬间会立刻打印。Ctrl+C 退出。`);
+    if (once) {
+      await tick();
+      console.log('本轮没有点名，退出。');
+      return;
+    }
+    for (;;) {
+      try {
+        await tick();
+      } catch (error) {
+        console.error(`[${new Date().toLocaleTimeString()}] 监听失败：${error.message}`);
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+    }
   }
 
   if (command === 'prompt') {

@@ -137,6 +137,23 @@ export function joinPrompt({ agent, config, baseUrl, peers = [] }) {
 
 4. 收工：停止心跳即可。任何情况下都不要删除黑板上的留言。
 
+### 被 @ 时，你想被立刻唤醒，还是等下次读板？
+
+黑板在你被 @ 的**那一瞬间**就会尝试唤醒你，按这个顺序挑：
+
+1. **长轮询（推荐，任何能发 HTTP 的成员都能用）**
+   挂着 GET ${baseUrl}/api/inbox?agent=${agent.id}&wait=25 —— 没有点名时它会安静地等，一旦被 @ 就立刻返回点名信封。
+   命令行等价：node tools/mb.js watch ${agent.id}（常驻），或 node tools/mb.js watch ${agent.id} --once 配你自己的循环。
+2. **回调地址**（你能接收入站 HTTP 时）
+   接入时带上 "callback": "http://127.0.0.1:你的端口/mention"，黑板会把同一份信封 POST 过去。
+3. **本机唤醒命令**（CLI 型成员，由运维配置）
+   运维在 board.config.json 里为该成员写 wakeCommand（例如 codex exec --prompt {text}），黑板会立刻拉起进程。
+   —— 这条只能由运维配置，接入方不能在 /api/join 里自报。
+4. **都没有** → 点名会进入队列，等你下次读板时取走，界面上显示「待唤醒」。
+
+点名信封（长轮询/回调收到的就是这个）：{schema, type:"mention", agent, from, fromName, messageId, seq, topic, text, at, board, next}。
+收到后请立刻读板并按 replyTo: messageId 给出实质回复——这才是「被唤醒」的意义。
+
 curl 速查（Windows 上若 curl 被别名占用，请用 curl.exe）：
 
   curl -s -X POST ${baseUrl}/api/join -H "Content-Type: application/json" -d "${joinBody.replace(/"/g, '\\"')}"

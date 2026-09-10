@@ -5,6 +5,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -322,6 +323,129 @@ test('关闭自助接入时，未登记成员被拒绝', async () => {
     if (previous === undefined) delete process.env.MB_CONFIG;
     else process.env.MB_CONFIG = previous;
   }
+});
+
+/* ── 点名唤醒 ───────────────────────────────────────────── */
+
+test('唤醒：挂着长轮询的成员被 @ 时立刻收到点名信封', async () => {
+  await withBoard(async ({ base, join, post }) => {
+    await join({ agent: 'deepseek', name: 'DeepSeek' });
+    await join({ agent: 'codex', name: 'Codex', title: '项目主 Agent' });
+
+    // 成员先挂上长轮询（等待 5 秒）
+    const waiting = fetch(`${base}/api/inbox?agent=codex&wait=5`).then((r) => r.json());
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const started = Date.now();
+    const sent = await (
+      await post('/api/message', { agent: 'deepseek', text: '@codex 请立刻确认黑板可用性', topic: 'T-09' })
+    ).json();
+    const elapsed = Date.now() - started;
+
+    assert.equal(sent.wakes.length, 1);
+    assert.equal(sent.wakes[0].channel, 'inbox', '有点名时应当走长轮询通道');
+    assert.equal(sent.wakes[0].ok, true);
+    assert.ok(elapsed < 3000, `写入不应被唤醒拖慢（实测 ${elapsed}ms）`);
+
+    const received = await waiting;
+    assert.ok(received.wake, '长轮询应当立刻返回点名');
+    assert.equal(received.source, 'inbox');
+    assert.equal(received.wake.type, 'mention');
+    assert.equal(received.wake.agent, 'codex');
+    assert.equal(received.wake.from, 'deepseek');
+    assert.equal(received.wake.messageId, sent.message.id);
+    assert.equal(received.wake.seq, sent.message.seq);
+    assert.match(received.wake.next, /replyTo/);
+  });
+});
+
+test('唤醒：没有监听通道时入队，下次轮询取走', async () => {
+  await withBoard(async ({ base, join, post }) => {
+    await join({ agent: 'deepseek', name: 'DeepSeek' });
+    await join({ agent: 'marvis', name: 'Marvis' });
+
+    const sent = await (await post('/api/message', { agent: 'deepseek', text: '@marvis 桌面侧请确认' })).json();
+    assert.equal(sent.wakes[0].channel, 'queued');
+    assert.match(sent.warnings.join(' '), /已入队/);
+
+    const state = await (await fetch(`${base}/api/state?limit=10`)).json();
+    assert.equal(state.wakeQueue.marvis, 1, '侧栏应显示待唤醒 1');
+    assert.equal(state.messages[sent.message.seq - 1].wake[0].channel, 'queued');
+
+    const inbox = await (await fetch(`${base}/api/inbox?agent=marvis&wait=1`)).json();
+    assert.equal(inbox.source, 'queued');
+    assert.equal(inbox.wake.messageId, sent.message.id);
+
+    const after = await (await fetch(`${base}/api/state?limit=10`)).json();
+    assert.deepEqual(after.wakeQueue, {}, '取走后队列应清空');
+  });
+});
+
+test('唤醒：成员自报回调地址时，点名立刻 POST 过去', async () => {
+  const received = [];
+  const receiver = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      received.push(JSON.parse(body));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+  });
+  await new Promise((resolve) => receiver.listen(0, '127.0.0.1', resolve));
+  const callbackUrl = `http://127.0.0.1:${receiver.address().port}/mention`;
+
+  try {
+    await withBoard(async ({ join, post }) => {
+      await join({ agent: 'deepseek', name: 'DeepSeek' });
+      const bot = await (
+        await join({ agent: 'wakebot', name: 'Wake Bot', callback: callbackUrl })
+      ).json();
+      assert.equal(bot.wake.url, callbackUrl);
+
+      const sent = await (await post('/api/message', { agent: 'deepseek', text: '@wakebot 请立刻处理' })).json();
+      assert.equal(sent.wakes[0].channel, 'callback');
+      assert.equal(sent.wakes[0].ok, true);
+
+      for (let i = 0; i < 40 && !received.length; i++) await new Promise((r) => setTimeout(r, 25));
+      assert.equal(received.length, 1);
+      assert.equal(received[0].messageId, sent.message.id);
+      assert.equal(received[0].agent, 'wakebot');
+      assert.equal(received[0].from, 'deepseek');
+    });
+  } finally {
+    await new Promise((resolve) => receiver.close(resolve));
+  }
+});
+
+test('唤醒：本机唤醒命令不接受接入方自报', async () => {
+  await withBoard(async ({ join, registry }) => {
+    await join({ agent: 'sneaky', name: 'Sneaky', wakeCommand: 'cmd /c echo pwned' });
+    const agent = registry.get('sneaky');
+    assert.equal(agent.wakeCommand, '', '接入方不能在 /api/join 里配置唤醒命令');
+    assert.equal(agent.wake, null);
+  });
+});
+
+test('唤醒：长轮询也会刷新在线状态', async () => {
+  await withBoard(async ({ base, join, state }) => {
+    await join({ agent: 'codex', name: 'Codex' });
+    const inbox = await (await fetch(`${base}/api/inbox?agent=codex&wait=1`)).json();
+    assert.equal(inbox.wake, null);
+    assert.equal(inbox.source, 'timeout');
+    const payload = await state();
+    const member = payload.agents.find((a) => a.id === 'codex');
+    assert.equal(member.state, 'online');
+    assert.equal(member.note, '监听点名中');
+  });
+});
+
+test('唤醒：未登记成员不能长轮询', async () => {
+  await withBoard(async ({ base }) => {
+    const response = await fetch(`${base}/api/inbox?agent=ghost&wait=1`);
+    assert.equal(response.status, 404);
+    assert.equal((await response.json()).code, 'UNKNOWN_AGENT');
+  });
 });
 
 /* ── 静态资源与存储 ─────────────────────────────────────── */
