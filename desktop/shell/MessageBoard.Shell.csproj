@@ -4,6 +4,8 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <!-- 托盘图标需要 WinForms 的 NotifyIcon（与 WPF 共存是官方支持的组合） -->
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <AssemblyName>MessageBoard.Shell</AssemblyName>
     <RootNamespace>MessageBoard.Shell</RootNamespace>
@@ -17,6 +19,11 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 同一份图标作为 WPF 资源，供托盘图标在运行时加载 -->
+    <Resource Include="..\..\web\assets\message-board-icon.ico" Link="app.ico" />
   </ItemGroup>
 
 </Project>

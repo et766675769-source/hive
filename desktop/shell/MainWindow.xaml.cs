@@ -24,6 +24,28 @@ namespace MessageBoard.Shell
         private readonly string _baseUrl;
         private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
 
+        private System.Windows.Forms.NotifyIcon? _tray;
+        private bool _trayHintShown;
+
+        private static readonly string LogPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "MessageBoard",
+            "shell.log");
+
+        /** 外壳自己的日志：托盘是否建起来、服务是否拉起，都能事后核对。 */
+        private static void Log(string message)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
+                File.AppendAllText(LogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {message}{Environment.NewLine}");
+            }
+            catch
+            {
+                /* 日志失败不影响运行 */
+            }
+        }
+
         public MainWindow()
         {
             InitializeComponent();
@@ -34,6 +56,9 @@ namespace MessageBoard.Shell
 
             _baseUrl = $"http://127.0.0.1:{_port}";
             ApplyTheme(IsSystemLightTheme() ? "light" : "dark");
+            Log($"shell started (port {_port}, {(IsSystemLightTheme() ? "light" : "dark")} theme)");
+            SetupTray();
+
             Loaded += async (_, __) =>
             {
                 // 从脚本/隐藏控制台启动时，窗口可能继承「最小化」的启动状态，这里兜底还原。
@@ -46,13 +71,119 @@ namespace MessageBoard.Shell
             };
         }
 
+        /* ── 托盘图标：最小化之后还能找回来 ───────────────────── */
+
+        private static System.Drawing.Icon LoadAppIcon()
+        {
+            try
+            {
+                var stream = System.Windows.Application.GetResourceStream(new Uri("app.ico", UriKind.Relative))?.Stream;
+                if (stream != null) return new System.Drawing.Icon(stream);
+                Log("tray: app.ico resource not found, falling back to system icon");
+            }
+            catch (Exception ex)
+            {
+                Log("tray: icon load failed: " + ex.Message);
+            }
+            return System.Drawing.SystemIcons.Application;
+        }
+
+        private void SetupTray()
+        {
+            try
+            {
+                var menu = new System.Windows.Forms.ContextMenuStrip();
+                menu.Items.Add("显示 Message Board", null, (_, __) => RestoreWindow());
+                menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+                menu.Items.Add("退出 Message Board", null, (_, __) => Quit());
+                menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+                menu.Items.Add("打开黑板网页", null, (_, __) => Process.Start(new ProcessStartInfo(_baseUrl) { UseShellExecute = true }));
+
+                _tray = new System.Windows.Forms.NotifyIcon
+                {
+                    Icon = LoadAppIcon(),
+                    Text = "Message Board · 留言板",
+                    Visible = true,
+                    ContextMenuStrip = menu,
+                };
+                _tray.DoubleClick += (_, __) => RestoreWindow();
+                Log("tray: icon created");
+            }
+            catch (Exception ex)
+            {
+                Log("tray: creation failed: " + ex.Message);
+            }
+        }
+
+        private void RestoreWindow()
+        {
+            Show();
+            if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+            Activate();
+            Topmost = true;
+            Topmost = false;
+        }
+
+        private void Quit()
+        {
+            Log("quit requested");
+            try
+            {
+                if (_tray != null)
+                {
+                    _tray.Visible = false;
+                    _tray.Dispose();
+                    _tray = null;
+                }
+            }
+            catch
+            {
+                /* 忽略 */
+            }
+            Close();
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            try
+            {
+                if (_tray != null)
+                {
+                    _tray.Visible = false;
+                    _tray.Dispose();
+                    _tray = null;
+                }
+            }
+            catch
+            {
+                /* 忽略 */
+            }
+            base.OnClosed(e);
+        }
+
         /* ── 无边框标题栏 ─────────────────────────────────────── */
 
         /// <summary>关闭键：最小化到任务栏，不结束进程（黑板仍是多方共用的）。</summary>
-        private void Close_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+        private void Close_Click(object sender, RoutedEventArgs e)
+        {
+            WindowState = WindowState.Minimized;
+            Log("minimized to taskbar (not exited)");
+            if (_tray != null && !_trayHintShown)
+            {
+                _trayHintShown = true;
+                try
+                {
+                    _tray.ShowBalloonTip(4000, "Message Board", "已最小化到任务栏。双击托盘图标可恢复窗口，右键可退出。", System.Windows.Forms.ToolTipIcon.Info);
+                }
+                catch
+                {
+                    /* 部分系统禁用气泡提示，忽略 */
+                }
+            }
+        }
 
-        /// <summary>真正的退出：标题栏右键菜单；Alt+F4 与任务栏「关闭窗口」同样有效。</summary>
-        private void Quit_Click(object sender, RoutedEventArgs e) => Close();
+        /// <summary>真正的退出：托盘右键菜单 / 标题栏右键菜单；Alt+F4 与任务栏「关闭窗口」同样有效。</summary>
+        private void Quit_Click(object sender, RoutedEventArgs e) => Quit();
 
         private void Min_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
 
