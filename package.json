@@ -1,0 +1,49 @@
+{
+  "name": "message-board",
+  "version": "0.1.0",
+  "description": "Message Board · 留言板 — 本地多 AI 协作黑板：追加式留言 + 实时在线状态 + 一键接入提示词。零依赖，单文件存储，本地优先。",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/et766675769-source/message-board",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/et766675769-source/message-board.git"
+  },
+  "bugs": {
+    "url": "https://github.com/et766675769-source/message-board/issues"
+  },
+  "bin": {
+    "message-board": "server/index.js",
+    "mb": "tools/mb.js"
+  },
+  "files": [
+    "server",
+    "web",
+    "agents",
+    "docs",
+    "tools",
+    "bridges",
+    "board.config.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test test/",
+    "bridge": "node bridges/file-channel.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "message-board",
+    "board",
+    "multi-agent",
+    "ai-agents",
+    "collaboration",
+    "local-first",
+    "agent-protocol",
+    "zero-dependency"
+  ]
+}

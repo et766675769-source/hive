@@ -1,0 +1,244 @@
+// Message Board · 追加式存储
+//
+// 两条落盘产物，语义不同、都只追加：
+//   data/messages.jsonl  唯一机器事实源（每行一条 JSON，UTF-8 无 BOM）
+//   data/WORKCHAT.md     人类可读镜像（沿袭旧黑板 WORKCHAT.md 的阅读习惯）
+//
+// 纪律：
+//   - 只追加，永不改写或删除历史；
+//   - 写入用「单行整写」，读取侧永远看不到半截 JSON；
+//   - 唯一写入者是本进程，其余参与者一律走 HTTP，避免多写者竞态。
+
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+
+import { SCHEMA, localDisplay, localIso, stripBom } from './protocol.js';
+
+const MD_HEADER = (board) => `# ${board.name}（${board.nameZh}）· 黑板镜像
+
+> 本文件由 Message Board 自动追加生成，是机器事实源 \`data/messages.jsonl\` 的人类可读镜像。
+> 只追加，不删除、不改写历史；请勿手工编辑本文件，改动不会回写机器事实源。
+> 协议：${board.protocol}
+
+`;
+
+export class Store {
+  /**
+   * @param {{ dataDir: string, historyInMemory?: number, board: object }} options
+   */
+  constructor({ dataDir, historyInMemory = 5000, board }) {
+    this.dataDir = dataDir;
+    this.board = board;
+    this.historyInMemory = historyInMemory;
+    this.jsonlPath = path.join(dataDir, 'messages.jsonl');
+    this.mdPath = path.join(dataDir, 'WORKCHAT.md');
+    this.messages = [];
+    this.seq = 0;
+    this.listeners = new Set();
+
+    fs.mkdirSync(dataDir, { recursive: true });
+    this.#load();
+  }
+
+  #load() {
+    if (!fs.existsSync(this.jsonlPath)) return;
+    const raw = stripBom(fs.readFileSync(this.jsonlPath, 'utf8'));
+    const parsed = [];
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        parsed.push(JSON.parse(trimmed));
+      } catch {
+        // 单行损坏不应连累整个黑板：跳过并保留原文件不动。
+      }
+    }
+    this.seq = parsed.reduce((max, msg) => Math.max(max, Number(msg.seq) || 0), 0);
+    this.messages = parsed.slice(-this.historyInMemory);
+  }
+
+  onMessage(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  #emit(message) {
+    for (const listener of this.listeners) {
+      try {
+        listener(message);
+      } catch {
+        /* 订阅者异常不影响黑板写入 */
+      }
+    }
+  }
+
+  get latest() {
+    return this.messages.length ? this.messages[this.messages.length - 1] : null;
+  }
+
+  /**
+   * 追加一条已通过协议校验的留言。
+   * @param {{ agent: object, text: string, kind: string, topic: string|null,
+   *           status: string|null, mentions: string[], flags: string[],
+   *           replyTo?: string|null, evidence?: string|null, client?: object|null }} input
+   */
+  append(input) {
+    const now = new Date();
+    const seq = ++this.seq;
+    const message = {
+      schema: SCHEMA,
+      seq,
+      id: `mb-${now.getTime().toString(36)}-${String(seq).padStart(6, '0')}-${crypto
+        .randomBytes(2)
+        .toString('hex')}`,
+      agent: input.agent.id,
+      agentName: input.agent.name,
+      agentTitle: input.agent.title || '',
+      ts: localIso(now),
+      at: now.getTime(),
+      kind: input.kind || 'message',
+      topic: input.topic || null,
+      status: input.status || null,
+      text: input.text,
+      mentions: input.mentions || [],
+      replyTo: input.replyTo || null,
+      evidence: input.evidence || null,
+      flags: input.flags || [],
+      client: input.client || null,
+    };
+
+    // 1) 机器事实源：单行整写
+    fs.appendFileSync(this.jsonlPath, `${JSON.stringify(message)}\n`, 'utf8');
+    // 2) 人类可读镜像
+    this.#appendMirror(message);
+
+    this.messages.push(message);
+    if (this.messages.length > this.historyInMemory) {
+      this.messages.splice(0, this.messages.length - this.historyInMemory);
+    }
+    this.#emit(message);
+    return message;
+  }
+
+  #appendMirror(message) {
+    if (!fs.existsSync(this.mdPath)) {
+      fs.writeFileSync(this.mdPath, MD_HEADER(this.board), 'utf8');
+    }
+    const head = [
+      `### ${String(message.seq).padStart(6, '0')} · ${message.agentName}${
+        message.agentTitle ? `（${message.agentTitle}）` : ''
+      }`,
+      `_${message.ts} · kind=${message.kind}${message.topic ? ` · 议题 ${message.topic}` : ''}${
+        message.status ? ` · ${message.status}` : ''
+      }${message.mentions.length ? ` · 点名 ${message.mentions.map((id) => `@${id}`).join(' ')}` : ''}${
+        message.flags.length ? ` · 标记 ${message.flags.join(',')}` : ''
+      }_`,
+      '',
+      message.text,
+      '',
+      '---',
+      '',
+    ].join('\n');
+    fs.appendFileSync(this.mdPath, `${head}\n`, 'utf8');
+  }
+
+  /**
+   * 读取留言（默认最近 200 条，按时间正序）。
+   */
+  list({ limit = 200, since = 0, topic = null, agent = null, status = null } = {}) {
+    let items = this.messages.filter((msg) => Number(msg.seq) > Number(since || 0));
+    if (topic) items = items.filter((msg) => msg.topic === topic);
+    if (agent) items = items.filter((msg) => msg.agent === String(agent).toLowerCase());
+    if (status) items = items.filter((msg) => msg.status === status);
+    const max = Math.max(1, Math.min(Number(limit) || 200, this.historyInMemory));
+    return items.slice(-max);
+  }
+
+  topics() {
+    const map = new Map();
+    for (const msg of this.messages) {
+      if (!msg.topic) continue;
+      const entry = map.get(msg.topic) || {
+        topic: msg.topic,
+        count: 0,
+        lastSeq: 0,
+        lastAt: null,
+        lastAgent: null,
+        status: null,
+        latest: '',
+      };
+      entry.count += 1;
+      entry.lastSeq = msg.seq;
+      entry.lastAt = msg.ts;
+      entry.lastAgent = msg.agent;
+      if (msg.status) entry.status = msg.status;
+      entry.latest = msg.text.slice(0, 140);
+      map.set(msg.topic, entry);
+    }
+    return [...map.values()].sort((a, b) => b.lastSeq - a.lastSeq);
+  }
+
+  /**
+   * 待回应：被 @ 点名、但点名方之后没有实质回复的条目。
+   * 判定为「已回应」的条件：被点名者在点名之后发了留言，且
+   *   replyTo 指向该条，或处于同一议题。
+   */
+  pendingReplies() {
+    const pending = [];
+    for (const msg of this.messages) {
+      for (const target of msg.mentions) {
+        const answered = this.messages.some(
+          (later) =>
+            later.seq > msg.seq &&
+            later.agent === target &&
+            !later.flags.includes('ACK_ONLY') &&
+            (later.replyTo === msg.id || (msg.topic && later.topic === msg.topic)),
+        );
+        if (!answered) {
+          pending.push({
+            agent: target,
+            seq: msg.seq,
+            messageId: msg.id,
+            from: msg.agent,
+            topic: msg.topic,
+            at: msg.ts,
+            excerpt: msg.text.slice(0, 140),
+          });
+        }
+      }
+    }
+    return pending;
+  }
+
+  stats() {
+    const byAgent = {};
+    for (const msg of this.messages) byAgent[msg.agent] = (byAgent[msg.agent] || 0) + 1;
+    return {
+      total: this.seq,
+      inMemory: this.messages.length,
+      byAgent,
+      latestSeq: this.latest ? this.latest.seq : 0,
+      latestAt: this.latest ? this.latest.ts : null,
+      dataFile: this.jsonlPath,
+      mirrorFile: this.mdPath,
+    };
+  }
+
+  /** 导出为 markdown（供 /api/export 下载）。 */
+  toMarkdown() {
+    const lines = [
+      MD_HEADER(this.board),
+      `> 导出时间：${localDisplay(new Date())} · 共 ${this.messages.length} 条（内存窗口）`,
+      '',
+    ];
+    for (const msg of this.messages) {
+      lines.push(`### ${String(msg.seq).padStart(6, '0')} · ${msg.agentName}`);
+      lines.push(`_${msg.ts} · kind=${msg.kind}${msg.topic ? ` · ${msg.topic}` : ''}${msg.status ? ` · ${msg.status}` : ''}_`);
+      lines.push('');
+      lines.push(msg.text);
+      lines.push('', '---', '');
+    }
+    return lines.join('\n');
+  }
+}

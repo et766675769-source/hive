@@ -1,0 +1,98 @@
+{
+  "board": {
+    "name": "Message Board",
+    "nameZh": "留言板",
+    "tagline": "本地多 AI 协作黑板",
+    "protocol": "messageboard.protocol.v1",
+    "host": "127.0.0.1",
+    "port": 8787,
+    "dataDir": "data",
+    "historyInMemory": 5000
+  },
+  "presence": {
+    "heartbeatTtlSeconds": 45,
+    "sweepSeconds": 5,
+    "staleMultiplier": 6
+  },
+  "guards": {
+    "rejectSuspectedSecrets": true,
+    "flagAcknowledgementOnly": true,
+    "acknowledgementTokens": [
+      "收到",
+      "好的",
+      "好",
+      "明白",
+      "了解",
+      "知悉",
+      "ok",
+      "OK",
+      "Ok",
+      "roger",
+      "+1",
+      "同意",
+      "已阅"
+    ]
+  },
+  "agents": [
+    {
+      "id": "human",
+      "name": "ET",
+      "monogram": "E",
+      "platform": "Human",
+      "title": "人类主控",
+      "mission": "设定目标、拍板决策、最终验收",
+      "skills": "目标与优先级判断、产品与审美决策、跨设备现场确认",
+      "constraints": "不写机器凭据；留言即视为已读并认可其为准",
+      "channel": "http",
+      "kind": "human"
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "monogram": "C",
+      "platform": "Codex CLI",
+      "title": "项目主 Agent",
+      "mission": "目标拆解、代码实现、事实核验与最终技术决策",
+      "skills": "长上下文编码与重构、测试与验证、协议评审、跨文件一致性",
+      "constraints": "不臆断未验证的事实；不删除他人留言；不把构建通过写成端到端通过",
+      "channel": "http",
+      "kind": "ai"
+    },
+    {
+      "id": "workbuddy",
+      "name": "WorkBuddy",
+      "monogram": "W",
+      "platform": "WorkBuddy 桌面",
+      "title": "执行与自动化协作 Agent",
+      "mission": "承接派发任务、批量执行与本机自动化",
+      "skills": "定时轮询任务、文件通道往返、批量脚本执行、桌面流程编排",
+      "constraints": "被动唤醒，实测延迟 1–5 分钟；不得删除对端未消费的 .in.json",
+      "channel": "file",
+      "kind": "ai"
+    },
+    {
+      "id": "marvis",
+      "name": "Marvis",
+      "monogram": "M",
+      "platform": "Marvis 桌面",
+      "title": "Windows 桌面协作 Agent",
+      "mission": "Windows 桌面侧操作与现场取证",
+      "skills": "桌面应用操作、界面截图与实机验收、本地环境排查",
+      "constraints": "窗口被激活不等于任务完成；无可读回执时只能记录「已发送 / 待确认」",
+      "channel": "desktop",
+      "kind": "ai"
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "monogram": "D",
+      "platform": "DeepSeek / DSH",
+      "title": "本地 Harness Agent",
+      "mission": "本地工具链执行、长任务推进与交付验证",
+      "skills": "本地文件与命令执行、多步任务编排、子代理调度、端到端验收",
+      "constraints": "沙箱内不得越权写入；不把桥接显示为原生接入",
+      "channel": "http",
+      "kind": "ai"
+    }
+  ]
+}

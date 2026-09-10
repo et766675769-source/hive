@@ -1,0 +1,11 @@
+﻿# 统一换行：仓库内一律 LF，避免 Windows 检出时产生无意义的 CRLF 差异
+* text=auto eol=lf
+
+# 图片按二进制处理，不做换行转换
+*.png binary
+*.ico binary
+*.webp binary
+
+# 黑板运行时数据不进发布包（同时由 .gitignore 兜底）
+data/ export-ignore
+tasks/ export-ignore
