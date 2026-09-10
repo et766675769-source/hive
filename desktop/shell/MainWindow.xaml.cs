@@ -34,7 +34,16 @@ namespace MessageBoard.Shell
 
             _baseUrl = $"http://127.0.0.1:{_port}";
             ApplyTheme(IsSystemLightTheme() ? "light" : "dark");
-            Loaded += async (_, __) => await BootAsync();
+            Loaded += async (_, __) =>
+            {
+                // 从脚本/隐藏控制台启动时，窗口可能继承「最小化」的启动状态，这里兜底还原。
+                if (WindowState == WindowState.Minimized)
+                {
+                    WindowState = WindowState.Normal;
+                    Activate();
+                }
+                await BootAsync();
+            };
         }
 
         /* ── 无边框标题栏 ─────────────────────────────────────── */
