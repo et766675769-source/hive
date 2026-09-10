@@ -44,6 +44,10 @@ const MAX_TURNS = Number(flag('max-turns', 5));
 const TIMEOUT_MS = Number(flag('timeout', 240)) * 1000;
 const ONCE = args.includes('--once');
 const QUIET = args.includes('--quiet');
+// 默认开启：收到点名先回一条「处理中」通知，让点名者看得见反应
+const ACK = !args.includes('--no-ack');
+// 默认开启：启动时补做最近一条未回应的点名（服务重启会清空内存队列，靠它兜底）
+const CATCH_UP = !args.includes('--no-catch-up');
 
 if (!AGENT) {
   console.error('缺少 --agent <id>，例如 --agent codex');
@@ -227,14 +231,50 @@ const PROVIDERS = { 'codex-cli': runCodex, 'deepseek-api': runDeepSeek };
 
 /* ── 主循环 ─────────────────────────────────────────────── */
 
+/** 回复写回失败时重试：服务重启、瞬时网络抖动都不该让回复凭空消失。 */
+async function postMessage(payload, { attempts = 3, label = '留言' } = {}) {
+  let lastError = null;
+  for (let i = 1; i <= attempts; i += 1) {
+    try {
+      return await call('/api/message', { method: 'POST', body: JSON.stringify(payload) });
+    } catch (error) {
+      lastError = error;
+      log(`${label} 失败（第 ${i}/${attempts} 次）：${error.message}`);
+      if (i < attempts) await new Promise((resolve) => setTimeout(resolve, 2000 * i));
+    }
+  }
+  throw lastError;
+}
+
 async function handleWake(envelope) {
   const state = await call('/api/state?limit=12');
   const prompt = buildPrompt(envelope, state.messages || []);
+
+  // 立刻回一条「处理中」通知：让点名的人看到反应，而不是干等 1–2 分钟。
+  // 注意 kind=notice：服务端不会把它当成实质回应，「待回应」仍在。
+  if (ACK) {
+    try {
+      await call('/api/message', {
+        method: 'POST',
+        body: JSON.stringify({
+          agent: AGENT,
+          kind: 'notice',
+          status: '进行中',
+          topic: envelope.topic || null,
+          replyTo: envelope.messageId,
+          text: `已收到 #${envelope.seq} 的点名，正在用 ${PROVIDER} 生成实质回复（通常 30–120 秒）。本条为处理中通知，不是结论。`,
+          client: { runner: PROVIDER, stage: 'ack' },
+        }),
+      });
+    } catch (error) {
+      log(`处理中通知发送失败（不影响后续回复）：${error.message}`);
+    }
+  }
+
   const answer = await (PROVIDERS[PROVIDER] || runDeepSeek)(prompt);
 
-  const posted = await call('/api/message', {
-    method: 'POST',
-    body: JSON.stringify({
+  const posted = await postMessage(
+    {
       agent: AGENT,
       text: answer,
       kind: 'reply',
@@ -242,8 +282,9 @@ async function handleWake(envelope) {
       status: '进行中',
       replyTo: envelope.messageId,
       client: { runner: PROVIDER },
-    }),
-  });
+    },
+    { label: '回复写回' },
+  );
   log(`已回复 #${posted.message.seq}（回应 #${envelope.seq}）`);
   for (const warning of posted.warnings || []) log(`提示：${warning}`);
   return posted.message;
@@ -252,6 +293,34 @@ async function handleWake(envelope) {
 async function main() {
   const joined = await call('/api/join', { method: 'POST', body: JSON.stringify(IDENTITY) });
   log(`已登记为「${joined.agent.name}」；provider=${PROVIDER}`);
+
+  // 兜底：服务重启会清空内存里的唤醒队列，启动时补做最近一条未回应的点名
+  if (CATCH_UP) {
+    try {
+      const state = await call('/api/state?limit=30');
+      const mine = (state.pending || []).filter((item) => item.agent === AGENT);
+      if (mine.length) {
+        const newest = mine[mine.length - 1];
+        log(`补做未回应的点名 #${newest.seq}（共 ${mine.length} 条待回应，只补最近一条）`);
+        await handleWake({
+          schema: 'messageboard.protocol.v1',
+          type: 'mention',
+          agent: AGENT,
+          from: newest.from,
+          messageId: newest.messageId,
+          seq: newest.seq,
+          topic: newest.topic,
+          mentions: [AGENT],
+          text: newest.excerpt,
+          at: newest.at,
+          board: BOARD,
+          next: `读板 GET ${BOARD}/api/state?limit=50，并用 replyTo="${newest.messageId}" 给出实质回复`,
+        });
+      }
+    } catch (error) {
+      log(`补做检查失败（不影响监听）：${error.message}`);
+    }
+  }
 
   let turns = 0;
   for (;;) {
@@ -267,17 +336,21 @@ async function main() {
           await handleWake(result.wake);
         } catch (error) {
           log(`处理失败：${error.message}`);
-          await call('/api/message', {
-            method: 'POST',
-            body: JSON.stringify({
-              agent: AGENT,
-              text: `【${IDENTITY.name} 运行器】生成回复失败：${error.message}。本条为失败回执，不代表已完成。`,
-              kind: 'notice',
-              replyTo: result.wake.messageId,
-              topic: result.wake.topic || null,
-              status: '阻塞',
-            }),
-          }).catch(() => {});
+          try {
+            await postMessage(
+              {
+                agent: AGENT,
+                text: `【${IDENTITY.name} 运行器】生成回复失败：${error.message}。本条为失败回执，不代表已完成。`,
+                kind: 'notice',
+                replyTo: result.wake.messageId,
+                topic: result.wake.topic || null,
+                status: '阻塞',
+              },
+              { label: '失败回执' },
+            );
+          } catch (postError) {
+            log(`失败回执也发不出去（服务可能不可用）：${postError.message}`);
+          }
         }
         turns += 1;
         if (ONCE || (MAX_TURNS > 0 && turns >= MAX_TURNS)) {

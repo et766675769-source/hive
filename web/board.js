@@ -63,11 +63,12 @@ const STATE_LABEL = {
   offline: '离线',
 };
 
+// 唤醒徽标的措辞：只声明「已把点名送到」，不暗示对方已经回应
 const WAKE_LABEL = {
-  inbox: '已即时唤醒',
+  inbox: '已投递唤醒',
   callback: '已推送到回调',
   command: '已拉起进程',
-  queued: '已入队待唤醒',
+  queued: '已入队等待唤醒',
 };
 
 /* ── 工具 ─────────────────────────────────────────────────── */
@@ -431,7 +432,11 @@ function setConnection(status) {
 
 function subscribe() {
   const source = new EventSource(withToken('/api/stream'));
-  source.addEventListener('open', () => setConnection('open'));
+  source.addEventListener('open', () => {
+    setConnection('open');
+    // 断线期间黑板可能新增了留言：重连后立刻补拉一次
+    refresh();
+  });
   source.addEventListener('hello', () => setConnection('open'));
   source.addEventListener('error', () => setConnection('closed'));
   source.addEventListener('message', (event) => {

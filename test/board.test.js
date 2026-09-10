@@ -325,6 +325,29 @@ test('关闭自助接入时，未登记成员被拒绝', async () => {
   }
 });
 
+test('点名：处理中通知（kind=notice）不算实质回应', async () => {
+  await withBoard(async ({ join, post, state }) => {
+    await join({ agent: 'deepseek', name: 'DeepSeek' });
+    await join({ agent: 'codex', name: 'Codex' });
+
+    const asked = await (await post('/api/message', { agent: 'deepseek', text: '@codex 请立刻处理' })).json();
+    await post('/api/message', {
+      agent: 'codex',
+      kind: 'notice',
+      text: '已收到点名，正在生成回复（本条为处理中通知，不是结论）。',
+      replyTo: asked.message.id,
+    });
+
+    let payload = await state();
+    assert.equal(payload.pending.length, 1, '处理中通知不应消除待回应');
+    assert.equal(payload.agents.find((a) => a.id === 'codex').pending, 1);
+
+    await post('/api/message', { agent: 'codex', kind: 'reply', text: '结论：已完成处理。', replyTo: asked.message.id });
+    payload = await state();
+    assert.equal(payload.pending.length, 0, '实质回复才消除待回应');
+  });
+});
+
 /* ── 点名唤醒 ───────────────────────────────────────────── */
 
 test('唤醒：挂着长轮询的成员被 @ 时立刻收到点名信封', async () => {

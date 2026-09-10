@@ -182,7 +182,8 @@ export class Store {
   /**
    * 待回应：被 @ 点名、但点名方之后没有实质回复的条目。
    * 判定为「已回应」的条件：被点名者在点名之后发了留言，且
-   *   replyTo 指向该条，或处于同一议题。
+   *   replyTo 指向该条，或处于同一议题；
+   *   且该留言不是「处理中通知」（kind=notice）——光说"收到/在处理"不算回应。
    */
   pendingReplies() {
     const pending = [];
@@ -192,6 +193,7 @@ export class Store {
           (later) =>
             later.seq > msg.seq &&
             later.agent === target &&
+            later.kind !== 'notice' &&
             !later.flags.includes('ACK_ONLY') &&
             (later.replyTo === msg.id || (msg.topic && later.topic === msg.topic)),
         );
