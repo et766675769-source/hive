@@ -110,7 +110,8 @@ if ($alreadyOnline -notcontains 'codex') {
     Write-Log "autostart: codex channel not up yet - retrying via cmd start"
     $node = (Get-Command node).Source
     $cmdline = '"' + $node + '" bridges\codex-channel.js --agent codex --workdir "' + $root + '"'
-    Start-Process -FilePath 'cmd.exe' -WorkingDirectory $root -WindowStyle Hidden -ArgumentList @('/c', 'start', '/b', '', $cmdline) | Out-Null
+    # 注意：Start-Process 的 -ArgumentList 不接受空字符串元素，start 的窗口标题参数必须给非空值
+    Start-Process -FilePath 'cmd.exe' -WorkingDirectory $root -WindowStyle Hidden -ArgumentList @('/c', 'start', '/b', 'MessageBoardChannel', $cmdline) | Out-Null
   }
 }
 
