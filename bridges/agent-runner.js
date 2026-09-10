@@ -41,7 +41,7 @@ const AGENT = String(flag('agent') || '').toLowerCase();
 const PROVIDER = flag('provider', 'deepseek-api');
 const WAIT_SECONDS = Math.max(5, Math.min(Number(flag('wait', 25)), 60));
 const MAX_TURNS = Number(flag('max-turns', 5));
-const TIMEOUT_MS = Number(flag('timeout', 240)) * 1000;
+const TIMEOUT_MS = Number(flag('timeout', 420)) * 1000;
 const ONCE = args.includes('--once');
 const QUIET = args.includes('--quiet');
 // 默认开启：收到点名先回一条「处理中」通知，让点名者看得见反应
@@ -166,10 +166,13 @@ function runCodex(prompt) {
 
     // 提示词从文件重定向进 stdin（命令行保持很短，且不依赖 stdout 管道）；
     // 回复由 codex 的 -o 写到文件，读文件即可，全程不开命名管道。
+    // disk-full-read-access：让 Codex 能读盘上其它目录（例如 obsidian 仓库），写仍然受 -s 限制。
     const command = [
       'codex',
       'exec',
       '--skip-git-repo-check',
+      '-c',
+      'sandbox_permissions=["disk-full-read-access"]',
       '-C',
       q(WORKDIR),
       '-s',
@@ -185,11 +188,11 @@ function runCodex(prompt) {
     const startedAt = Date.now();
     let child;
     if (VISIBLE) {
-      // 独立终端窗口里跑：你能看到"新对话正在执行"，会话结束后窗口保留 8 秒
+      // 独立终端窗口里跑：你能看到「新对话正在执行」，会话结束后窗口保留几秒
       const batch = path.join(RUNTIME_DIR, `run-${stamp}.cmd`);
       fs.writeFileSync(
         batch,
-        `@echo off\r\ntitle Message Board - ${IDENTITY.name}\r\n${command}\r\necho.\r\necho ---- codex exit %errorlevel% ----\r\ntimeout /t 8 >nul\r\n`,
+        `@echo off\r\ntitle Message Board - ${IDENTITY.name}\r\n${command}\r\necho.\r\necho ---- codex exit %errorlevel% ----\r\nping -n 9 127.0.0.1 >nul\r\n`,
         'ascii',
       );
       child = spawn('cmd.exe', ['/c', 'start', '/wait', '', batch], {
@@ -205,29 +208,61 @@ function runCodex(prompt) {
       });
     }
 
-    const timer = setTimeout(() => {
+    // 完成判定以「-o 输出文件写稳」为准，而不是进程退出：
+    // 可见窗口模式下的 start/wait 包装、或 codex 结束后仍在收尾，都可能让进程迟迟不退。
+    let settled = false;
+    let lastSeen = '';
+    const settle = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(poller);
       try {
         child.kill();
       } catch {
         /* 忽略 */
       }
-      reject(new Error(`codex exec 超时（${TIMEOUT_MS / 1000}s）`));
-    }, TIMEOUT_MS);
+      if (error) reject(error);
+      else resolve(value);
+    };
 
-    child.on('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on('exit', (code) => {
-      clearTimeout(timer);
-      if (!fs.existsSync(outFile)) {
-        reject(new Error(`codex exec 退出码 ${code}，没有产生 -o 输出文件`));
-        return;
+    const readOut = () => {
+      try {
+        if (!fs.existsSync(outFile)) return '';
+        return fs.readFileSync(outFile, 'utf8').trim();
+      } catch {
+        return '';
       }
-      const text = fs.readFileSync(outFile, 'utf8').trim();
+    };
+    const done = (text) => {
       const sessionId = findLatestSessionId(startedAt);
       if (sessionId) log(`本次会话 id：${sessionId}  （可在终端执行 codex resume ${sessionId} 进入）`);
-      resolve({ text: text || '（codex 返回了空回复）', sessionId });
+      settle(null, { text: text || '（codex 返回了空回复）', sessionId });
+    };
+
+    const poller = setInterval(() => {
+      const text = readOut();
+      if (!text) return;
+      if (text === lastSeen) done(text); // 连续两次读到同样内容 = 已写完
+      else lastSeen = text;
+    }, 1500);
+    if (typeof poller.unref === 'function') poller.unref();
+
+    const timer = setTimeout(() => {
+      const text = readOut();
+      if (text) {
+        log('进程未退出，但已读到完整回复，按成功处理');
+        done(text);
+        return;
+      }
+      settle(new Error(`codex exec 超时（${TIMEOUT_MS / 1000}s），且没有产生输出文件`));
+    }, TIMEOUT_MS);
+
+    child.on('error', (error) => settle(error));
+    child.on('exit', () => {
+      const text = readOut();
+      if (text) done(text);
+      else settle(new Error('codex exec 已退出，但没有产生 -o 输出文件'));
     });
   });
 }
