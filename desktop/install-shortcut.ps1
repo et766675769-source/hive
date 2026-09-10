@@ -1,4 +1,4 @@
-﻿# 在桌面创建「Message Board」快捷方式。
+# 在桌面创建「Message Board」快捷方式。
 #
 # 目标选择顺序：
 #   1) WPF 外壳 exe（desktop/shell/bin/Release/net8.0-windows/MessageBoard.Shell.exe）—— 若已构建

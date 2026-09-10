@@ -1,7 +1,7 @@
-// Message Board · 配置加载
+// Message Board · 成员配置
 //
-// 事实源：仓库根目录的 board.config.json（可用 MB_CONFIG 指向别的文件）。
-// 命令行 / 环境变量覆盖优先于配置文件，便于 CI 与临时试跑。
+// board.config.json 只保留「黑板自身」的配置与可选的预置成员。
+// 成员默认是空的：AI 通过 POST /api/join 自述身份即完成登记（见 registry.js）。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,22 +12,19 @@ import { stripBom } from './protocol.js';
 /** 仓库根目录（server/ 的上一级） */
 export const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 
-const FALLBACK_AGENTS = [
-  {
-    id: 'human',
-    name: 'Human',
-    monogram: 'H',
-    platform: 'Human',
-    title: '人类主控',
-    mission: '设定目标、拍板决策、最终验收',
-    skills: '',
-    constraints: '',
-    channel: 'http',
-    kind: 'human',
-  },
-];
-
-const FALLBACK_ACK_TOKENS = ['收到', '好的', 'ok', 'OK', 'roger', '+1'];
+const DEFAULT_LOCAL_OPERATOR = {
+  id: 'local',
+  name: '本地',
+  monogram: '本',
+  platform: '本机',
+  title: '本机操作员',
+  mission: '在本机黑板界面直接留言，不作为成员出现在名册中',
+  skills: '',
+  constraints: '不写凭据；留言同样只追加',
+  channel: 'http',
+  kind: 'operator',
+  hidden: true,
+};
 
 /**
  * 读取并归一化配置。
@@ -58,6 +55,7 @@ export function loadConfig(overrides = {}) {
     port: Number(overrides.port || process.env.MB_PORT || rawBoard.port || 8787),
     dataDir: overrides.dataDir || process.env.MB_DATA_DIR || rawBoard.dataDir || 'data',
     historyInMemory: Number(rawBoard.historyInMemory || 5000),
+    openJoin: rawBoard.openJoin !== false,
   };
 
   const presence = {
@@ -71,28 +69,14 @@ export function loadConfig(overrides = {}) {
     flagAcknowledgementOnly: rawGuards.flagAcknowledgementOnly !== false,
     acknowledgementTokens: Array.isArray(rawGuards.acknowledgementTokens) && rawGuards.acknowledgementTokens.length
       ? rawGuards.acknowledgementTokens
-      : FALLBACK_ACK_TOKENS,
+      : ['收到', '好的', '好', '明白', '了解', '知悉', 'ok', 'OK', 'Ok', 'roger', '+1', '同意', '已阅'],
   };
 
-  const agents = Array.isArray(raw.agents) && raw.agents.length ? raw.agents : FALLBACK_AGENTS;
-  const normalizedAgents = agents.map((agent, index) => ({
-    id: String(agent.id || `agent-${index + 1}`).toLowerCase(),
-    name: agent.name || agent.id || `Agent ${index + 1}`,
-    monogram: agent.monogram || String(agent.name || agent.id || '?').trim().charAt(0).toUpperCase(),
-    platform: agent.platform || '',
-    title: agent.title || '',
-    mission: agent.mission || '',
-    skills: agent.skills || '',
-    constraints: agent.constraints || '',
-    channel: agent.channel || 'http',
-    kind: agent.kind || 'ai',
-  }));
-
-  const seen = new Set();
-  for (const agent of normalizedAgents) {
-    if (seen.has(agent.id)) throw new Error(`board.config.json 中 agent id 重复：${agent.id}`);
-    seen.add(agent.id);
-  }
+  // 预置成员：默认留空。需要固定成员时再写进 board.config.json 的 agents 数组。
+  const presets = Array.isArray(raw.agents) ? raw.agents.filter((agent) => agent && agent.id) : [];
+  const localOperator = raw.localOperator === null
+    ? null
+    : { ...DEFAULT_LOCAL_OPERATOR, ...(raw.localOperator || {}) };
 
   const dataDir = path.isAbsolute(board.dataDir) ? board.dataDir : path.join(ROOT, board.dataDir);
 
@@ -102,8 +86,8 @@ export function loadConfig(overrides = {}) {
     board: { ...board, dataDir },
     presence,
     guards,
-    agents: normalizedAgents,
-    agentsById: new Map(normalizedAgents.map((agent) => [agent.id, agent])),
+    presets,
+    localOperator,
     token: overrides.token || process.env.MB_TOKEN || '',
   };
 }

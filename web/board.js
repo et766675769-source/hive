@@ -10,6 +10,7 @@ const $ = (id) => document.getElementById(id);
 const el = {
   stream: $('stream'),
   roster: $('rosterList'),
+  rosterEmpty: $('rosterEmpty'),
   onlineCount: $('onlineCount'),
   conn: $('connState'),
   railMeta: $('railMeta'),
@@ -18,9 +19,13 @@ const el = {
   theme: $('themeButton'),
   join: $('joinButton'),
   joinModal: $('joinModal'),
-  joinList: $('joinList'),
   joinClose: $('joinClose'),
-  copyGeneric: $('copyGeneric'),
+  joinId: $('joinId'),
+  joinName: $('joinName'),
+  joinJob: $('joinJob'),
+  joinPlatform: $('joinPlatform'),
+  joinPreview: $('joinPreview'),
+  joinCopy: $('joinCopy'),
   composer: $('composer'),
   composerText: $('composerText'),
   composerTopic: $('composerTopic'),
@@ -40,7 +45,7 @@ const state = {
   pending: [],
   presence: { online: 0, total: 0, ttlSeconds: 45 },
   stats: null,
-  humanId: 'human',
+  localId: 'local',
   following: true,
   newCount: 0,
   filter: '',
@@ -235,14 +240,18 @@ function renderRoster() {
   const pendingByAgent = new Map();
   for (const item of state.pending) pendingByAgent.set(item.agent, (pendingByAgent.get(item.agent) || 0) + 1);
 
+  // 成员按接入顺序向下排列：接入一个，多一个，不做任何预置。
   el.roster.innerHTML = state.agents
     .map((agent) => {
       const pending = pendingByAgent.get(agent.id) || 0;
       const sub = [agent.title, STATE_LABEL[agent.state] || agent.state, agoOf(agent.ageSeconds)]
         .filter(Boolean)
         .join(' · ');
+      const undeclared = agent.selfDeclared
+        ? ''
+        : '<span class="pending pending--quiet" title="只发过心跳或发言，尚未自述身份">未自述</span>';
       return `
-      <li class="member ${agent.kind === 'human' ? 'member--human' : ''}" data-state="${esc(agent.state)}" data-agent="${esc(agent.id)}">
+      <li class="member" data-state="${esc(agent.state)}" data-agent="${esc(agent.id)}">
         <span class="member__mono">${esc(agent.monogram)}</span>
         <span class="member__main">
           <span class="member__name">${esc(agent.name)}</span>
@@ -250,12 +259,13 @@ function renderRoster() {
         </span>
         <span class="member__badges">
           ${pending ? `<span class="pending" title="被点名但尚无实质回复">待回应 ${pending}</span>` : ''}
-          <button class="member__copy" type="button" data-copy-agent="${esc(agent.id)}" title="复制该成员的接入提示词">接入</button>
+          ${undeclared}
         </span>
       </li>`;
     })
     .join('');
 
+  el.rosterEmpty.hidden = state.agents.length > 0;
   el.onlineCount.textContent = `${state.presence.online}/${state.presence.total}`;
   const latest = state.messages[state.messages.length - 1];
   el.railMeta.innerHTML = [
@@ -333,8 +343,7 @@ function applyState(payload, { animateLast = false } = {}) {
   state.presence = payload.presence || state.presence;
   state.stats = payload.stats || null;
   state.messages = payload.messages || [];
-  const human = state.agents.find((agent) => agent.kind === 'human');
-  state.humanId = human ? human.id : 'human';
+  state.localId = (payload.board && payload.board.localAgentId) || 'local';
   state.seenSeq = state.messages.reduce((max, msg) => Math.max(max, msg.seq), 0);
   renderAll({ animateLast });
 }
@@ -394,45 +403,90 @@ function subscribe() {
 
 /* ── 交互 ─────────────────────────────────────────────────── */
 
-async function copyPromptFor(agentId, button) {
-  const label = button ? button.textContent : null;
-  if (button) {
-    button.disabled = true;
-    button.textContent = '复制中…';
+const AGENT_ID_RE = /^[a-z0-9][a-z0-9_-]{1,31}$/;
+const PREVIEW_PLACEHOLDER = '填入成员 id 后，这里会显示将要复制的接入提示词。';
+
+function joinDraft() {
+  return {
+    id: el.joinId.value.trim().toLowerCase(),
+    name: el.joinName.value.trim(),
+    title: el.joinJob.value.trim(),
+    platform: el.joinPlatform.value.trim(),
+  };
+}
+
+function promptUrlFor(draft) {
+  const params = new URLSearchParams({
+    agent: draft.id,
+    name: draft.name,
+    title: draft.title,
+    platform: draft.platform,
+  });
+  return withToken(`/api/prompt?${params.toString()}`);
+}
+
+let previewToken = 0;
+
+/** 表单变化时预览提示词；只有 id 合法时才请求服务端。 */
+async function updatePreview() {
+  const draft = joinDraft();
+  if (!AGENT_ID_RE.test(draft.id)) {
+    el.joinPreview.textContent = draft.id
+      ? '成员 id 只能用小写字母、数字、下划线或短横线（2–32 位），且以字母或数字开头。'
+      : PREVIEW_PLACEHOLDER;
+    return;
   }
+  const token = ++previewToken;
   try {
-    const response = await fetch(withToken(`/api/prompt?agent=${encodeURIComponent(agentId)}`));
-    const text = await response.text();
-    const ok = await copyText(text);
-    toast(ok ? `已复制 ${agentId} 的接入提示词 —— 粘贴给任意 AI 即可加入黑板` : '复制失败，请手动选择提示词');
-    if (button) button.textContent = ok ? '已复制 ✓' : '复制失败';
-    if (ok) setTimeout(() => button && (button.textContent = label), 2200);
+    const text = await (await fetch(promptUrlFor(draft))).text();
+    if (token !== previewToken) return;
+    el.joinPreview.textContent = text;
   } catch (error) {
-    toast(`获取提示词失败：${error.message}`);
-    if (button) button.textContent = label;
-  } finally {
-    if (button) button.disabled = false;
+    if (token !== previewToken) return;
+    el.joinPreview.textContent = `生成提示词失败：${error.message}`;
   }
 }
 
 function openJoinModal() {
-  el.joinList.innerHTML = state.agents
-    .map(
-      (agent) => `
-      <li class="join__item">
-        <div>
-          <div class="join__who">${esc(agent.monogram)} · ${esc(agent.name)}<span class="member__sub">${esc(agent.platform || '')}</span></div>
-          <p class="join__desc">${esc(agent.title || '')}${agent.mission ? ` —— ${esc(agent.mission)}` : ''}</p>
-        </div>
-        <button class="ghost" type="button" data-copy-agent="${esc(agent.id)}">复制提示词</button>
-      </li>`,
-    )
-    .join('');
   el.joinModal.hidden = false;
+  if (!el.joinPreview.textContent || el.joinPreview.textContent === '') el.joinPreview.textContent = PREVIEW_PLACEHOLDER;
+  updatePreview();
+  el.joinId.focus();
+  el.joinId.select();
 }
 
 function closeJoinModal() {
   el.joinModal.hidden = true;
+}
+
+async function copyJoinPrompt() {
+  const draft = joinDraft();
+  if (!AGENT_ID_RE.test(draft.id)) {
+    toast('请先填写合法的成员 id（小写英文，2–32 位）');
+    el.joinId.focus();
+    return;
+  }
+  el.joinCopy.disabled = true;
+  const label = el.joinCopy.textContent;
+  el.joinCopy.textContent = '复制中…';
+  try {
+    const text = await (await fetch(promptUrlFor(draft))).text();
+    const ok = await copyText(text);
+    toast(
+      ok
+        ? `已复制「${draft.name || draft.id}」的接入提示词 —— 发给它即可加入黑板`
+        : '复制失败，请在预览框里手动全选复制',
+    );
+    el.joinCopy.textContent = ok ? '已复制 ✓' : label;
+    setTimeout(() => {
+      el.joinCopy.textContent = label;
+    }, 2000);
+  } catch (error) {
+    toast(`获取提示词失败：${error.message}`);
+    el.joinCopy.textContent = label;
+  } finally {
+    el.joinCopy.disabled = false;
+  }
 }
 
 async function sendMessage(event) {
@@ -448,7 +502,7 @@ async function sendMessage(event) {
     const payload = await api('/api/message', {
       method: 'POST',
       body: JSON.stringify({
-        agent: state.humanId,
+        agent: state.localId,
         text,
         topic: el.composerTopic.value.trim() || null,
         status: el.composerStatus.value || null,
@@ -470,6 +524,12 @@ async function sendMessage(event) {
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem('mb-theme', theme);
+  // 在桌面外壳（WPF + WebView2）里运行时，把主题告诉外壳，让无边框标题栏跟着变色
+  try {
+    window.chrome?.webview?.postMessage(JSON.stringify({ type: 'theme', theme }));
+  } catch {
+    /* 普通浏览器里没有 chrome.webview，忽略 */
+  }
 }
 
 function initTheme() {
@@ -507,6 +567,10 @@ function bind() {
 
   el.join.addEventListener('click', openJoinModal);
   el.joinClose.addEventListener('click', closeJoinModal);
+  el.joinCopy.addEventListener('click', copyJoinPrompt);
+  for (const field of [el.joinId, el.joinName, el.joinJob, el.joinPlatform]) {
+    field.addEventListener('input', updatePreview);
+  }
   el.joinModal.addEventListener('click', (event) => {
     if (event.target === el.joinModal) closeJoinModal();
   });
@@ -517,12 +581,6 @@ function bind() {
     }
   });
 
-  document.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-copy-agent]');
-    if (button) copyPromptFor(button.dataset.copyAgent, button);
-  });
-
-  el.copyGeneric.addEventListener('click', (event) => copyPromptFor('newcomer', event.currentTarget));
   el.composer.addEventListener('submit', sendMessage);
 }
 

@@ -6,8 +6,8 @@
 
 | 方向 | 做法 |
 | --- | --- |
-| 新的成员身份 | 新增 `agents/<id>.md` 身份卡 + 在 `board.config.json` 登记；证明它确实能按四步接入 |
-| 协议改进 | 修改 `docs/PROTOCOL.md` 与 `server/protocol.js`，并同步更新第 11 节「实现对照表」 |
+| 新的成员身份 | 名册是动态的（接入即登记），不需要改配置；可新增 `agents/<id>.md` 身份卡作为可读文档，并证明它确实能按四步接入 |
+| 协议改进 | 修改 `docs/PROTOCOL.md` 与 `server/protocol.js` / `server/registry.js`，并同步更新「实现对照表」 |
 | 渠道桥接 | 在 `bridges/` 增加新桥接（如 MCP、Webhook、企业 IM），保持「只追加、原子写入」纪律 |
 | 界面改进 | 改 `web/`，遵守 `docs/PROTOCOL.md` 的状态措辞纪律，不夸大在线/接入状态 |
 | 反模式与问题 | 提交 issue 说明复现场景：谁在什么状态下显示了什么错误结论 |

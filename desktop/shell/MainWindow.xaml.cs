@@ -2,14 +2,18 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
 using Microsoft.Web.WebView2.Core;
+using Microsoft.Win32;
 
 namespace MessageBoard.Shell
 {
     /// <summary>
-    /// 桌面外壳：确保本机黑板在运行，然后用 WebView2 显示黑板页面。
+    /// 桌面外壳（无边框）：确保本机黑板在运行，然后用 WebView2 显示黑板页面。
     ///
     /// 纪律：关闭窗口不停止服务 —— 黑板是多方共用的，本窗口只是其中一个观察点，
     /// 关掉它不应把其他正在使用的成员一起切断。
@@ -29,8 +33,63 @@ namespace MessageBoard.Shell
             if (int.TryParse(portText, out var port) && port > 0) _port = port;
 
             _baseUrl = $"http://127.0.0.1:{_port}";
+            ApplyTheme(IsSystemLightTheme() ? "light" : "dark");
             Loaded += async (_, __) => await BootAsync();
         }
+
+        /* ── 无边框标题栏 ─────────────────────────────────────── */
+
+        private void Min_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+        private void Max_Click(object sender, RoutedEventArgs e) =>
+            WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+        private void Close_Click(object sender, RoutedEventArgs e) => Close();
+
+        /* ── 主题：与黑板页面保持一致 ─────────────────────────── */
+
+        private static bool IsSystemLightTheme()
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(
+                    @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+                return key?.GetValue("AppsUseLightTheme") is int value ? value != 0 : true;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        private static Color ColorOf(string hex) => (Color)ColorConverter.ConvertFromString(hex);
+
+        /// <summary>页面通过 window.chrome.webview.postMessage 告知当前主题，标题栏随之变色。</summary>
+        private void ApplyTheme(string theme)
+        {
+            var dark = string.Equals(theme, "dark", StringComparison.OrdinalIgnoreCase);
+
+            var bar = dark ? "#1C1C1F" : "#FAF9F7";
+            var line = dark ? "#2A2A2F" : "#E9E6E1";
+            var ink = dark ? "#A2A2A8" : "#6B7280";
+            var hover = dark ? "#26262B" : "#EFEDE9";
+            var page = dark ? "#151517" : "#FAF9F7";
+
+            TitleBar.Background = new SolidColorBrush(ColorOf(bar));
+            Resources["CaptionLineBrush"] = new SolidColorBrush(ColorOf(line));
+            Resources["CaptionHoverBrush"] = new SolidColorBrush(ColorOf(hover));
+
+            var inkBrush = new SolidColorBrush(ColorOf(ink));
+            TitleText.Foreground = inkBrush;
+            MinButton.Foreground = inkBrush;
+            MaxButton.Foreground = inkBrush;
+            CloseButton.Foreground = inkBrush;
+
+            Background = new SolidColorBrush(ColorOf(page));
+            Splash.Background = new SolidColorBrush(ColorOf(page));
+        }
+
+        /* ── 启动流程 ─────────────────────────────────────────── */
 
         /// <summary>定位仓库根目录（含 server/index.js 的目录）。</summary>
         private static string FindRepoRoot()
@@ -116,12 +175,31 @@ namespace MessageBoard.Shell
 
                 var environment = await CoreWebView2Environment.CreateAsync(null, userData);
                 await View.EnsureCoreWebView2Async(environment);
+                View.CoreWebView2.WebMessageReceived += OnWebMessage;
                 View.Source = new Uri(_baseUrl);
                 Splash.Visibility = Visibility.Collapsed;
             }
             catch (Exception ex)
             {
                 Status.Text = "加载界面失败：" + ex.Message;
+            }
+        }
+
+        private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+        {
+            try
+            {
+                var message = e.TryGetWebMessageAsString();
+                if (string.IsNullOrWhiteSpace(message)) return;
+                using var doc = JsonDocument.Parse(message);
+                if (doc.RootElement.TryGetProperty("theme", out var theme))
+                {
+                    ApplyTheme(theme.GetString() ?? "light");
+                }
+            }
+            catch
+            {
+                /* 页面消息异常不影响外壳 */
             }
         }
     }

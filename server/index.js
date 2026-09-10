@@ -3,12 +3,15 @@
 //
 // 零依赖：只用 Node 内置模块。启动后提供——
 //   1) 一个可视黑板页面（web/，素雅极简）
-//   2) 一组 HTTP 接口（追加留言、心跳、读取状态、SSE 实时推送）
-//   3) 一个「快速接入」提示词端点，供任意 AI 一键复制后加入黑板
+//   2) 一组 HTTP 接口（接入登记、追加留言、心跳、读取状态、SSE 实时推送）
+//   3) 一个「接入」提示词端点，供任意 AI 一键复制后加入黑板
+//
+// 名册是动态的：不预置成员，AI 调 POST /api/join 自述身份即登记（见 server/registry.js）。
 //
 // 用法：
 //   node server/index.js [--port 8787] [--host 127.0.0.1] [--data-dir data]
 //                        [--token <口令>] [--cors] [--quiet]
+//   参数同时支持「--port 8787」与「--port=8787」。
 
 import fs from 'node:fs';
 import http from 'node:http';
@@ -18,7 +21,8 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import { Store } from './store.js';
 import { Presence } from './presence.js';
-import { agentCard, genericPrompt, joinPrompt } from './agents.js';
+import { Registry } from './registry.js';
+import { agentCard, draftAgent, joinPrompt } from './agents.js';
 import { SCHEMA, STATUSES, KINDS, validateMessage, localDisplay, localIso } from './protocol.js';
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -43,7 +47,6 @@ function parseArgs(argv) {
     const token = eq === -1 ? raw : raw.slice(0, eq);
     const inline = eq === -1 ? null : raw.slice(eq + 1);
     const take = () => (inline !== null ? inline : argv[++i]);
-    // 同时支持 `--port 8787` 与 `--port=8787`
     if (token === '--port' || token === '-p') args.port = Number(take());
     else if (token === '--host') args.host = take();
     else if (token === '--data-dir') args.dataDir = take();
@@ -71,9 +74,10 @@ const HELP = `Message Board · 留言板
 
 接口速查：
   GET  /api/health                     探活
-  GET  /api/config                     黑板信息与成员名册
+  GET  /api/config                     黑板信息与当前成员
   GET  /api/state?limit=50             留言 + 在线状态 + 议题 + 待回应
-  GET  /api/prompt?agent=<id>          取某成员的接入提示词（纯文本）
+  GET  /api/prompt?agent=<id>           取接入提示词（纯文本，可用于任意 AI）
+  POST /api/join                       自述身份并登记（接入即登记）
   GET  /api/stream                     实时事件流（SSE）
   GET  /api/export?format=md|jsonl     导出黑板
   POST /api/message                    追加留言
@@ -86,18 +90,28 @@ const HELP = `Message Board · 留言板
  */
 export function createBoardServer(overrides = {}) {
   const config = loadConfig(overrides);
+  fs.mkdirSync(config.board.dataDir, { recursive: true });
+
   const store = new Store({
     dataDir: config.board.dataDir,
     historyInMemory: config.board.historyInMemory,
     board: config.board,
   });
+
+  const registry = new Registry({
+    file: path.join(config.board.dataDir, 'agents.json'),
+    presets: config.presets,
+    localOperator: config.localOperator,
+  });
+
   const presence = new Presence({
-    agents: config.agents,
+    agentsProvider: () => registry.all(),
     dir: path.join(config.board.dataDir, 'heartbeat'),
     ttlSeconds: config.presence.heartbeatTtlSeconds,
     staleMultiplier: config.presence.staleMultiplier,
     sweepSeconds: config.presence.sweepSeconds,
   });
+  presence.start();
 
   const startedAt = Date.now();
   const clients = new Set();
@@ -114,10 +128,27 @@ export function createBoardServer(overrides = {}) {
   }
 
   store.onMessage((message) => broadcast('message', message));
-  presence.onChange((snapshot) => broadcast('presence', { agents: snapshot, presence: presence.summary() }));
 
-  function presenceMap() {
-    return new Map(presence.snapshot().map((item) => [item.id, item]));
+  let presenceSignature = '';
+  presence.onChange((snapshot) => {
+    const visible = snapshot.filter((item) => !item.hidden);
+    const signature = visible.map((item) => `${item.id}:${item.state}:${item.joinedAt}`).join('|');
+    if (signature === presenceSignature) return;
+    presenceSignature = signature;
+    broadcast('presence', { agents: visible, presence: presence.summary() });
+  });
+
+  function memberCards() {
+    const pending = store.pendingReplies();
+    const pendingByAgent = {};
+    for (const item of pending) pendingByAgent[item.agent] = (pendingByAgent[item.agent] || 0) + 1;
+    const presenceMap = new Map(presence.snapshot().map((item) => [item.id, item]));
+    return {
+      members: registry
+        .visible()
+        .map((agent) => ({ ...agentCard(agent, presenceMap), pending: pendingByAgent[agent.id] || 0 })),
+      pending,
+    };
   }
 
   function statePayload(query) {
@@ -129,13 +160,7 @@ export function createBoardServer(overrides = {}) {
       agent: query.get('agent') || null,
       status: query.get('status') || null,
     });
-    const pending = store.pendingReplies();
-    const pendingByAgent = {};
-    for (const item of pending) pendingByAgent[item.agent] = (pendingByAgent[item.agent] || 0) + 1;
-    const cards = config.agents.map((agent) => ({
-      ...agentCard(agent, presenceMap()),
-      pending: pendingByAgent[agent.id] || 0,
-    }));
+    const { members, pending } = memberCards();
     return {
       ok: true,
       protocol: SCHEMA,
@@ -146,10 +171,12 @@ export function createBoardServer(overrides = {}) {
         nameZh: config.board.nameZh,
         tagline: config.board.tagline,
         protocol: config.board.protocol,
+        openJoin: config.board.openJoin,
+        localAgentId: config.localOperator ? config.localOperator.id : 'local',
         startedAt: localIso(new Date(startedAt)),
         uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
       },
-      agents: cards,
+      agents: members,
       presence: presence.summary(),
       messages,
       topics: store.topics(),
@@ -160,13 +187,12 @@ export function createBoardServer(overrides = {}) {
   }
 
   function json(res, status, body, extraHeaders = {}) {
-    const text = JSON.stringify(body, null, 2);
     res.writeHead(status, {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store',
       ...extraHeaders,
     });
-    res.end(text);
+    res.end(JSON.stringify(body, null, 2));
   }
 
   function text(res, status, body, contentType = 'text/plain; charset=utf-8') {
@@ -192,6 +218,16 @@ export function createBoardServer(overrides = {}) {
     });
   }
 
+  async function readJson(req, res) {
+    const raw = await readBody(req);
+    try {
+      return JSON.parse(raw || '{}');
+    } catch {
+      json(res, 400, { ok: false, code: 'BAD_JSON', error: '请求体不是合法 JSON。' });
+      return null;
+    }
+  }
+
   function serveStatic(res, urlPath) {
     const webRoot = path.join(config.root, 'web');
     const relative = urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, '');
@@ -213,6 +249,21 @@ export function createBoardServer(overrides = {}) {
     const bearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
     const provided = url.searchParams.get('token') || header || bearer;
     return provided === config.token;
+  }
+
+  /** 解析发言/心跳的成员：已登记直接用；未登记时按 openJoin 决定自动登记还是拒绝。 */
+  function resolveAgent(id, res) {
+    const agent = registry.get(id);
+    if (agent) return agent;
+    if (!config.board.openJoin) {
+      json(res, 400, {
+        ok: false,
+        code: 'UNKNOWN_AGENT',
+        error: `名册中没有成员 ${id}；当前黑板关闭了自助接入（board.openJoin=false）。`,
+      });
+      return null;
+    }
+    return registry.ensure(id).agent;
   }
 
   const server = http.createServer(async (req, res) => {
@@ -246,15 +297,16 @@ export function createBoardServer(overrides = {}) {
         });
       }
 
-      // ---- 黑板信息与名册 ----
+      // ---- 黑板信息与当前成员 ----
       if (pathname === '/api/config' && req.method === 'GET') {
+        const { members } = memberCards();
         return json(res, 200, {
           ok: true,
           protocol: SCHEMA,
           board: { ...config.board, dataDir: undefined },
           presence: config.presence,
           guards: config.guards,
-          agents: config.agents,
+          members,
           enums: { statuses: STATUSES, kinds: KINDS },
         });
       }
@@ -271,13 +323,57 @@ export function createBoardServer(overrides = {}) {
 
       // ---- 接入提示词（纯文本，便于一键复制）----
       if (pathname === '/api/prompt' && req.method === 'GET') {
-        const agentId = String(url.searchParams.get('agent') || '').toLowerCase();
+        const agentId = String(url.searchParams.get('agent') || '').trim().toLowerCase();
         const baseUrl = `${url.protocol}//${req.headers.host || `${config.board.host}:${config.board.port}`}`;
-        const agent = config.agentsById.get(agentId);
-        if (!agent) {
-          return text(res, 200, genericPrompt({ config, baseUrl }), 'text/plain; charset=utf-8');
+        const registered = registry.get(agentId);
+        const agent = registered || draftAgent({
+          id: agentId,
+          name: url.searchParams.get('name'),
+          title: url.searchParams.get('title'),
+          platform: url.searchParams.get('platform'),
+        });
+        const peers = registry.visible().filter((item) => item.id !== agent.id);
+        return text(res, 200, joinPrompt({ agent, config, baseUrl, peers }), 'text/plain; charset=utf-8');
+      }
+
+      // ---- 接入登记 ----
+      if (pathname === '/api/join' && req.method === 'POST') {
+        const payload = await readJson(req, res);
+        if (!payload) return undefined;
+        const id = String(payload.agent || payload.id || '').trim().toLowerCase();
+        if (!Registry.isValidId(id)) {
+          return json(res, 400, {
+            ok: false,
+            code: 'BAD_AGENT_ID',
+            error: '成员 id 只能是小写字母、数字、下划线或短横线（2–32 位），且以字母或数字开头。',
+          });
         }
-        return text(res, 200, joinPrompt({ agent, config, baseUrl }), 'text/plain; charset=utf-8');
+        if (!config.board.openJoin && !registry.has(id) && !config.presets.some((item) => item.id === id)) {
+          return json(res, 403, {
+            ok: false,
+            code: 'JOIN_CLOSED',
+            error: '当前黑板关闭了自助接入（board.openJoin=false），请让人类在 board.config.json 中预置该成员。',
+          });
+        }
+
+        const agent = registry.upsert({
+          id,
+          name: payload.name,
+          platform: payload.platform,
+          title: payload.title,
+          mission: payload.mission,
+          skills: payload.skills,
+          constraints: payload.constraints,
+          channel: payload.channel,
+          joinedAt: new Date().toISOString(),
+        });
+        const record = presence.beat(id, { state: payload.state || 'online', note: payload.note || '刚刚接入', session: payload.session });
+        return json(res, 200, {
+          ok: true,
+          agent: agentCard(agent, new Map([[id, { ...record, state: 'online', ageSeconds: 0 }]])),
+          message: `已登记为「${agent.name}」（id: ${agent.id}），侧栏已出现你。`,
+          heartbeatTtlSeconds: presence.ttlSeconds,
+        });
       }
 
       // ---- 导出 ----
@@ -319,17 +415,21 @@ export function createBoardServer(overrides = {}) {
 
       // ---- 追加留言 ----
       if (pathname === '/api/message' && req.method === 'POST') {
-        const raw = await readBody(req);
-        let payload;
-        try {
-          payload = JSON.parse(raw || '{}');
-        } catch {
-          return json(res, 400, { ok: false, code: 'BAD_JSON', error: '请求体不是合法 JSON。' });
+        const payload = await readJson(req, res);
+        if (!payload) return undefined;
+        const agentId = String(payload.agent || '').trim().toLowerCase();
+        const agent = agentId ? resolveAgent(agentId, res) : null;
+        if (!agent) {
+          if (!agentId) return json(res, 400, { ok: false, code: 'MISSING_AGENT', error: '缺少 agent 字段（留言者 id）。' });
+          return undefined;
         }
-        const check = validateMessage(payload, { agentsById: config.agentsById, guards: config.guards });
+
+        const check = validateMessage(payload, {
+          agentsById: registry.byId(),
+          guards: config.guards,
+        });
         if (!check.ok) return json(res, 400, { ok: false, code: check.code, error: check.error });
 
-        const agent = config.agentsById.get(check.agentId);
         const message = store.append({
           agent,
           text: check.text,
@@ -342,8 +442,7 @@ export function createBoardServer(overrides = {}) {
           evidence: payload.evidence ? String(payload.evidence).slice(0, 2000) : null,
           client: payload.client && typeof payload.client === 'object' ? payload.client : null,
         });
-        // 发言即视为在线信号
-        presence.beat(check.agentId, { state: 'online', note: '正在发言', session: payload.session });
+        presence.beat(agent.id, { state: 'online', note: '正在发言', session: payload.session });
         return json(res, 200, {
           ok: true,
           message,
@@ -355,28 +454,32 @@ export function createBoardServer(overrides = {}) {
 
       // ---- 心跳 ----
       if ((pathname === '/api/heartbeat' || pathname === '/api/presence') && req.method === 'POST') {
-        const raw = await readBody(req);
-        let payload;
-        try {
-          payload = JSON.parse(raw || '{}');
-        } catch {
-          return json(res, 400, { ok: false, code: 'BAD_JSON', error: '请求体不是合法 JSON。' });
-        }
-        const agentId = String(payload.agent || '').toLowerCase();
+        const payload = await readJson(req, res);
+        if (!payload) return undefined;
+        const agentId = String(payload.agent || '').trim().toLowerCase();
         if (!agentId) return json(res, 400, { ok: false, code: 'MISSING_AGENT', error: '缺少 agent 字段。' });
-        if (!config.agentsById.has(agentId)) {
+        if (!registry.has(agentId) && !Registry.isValidId(agentId)) {
           return json(res, 400, {
             ok: false,
-            code: 'UNKNOWN_AGENT',
-            error: `名册中没有成员 ${agentId}；请先在 board.config.json 登记。`,
+            code: 'BAD_AGENT_ID',
+            error: '成员 id 只能是小写字母、数字、下划线或短横线（2–32 位）。',
           });
         }
-        const record = presence.beat(agentId, {
+        const agent = resolveAgent(agentId, res);
+        if (!agent) return undefined;
+        const record = presence.beat(agent.id, {
           state: payload.state,
           note: payload.note,
           session: payload.session,
         });
-        return json(res, 200, { ok: true, agent: agentId, lastSeen: record.lastSeen, ttlSeconds: presence.ttlSeconds });
+        return json(res, 200, {
+          ok: true,
+          agent: agent.id,
+          name: agent.name,
+          lastSeen: record.lastSeen,
+          ttlSeconds: presence.ttlSeconds,
+          selfDeclared: Boolean(agent.selfDeclared),
+        });
       }
 
       // ---- 未知接口 ----
@@ -388,12 +491,12 @@ export function createBoardServer(overrides = {}) {
       return serveStatic(res, pathname);
     } catch (err) {
       const code = err?.code || 'INTERNAL';
-      const status = code === 'BODY_TOO_LARGE' ? 413 : 500;
+      const status = code === 'BODY_TOO_LARGE' ? 413 : code === 'BAD_AGENT_ID' ? 400 : 500;
       return json(res, status, { ok: false, code, error: err?.message || '服务端异常' });
     }
   });
 
-  return { server, config, store, presence, statePayload };
+  return { server, config, store, presence, registry, statePayload };
 }
 
 function main() {
@@ -402,10 +505,11 @@ function main() {
     process.stdout.write(HELP);
     return;
   }
-  const { server, config, store } = createBoardServer(args);
+  const { server, config, registry, store } = createBoardServer(args);
   server.listen(config.board.port, config.board.host, () => {
     const url = `http://${config.board.host}:${config.board.port}`;
     if (!args.quiet) {
+      const members = registry.visible();
       const stats = store.stats();
       process.stdout.write(
         [
@@ -413,9 +517,9 @@ function main() {
           `  ${config.board.name} · ${config.board.nameZh} 已启动`,
           `  黑板地址   ${url}`,
           `  协议       ${config.board.protocol}`,
-          `  成员       ${config.agents.map((a) => a.name).join(' · ')}`,
+          `  成员       ${members.length ? members.map((a) => `${a.name}(${a.id})`).join(' · ') : '暂无 —— 点「接入」复制提示词，发给任意 AI'}`,
           `  已有留言   ${stats.latestSeq} 条（镜像 ${path.relative(process.cwd(), stats.mirrorFile)}）`,
-          `  一键接入   ${url} 侧栏「快速接入」按钮，或 GET /api/prompt?agent=<id>`,
+          `  接入方式   ${url} 侧栏「接入」按钮，或 GET /api/prompt?agent=<id>`,
           args.token ? '  访问口令   已启用（--token）' : '',
           '',
         ]

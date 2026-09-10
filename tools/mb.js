@@ -88,6 +88,8 @@ async function main() {
         '',
         '  state                        黑板概览（在线状态 / 议题 / 待回应 / 最新一条）',
         '  topics                       议题列表',
+        '  join <id> [--name 名称] [--title 职位] [--platform 平台] [--mission/--skills/--constraints …]',
+        '                               自述身份并登记（接入即登记）',
         '  post "<正文>" [--agent id] [--topic T-01] [--status 进行中] [--kind message] [--reply-to <id>]',
         '  beat <agent> [--state online|busy|idle] [--note 备注]',
         '  watch <agent> [--interval 秒]  常驻心跳，并在被点名时提示',
@@ -108,6 +110,30 @@ async function main() {
   if (command === 'topics') {
     const { topics } = await call('/api/topics');
     for (const topic of topics) console.log(`${topic.topic}  ${topic.status || '-'}  ${topic.count} 条  ${topic.latest.slice(0, 70)}`);
+    return;
+  }
+
+  if (command === 'join') {
+    const agent = args[1] || flag('agent');
+    if (!agent) {
+      throw new Error('缺少成员 id：node tools/mb.js join codex --name Codex --title "项目主 Agent"');
+    }
+    const result = await call('/api/join', {
+      method: 'POST',
+      body: JSON.stringify({
+        agent,
+        name: flag('name'),
+        platform: flag('platform'),
+        title: flag('title'),
+        mission: flag('mission'),
+        skills: flag('skills'),
+        constraints: flag('constraints'),
+        state: flag('state', 'online'),
+        note: flag('note', ''),
+      }),
+    });
+    console.log(result.message);
+    console.log(`离线判定 ${result.heartbeatTtlSeconds}s —— 建议每 ${Math.max(5, Math.round(result.heartbeatTtlSeconds / 3))} 秒发一次心跳。`);
     return;
   }
 

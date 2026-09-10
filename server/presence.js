@@ -1,15 +1,16 @@
 // Message Board · 在线状态（心跳）
 //
-// 沿袭旧黑板纪律：**静态握手不等于在线**。只有新鲜的心跳才算在线。
+// 纪律：**静态握手不等于在线** —— 只有新鲜的心跳才算在线。
 //
 //   data/heartbeat/<agent-id>.json   { schema, agent, state, last_seen, note, session }
 //
 // 判定：
 //   age ≤ ttl            → 成员自报状态（online / busy / idle）
-//   ttl < age ≤ ttl×倍率 → stale（掉线风险：最近出现过，但已超时）
+//   ttl < age ≤ ttl×倍率 → stale（最近出现过，但已超时）
 //   更久或从未出现        → offline
 //
-// 心跳文件原子写入（先 .tmp 再重命名），与旧协议 aitc.filechannel.v1 的写法一致。
+// 成员是动态的（接入即登记），所以名册由 agentsProvider 每次实时提供。
+// 心跳文件原子写入（先 .tmp 再重命名），与旧协议 aitc.filechannel.v1 写法一致。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,8 +18,8 @@ import path from 'node:path';
 import { SCHEMA, PRESENCE_STATES, localIso } from './protocol.js';
 
 export class Presence {
-  constructor({ agents, dir, ttlSeconds = 45, staleMultiplier = 6, sweepSeconds = 5, now = () => Date.now() }) {
-    this.agents = agents;
+  constructor({ agentsProvider, dir, ttlSeconds = 45, staleMultiplier = 6, sweepSeconds = 5, now = () => Date.now() }) {
+    this.agentsProvider = agentsProvider;
     this.dir = dir;
     this.ttlSeconds = ttlSeconds;
     this.staleMultiplier = staleMultiplier;
@@ -33,21 +34,25 @@ export class Presence {
   }
 
   #load() {
-    for (const agent of this.agents) {
-      const file = this.#fileFor(agent.id);
-      if (!fs.existsSync(file)) continue;
+    let files = [];
+    try {
+      files = fs.readdirSync(this.dir).filter((name) => name.endsWith('.json'));
+    } catch {
+      return;
+    }
+    for (const name of files) {
       try {
-        const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+        const raw = JSON.parse(fs.readFileSync(path.join(this.dir, name), 'utf8'));
+        const agentId = String(raw.agent || path.basename(name, '.json')).toLowerCase();
         const at = Date.parse(raw.last_seen);
-        this.records.set(agent.id, {
-          id: agent.id,
+        this.records.set(agentId, {
+          id: agentId,
           declared: raw.state || 'online',
           lastSeen: raw.last_seen || null,
           lastSeenAt: Number.isFinite(at) ? at : null,
           note: raw.note || '',
           session: raw.session || null,
           beats: 0,
-          restored: true,
         });
       } catch {
         /* 心跳文件损坏：按从未出现过处理 */
@@ -72,23 +77,24 @@ export class Presence {
 
   /** 记录一次心跳。 */
   beat(agentId, { state, note = '', session = null } = {}) {
+    const id = String(agentId).toLowerCase();
     const declared = PRESENCE_STATES.includes(state) ? state : 'online';
     const at = this.now();
     const record = {
-      id: agentId,
+      id,
       declared,
       lastSeen: localIso(new Date(at)),
       lastSeenAt: at,
       note: String(note || '').slice(0, 200),
       session: session ? String(session).slice(0, 120) : null,
-      beats: (this.records.get(agentId)?.beats || 0) + 1,
+      beats: (this.records.get(id)?.beats || 0) + 1,
     };
-    this.records.set(agentId, record);
+    this.records.set(id, record);
     try {
       this.#writeAtomic(
-        this.#fileFor(agentId),
+        this.#fileFor(id),
         JSON.stringify(
-          { schema: SCHEMA, agent: agentId, state: declared, last_seen: record.lastSeen, note: record.note, session: record.session },
+          { schema: SCHEMA, agent: id, state: declared, last_seen: record.lastSeen, note: record.note, session: record.session },
           null,
           0,
         ),
@@ -100,7 +106,6 @@ export class Presence {
     return record;
   }
 
-  /** 解析某成员当前对外状态。 */
   resolveState(record) {
     if (!record || !record.lastSeenAt) return 'offline';
     const ageSeconds = (this.now() - record.lastSeenAt) / 1000;
@@ -109,8 +114,9 @@ export class Presence {
     return 'offline';
   }
 
+  /** 名册快照（含隐藏成员；对外过滤由调用方负责）。 */
   snapshot() {
-    return this.agents.map((agent) => {
+    return this.agentsProvider().map((agent) => {
       const record = this.records.get(agent.id) || null;
       const ageSeconds = record && record.lastSeenAt ? Math.round((this.now() - record.lastSeenAt) / 1000) : null;
       return {
@@ -121,6 +127,9 @@ export class Presence {
         platform: agent.platform,
         channel: agent.channel,
         kind: agent.kind,
+        hidden: agent.hidden,
+        selfDeclared: agent.selfDeclared,
+        joinedAt: agent.joinedAt,
         state: this.resolveState(record),
         declared: record ? record.declared : null,
         lastSeen: record ? record.lastSeen : null,
@@ -131,13 +140,14 @@ export class Presence {
     });
   }
 
+  /** 只统计会显示在侧栏里的成员。 */
   summary() {
-    const snapshot = this.snapshot();
+    const visible = this.snapshot().filter((item) => !item.hidden);
     return {
       ttlSeconds: this.ttlSeconds,
       staleAfterSeconds: this.ttlSeconds * this.staleMultiplier,
-      online: snapshot.filter((item) => item.state === 'online' || item.state === 'busy').length,
-      total: snapshot.length,
+      online: visible.filter((item) => item.state === 'online' || item.state === 'busy').length,
+      total: visible.length,
     };
   }
 
