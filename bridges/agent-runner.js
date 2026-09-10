@@ -48,6 +48,37 @@ const QUIET = args.includes('--quiet');
 const ACK = !args.includes('--no-ack');
 // 默认开启：启动时补做最近一条未回应的点名（服务重启会清空内存队列，靠它兜底）
 const CATCH_UP = !args.includes('--no-catch-up');
+// codex-cli：把这次会话开在一个独立终端窗口里，人能看见"新对话正在跑"
+const VISIBLE = args.includes('--visible');
+
+const SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
+
+/** 取最近一次 Codex 会话 id（rollout 文件名里带 uuid），用于回报可 resume 的会话。 */
+function findLatestSessionId(sinceMs) {
+  try {
+    let newest = null;
+    const walk = (dir, depth = 0) => {
+      if (depth > 4) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full, depth + 1);
+        } else if (entry.name.endsWith('.jsonl')) {
+          const stat = fs.statSync(full);
+          if (stat.mtimeMs >= sinceMs - 2000 && (!newest || stat.mtimeMs > newest.mtimeMs)) {
+            newest = { mtimeMs: stat.mtimeMs, name: entry.name };
+          }
+        }
+      }
+    };
+    if (fs.existsSync(SESSIONS_DIR)) walk(SESSIONS_DIR);
+    if (!newest) return '';
+    const match = newest.name.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+    return match ? match[1] : '';
+  } catch {
+    return '';
+  }
+}
 
 if (!AGENT) {
   console.error('缺少 --agent <id>，例如 --agent codex');
@@ -149,14 +180,30 @@ function runCodex(prompt) {
       '<',
       q(promptFile),
     ].join(' ');
-    log(`调用 codex exec（sandbox=${SANDBOX}, cwd=${WORKDIR}）`);
+    log(`调用 codex exec（sandbox=${SANDBOX}, cwd=${WORKDIR}${VISIBLE ? ', 独立窗口' : ''}）`);
 
-    const child = spawn(command, {
-      cwd: WORKDIR,
-      shell: true,
-      stdio: ['ignore', 'ignore', 'ignore'],
-      windowsHide: true,
-    });
+    const startedAt = Date.now();
+    let child;
+    if (VISIBLE) {
+      // 独立终端窗口里跑：你能看到"新对话正在执行"，会话结束后窗口保留 8 秒
+      const batch = path.join(RUNTIME_DIR, `run-${stamp}.cmd`);
+      fs.writeFileSync(
+        batch,
+        `@echo off\r\ntitle Message Board - ${IDENTITY.name}\r\n${command}\r\necho.\r\necho ---- codex exit %errorlevel% ----\r\ntimeout /t 8 >nul\r\n`,
+        'ascii',
+      );
+      child = spawn('cmd.exe', ['/c', 'start', '/wait', '', batch], {
+        cwd: WORKDIR,
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+    } else {
+      child = spawn(command, {
+        cwd: WORKDIR,
+        shell: true,
+        stdio: ['ignore', 'ignore', 'ignore'],
+        windowsHide: true,
+      });
+    }
 
     const timer = setTimeout(() => {
       try {
@@ -178,7 +225,9 @@ function runCodex(prompt) {
         return;
       }
       const text = fs.readFileSync(outFile, 'utf8').trim();
-      resolve(text || '（codex 返回了空回复）');
+      const sessionId = findLatestSessionId(startedAt);
+      if (sessionId) log(`本次会话 id：${sessionId}  （可在终端执行 codex resume ${sessionId} 进入）`);
+      resolve({ text: text || '（codex 返回了空回复）', sessionId });
     });
   });
 }
@@ -271,17 +320,22 @@ async function handleWake(envelope) {
     }
   }
 
-  const answer = await (PROVIDERS[PROVIDER] || runDeepSeek)(prompt);
+  const result = await (PROVIDERS[PROVIDER] || runDeepSeek)(prompt);
+  const answer = typeof result === 'string' ? result : result.text;
+  const sessionId = typeof result === 'string' ? '' : result.sessionId || '';
+  const text = sessionId
+    ? `${answer}\n\n（本次 Codex 会话：${sessionId} —— 终端执行 codex resume ${sessionId} 可进入同一次对话）`
+    : answer;
 
   const posted = await postMessage(
     {
       agent: AGENT,
-      text: answer,
+      text,
       kind: 'reply',
       topic: envelope.topic || null,
       status: '进行中',
       replyTo: envelope.messageId,
-      client: { runner: PROVIDER },
+      client: { runner: PROVIDER, session: sessionId || null },
     },
     { label: '回复写回' },
   );

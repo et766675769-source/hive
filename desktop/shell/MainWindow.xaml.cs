@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
@@ -26,6 +27,38 @@ namespace MessageBoard.Shell
 
         private System.Windows.Forms.NotifyIcon? _tray;
         private bool _trayHintShown;
+        private System.Drawing.Icon? _iconSmall;
+        private System.Drawing.Icon? _iconBig;
+
+        private const int WM_SETICON = 0x0080;
+        private const int ICON_SMALL = 0;
+        private const int ICON_BIG = 1;
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        /// <summary>
+        /// 把图标直接塞给窗口：任务栏按钮只认窗口图标（WM_SETICON），
+        /// 而 exe 图标在 Windows 图标缓存里可能还是旧版，靠这一步立即生效。
+        /// </summary>
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            try
+            {
+                var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                var source = LoadAppIcon();
+                _iconSmall = new System.Drawing.Icon(source, new System.Drawing.Size(16, 16));
+                _iconBig = new System.Drawing.Icon(source, new System.Drawing.Size(32, 32));
+                SendMessage(handle, WM_SETICON, (IntPtr)ICON_SMALL, _iconSmall.Handle);
+                SendMessage(handle, WM_SETICON, (IntPtr)ICON_BIG, _iconBig.Handle);
+                Log("window icon applied (WM_SETICON 16/32)");
+            }
+            catch (Exception ex)
+            {
+                Log("window icon failed: " + ex.Message);
+            }
+        }
 
         private static readonly string LogPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
