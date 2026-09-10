@@ -180,6 +180,20 @@ export class DeliveryLedger {
     });
   }
 
+  /**
+   * 人类主动打断 → 直接判定终结（expired），**不再回收重投**。
+   * 这是"被叫停"，不是"没回"：如果按超时处理，租约一到就会自动重投，等于把打断的任务又复活。
+   */
+  markInterrupted(message) {
+    if (!message.replyTo) return null;
+    const key = DeliveryLedger.keyOf(message.replyTo, message.agent);
+    if (!this.records.has(key)) return null;
+    return this.#set(message.replyTo, message.agent, 'expired', {
+      note: '已被人类打断，按终结处理（不再重投）',
+      deadlineAt: null,
+    });
+  }
+
   /** 某条留言的全部投递记录。 */
   forMessage(messageId) {
     return this.order

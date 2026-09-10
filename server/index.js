@@ -642,8 +642,13 @@ export function createBoardServer(overrides = {}) {
         // 投递台账：本条点名了谁，就给谁建一条投递记录（幂等）
         delivery.ensure(message, check.mentions);
 
-        // 对方回话：notice → working（续租），实质内容 → replied（终态）
-        const transitioned = message.kind === 'notice' ? delivery.markWorking(message) : delivery.markReplied(message);
+        // 对方回话：被打断 → 终结；notice → working（续租）；实质内容 → replied（终态）
+        const wasInterrupted = Boolean(payload.client && payload.client.interrupted === true);
+        const transitioned = wasInterrupted
+          ? delivery.markInterrupted(message)
+          : message.kind === 'notice'
+            ? delivery.markWorking(message)
+            : delivery.markReplied(message);
         if (transitioned) broadcast('delivery', transitioned);
 
         // 点名即唤醒：立刻把点名送到被点名成员（长轮询 / 回调 / 本机命令 / 入队）

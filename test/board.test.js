@@ -589,6 +589,44 @@ test('打断：未知成员被拒', async () => {
   });
 });
 
+test('打断：人类叫停后投递直接终结，且不会被租约自动重投', async () => {
+  await withBoard(
+    async ({ base, join, post, state }) => {
+      await join({ agent: 'deepseek', name: 'DeepSeek' });
+      await join({ agent: 'codex', name: 'Codex' });
+
+      const waiting = fetch(`${base}/api/inbox?agent=codex&wait=5`).then((r) => r.json());
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const asked = await (await post('/api/message', { agent: 'deepseek', text: '@codex 长任务。' })).json();
+      await post('/api/message', { agent: 'codex', kind: 'notice', text: '正在处理…', replyTo: asked.message.id });
+      await waiting;
+
+      // 通道回报"已被人类打断"
+      await post('/api/message', {
+        agent: 'codex',
+        kind: 'notice',
+        status: '阻塞',
+        text: '本轮已被人类打断。',
+        replyTo: asked.message.id,
+        client: { interrupted: true },
+      });
+
+      let payload = await state();
+      let record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
+      assert.equal(record.state, 'expired', '被打断 = 终结');
+      assert.match(record.note, /不再重投/);
+
+      // 等过租约与巡检，确认没有被"回收重投"
+      await new Promise((resolve) => setTimeout(resolve, 3500));
+      payload = await state();
+      record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
+      assert.equal(record.state, 'expired');
+      assert.deepEqual(payload.wakeQueue, {}, '不应把被打断的任务放回队列');
+    },
+    { delivery: { leaseSeconds: 1, maxAttempts: 2, sweepSeconds: 1 } },
+  );
+});
+
 /* ── 接入验收 ───────────────────────────────────────────── */
 
 test('接入验收：心跳 / 唤醒通道 / 点名闭环 三项逐项点亮', async () => {
