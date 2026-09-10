@@ -216,18 +216,26 @@ export class Store {
   /**
    * 点名闭环统计：谁真的"被 @ 之后回过实质内容"。
    * 只认「留言带 replyTo → 指向一条点名了自己的留言 → 且不是 notice/空话」。
+   *
+   * @param {{ windowMs?: number }} options
+   *   windowMs > 0 时额外统计 recentCount（窗口内回过多少条）。
+   *   验收用的是窗口内计数：成员一旦停止回应，徽标应当自动降级，
+   *   而不是拿着一句"历史上回过"永久显示已验收。
    */
-  mentionReplies() {
+  mentionReplies({ windowMs = 0 } = {}) {
     const byId = new Map(this.messages.map((msg) => [msg.id, msg]));
+    const now = Date.now();
     const out = {};
     for (const msg of this.messages) {
       if (msg.kind === 'notice' || msg.flags.includes('ACK_ONLY')) continue;
       const target = msg.replyTo ? byId.get(msg.replyTo) : null;
       if (!target || !Array.isArray(target.mentions) || !target.mentions.includes(msg.agent)) continue;
-      const entry = out[msg.agent] || { count: 0, lastAt: null, lastSeq: 0 };
+      const entry = out[msg.agent] || { count: 0, recentCount: 0, lastAt: null, lastSeq: 0 };
       entry.count += 1;
       entry.lastAt = msg.ts;
       entry.lastSeq = msg.seq;
+      const at = Date.parse(msg.ts);
+      if (windowMs > 0 && Number.isFinite(at) && now - at <= windowMs) entry.recentCount += 1;
       out[msg.agent] = entry;
     }
     return out;

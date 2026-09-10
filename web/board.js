@@ -335,7 +335,15 @@ function renderRoster() {
   el.roster.innerHTML = state.agents
     .map((agent) => {
       const pending = pendingByAgent.get(agent.id) || 0;
-      const sub = [agent.title, STATE_LABEL[agent.state] || agent.state, agoOf(agent.ageSeconds)]
+      // 心跳读数：实测间隔（服务端按最近几次心跳取中位数），不是成员自报的周期
+      const hb = agent.heartbeatIntervalSeconds;
+      const hbText = hb ? `心跳 ~${hb}s` : '心跳 —';
+      const sub = [
+        agent.title,
+        STATE_LABEL[agent.state] || agent.state,
+        agoOf(agent.ageSeconds),
+        hbText,
+      ]
         .filter(Boolean)
         .join(' · ');
       const undeclared = agent.selfDeclared
@@ -345,13 +353,21 @@ function renderRoster() {
       const queuedBadge = queued
         ? `<span class="pending pending--quiet" title="有点名还没送达，等它下次长轮询或读板">待唤醒 ${queued}</span>`
         : '';
+      // 投递计数：超时未回比"历史上有回过"更能说明这个成员现在到底会不会回应
+      const dc = agent.deliveryCounts || {};
+      const expiredBadge = dc.expired
+        ? `<span class="pending pending--flag" title="有 ${dc.expired} 条点名已判超时/被叫停（该成员当前可能只挂心跳、不会回应）">超时未回 ${dc.expired}</span>`
+        : '';
+      const repliedBadge = dc.replied
+        ? `<span class="pending pending--quiet" title="累计已实质回应 ${dc.replied} 条点名">已回应 ${dc.replied}</span>`
+        : '';
       // 接入验收：服务端按「心跳 / 唤醒通道 / 点名闭环」三项证据判定，不看自述
       const acc = agent.acceptance;
       const accBadge = !acc
         ? ''
         : acc.status === 'verified'
-          ? '<span class="pending pending--ok" title="心跳 ✓ / 唤醒通道 ✓ / 点名闭环 ✓">已验收</span>'
-          : `<span class="pending pending--quiet" title="心跳 ${acc.checks.heartbeat ? '✓' : '✗'} / 唤醒通道 ${acc.checks.channel ? '✓' : '✗'} / 点名闭环 ${acc.checks.loop ? '✓' : '✗'}">验收 ${acc.passed}/3</span>`;
+          ? `<span class="pending pending--ok" title="心跳 ✓ / 唤醒通道 ✓ / 点名闭环 ✓（最近 ${acc.loopWindowHours || 24} 小时内回过实质内容）">已验收</span>`
+          : `<span class="pending pending--quiet" title="心跳 ${acc.checks.heartbeat ? '✓' : '✗'} / 唤醒通道 ${acc.checks.channel ? '✓' : '✗'} / 点名闭环 ${acc.checks.loop ? '✓' : '✗'}（只看最近 ${acc.loopWindowHours || 24} 小时：只挂心跳、不会回应的成员会降级）">验收 ${acc.passed}/3</span>`;
       return `
       <li class="member" data-state="${esc(agent.state)}" data-agent="${esc(agent.id)}">
         <span class="member__mono${agent.avatar ? ' member__mono--img' : ''}">${
@@ -367,6 +383,8 @@ function renderRoster() {
           ${accBadge}
           ${pending ? `<span class="pending" title="被点名但尚无实质回复">待回应 ${pending}</span>` : ''}
           ${queuedBadge}
+          ${expiredBadge}
+          ${repliedBadge}
           ${undeclared}
           ${
             agent.openDeliveries

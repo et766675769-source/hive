@@ -211,6 +211,23 @@ export class DeliveryLedger {
       .reverse();
   }
 
+  /**
+   * 某成员的投递计数：open = 还没了结的，expired = 已被判超时/打断的。
+   * 界面上用它说明"这个成员现在到底会不会回应"——比一句历史上的"已验收"真实。
+   */
+  countsFor(agent) {
+    let open = 0;
+    let expired = 0;
+    let replied = 0;
+    for (const record of this.records.values()) {
+      if (record.agent !== agent) continue;
+      if (record.state === 'replied') replied += 1;
+      else if (record.state === 'expired') expired += 1;
+      else open += 1;
+    }
+    return { open, expired, replied };
+  }
+
   #view(record) {
     return {
       messageId: record.messageId,
@@ -228,16 +245,46 @@ export class DeliveryLedger {
   }
 
   /**
-   * 租约巡检：到期的 delivered / working 记为 expired；还有重试次数的自动回到 queued 等待重投。
-   * @returns {{ expired: object[], reclaimed: object[] }}
+   * 通道重启导致的一轮丢失：**立即**回到 queued 重投（终态无关）。
+   * 与 markInterrupted 的区别：打断是人类主动叫停（终结、不重投），
+   * 这里是基础设施把活弄丢了（必须马上重试），所以不能等 180 秒租约。
    */
-  sweep() {
+  markLost(message) {
+    if (!message.replyTo) return null;
+    const key = DeliveryLedger.keyOf(message.replyTo, message.agent);
+    if (!this.records.has(key)) return null;
+    return this.#set(message.replyTo, message.agent, 'queued', {
+      note: '通道重启导致这一轮丢失，已立即重投',
+      deadlineAt: null,
+    });
+  }
+
+  /**
+   * 租约巡检：到期的 delivered / working 记为 expired；还有重试次数的自动回到 queued 等待重投。
+   *
+   * @param {{ renewFor?: (agent: string) => boolean }} options
+   *   renewFor 返回 true 表示该成员此刻确实活着（在线且挂着唤醒通道）——
+   *   那说明这是一个**正常的长任务**，应当续租而不是判超时；
+   *   否则长任务会被误判为超时并重投，让 Codex 白白重做一遍。
+   * @returns {{ expired: object[], reclaimed: object[], renewed: number }}
+   */
+  sweep({ renewFor } = {}) {
     const now = this.now();
     const expired = [];
     const reclaimed = [];
+    let renewed = 0;
     for (const record of [...this.records.values()]) {
       if (TERMINAL.has(record.state) || record.state === 'expired') continue;
       if (!record.deadlineAt || now < record.deadlineAt) continue;
+
+      if (typeof renewFor === 'function' && renewFor(record.agent)) {
+        this.#set(record.messageId, record.agent, record.state, {
+          note: '成员在线，续租（长任务进行中）',
+          deadlineAt: now + this.leaseSeconds * 1000,
+        });
+        renewed += 1;
+        continue;
+      }
 
       const view = this.#view(record);
       expired.push(view);

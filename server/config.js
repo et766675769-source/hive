@@ -60,10 +60,11 @@ export function loadConfig(overrides = {}) {
     openJoin: rawBoard.openJoin !== false,
   };
 
+  const overridePresence = overrides.presence || {};
   const presence = {
-    heartbeatTtlSeconds: Number(rawPresence.heartbeatTtlSeconds || 45),
-    sweepSeconds: Number(rawPresence.sweepSeconds || 5),
-    staleMultiplier: Number(rawPresence.staleMultiplier || 6),
+    heartbeatTtlSeconds: Number(overridePresence.heartbeatTtlSeconds || rawPresence.heartbeatTtlSeconds || 45),
+    sweepSeconds: Number(overridePresence.sweepSeconds || rawPresence.sweepSeconds || 5),
+    staleMultiplier: Number(overridePresence.staleMultiplier || rawPresence.staleMultiplier || 6),
   };
 
   // 投递租约：送达/处理中的 deadline，超时回收重投
@@ -74,6 +75,13 @@ export function loadConfig(overrides = {}) {
     // 启动恢复：把历史上"被点名但没有实质回复"的留言重新放回投递队列
     backfillOnStart: (overrideDelivery.backfillOnStart ?? rawDelivery.backfillOnStart) !== false,
     backfillLimit: Number(overrideDelivery.backfillLimit || rawDelivery.backfillLimit || 3),
+  };
+
+  // 接入验收：点名闭环只看窗口内的回应，停止回应的成员会自动降级
+  const rawAcceptance = raw.acceptance || {};
+  const overrideAcceptance = overrides.acceptance || {};
+  const acceptance = {
+    loopWindowHours: Number(overrideAcceptance.loopWindowHours || rawAcceptance.loopWindowHours || 24),
   };
 
   const guards = {
@@ -98,6 +106,7 @@ export function loadConfig(overrides = {}) {
     board: { ...board, dataDir },
     presence,
     delivery,
+    acceptance,
     guards,
     presets,
     localOperator,

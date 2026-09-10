@@ -520,7 +520,7 @@ test('投递：没有可用通道时停在 queued，并计入该成员的未完�
   });
 });
 
-test('投递：租约到期自动回收重投', async () => {
+test('投递：成员已掉线时，租约到期自动回收重投', async () => {
   await withBoard(
     async ({ base, join, post, state }) => {
       await join({ agent: 'deepseek', name: 'DeepSeek' });
@@ -532,13 +532,46 @@ test('投递：租约到期自动回收重投', async () => {
       assert.equal(asked.delivery[0].state, 'delivered');
       await waiting;
 
-      // 租约 1 秒 + 巡检 1 秒：等它自然过期
+      // 心跳 TTL 1 秒：让它在下一次巡检前就变成 stale（= 没人接活）
       await new Promise((resolve) => setTimeout(resolve, 4000));
       const payload = await state();
       const record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
-      assert.equal(record.state, 'queued', '过期后应回收为 queued 等待重投');
+      assert.equal(record.state, 'queued', '成员掉线后过期应回收为 queued 等待重投');
       assert.match(record.note, /回收重投/);
       assert.equal(record.attempts, 1, '重投前仍算 1 次送达记录');
+    },
+    {
+      presence: { heartbeatTtlSeconds: 1, sweepSeconds: 1, staleMultiplier: 2 },
+      delivery: { leaseSeconds: 1, maxAttempts: 2, sweepSeconds: 1 },
+    },
+  );
+});
+
+test('投递：成员仍在线时长任务只续租，不被误判超时重投', async () => {
+  await withBoard(
+    async ({ base, join, post, state }) => {
+      await join({ agent: 'deepseek', name: 'DeepSeek' });
+      await join({ agent: 'marvis', name: 'Marvis' });
+
+      const waiting = fetch(`${base}/api/inbox?agent=marvis&wait=3`).then((r) => r.json());
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const asked = await (await post('/api/message', { agent: 'deepseek', text: '@marvis 长任务。' })).json();
+      assert.equal(asked.delivery[0].state, 'delivered');
+      await waiting;
+
+      // 保持心跳 + 挂长轮询：租约到期时应当续租，而不是把 Codex 的活重投一遍
+      for (let i = 0; i < 6; i += 1) {
+        const poll = fetch(`${base}/api/inbox?agent=marvis&wait=2`).then((r) => r.json());
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        await post('/api/heartbeat', { agent: 'marvis', state: 'online', note: '正在处理长任务' });
+        await poll;
+      }
+
+      const payload = await state();
+      const record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
+      assert.ok(record.state === 'delivered' || record.state === 'working', `应保持已送达/处理中，实际 ${record.state}`);
+      assert.match(record.note, /续租/);
+      assert.equal(payload.deliverySummary.counts.expired, 0, '在线成员的活不该被判超时');
     },
     { delivery: { leaseSeconds: 1, maxAttempts: 2, sweepSeconds: 1 } },
   );

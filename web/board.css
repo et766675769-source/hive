@@ -307,6 +307,12 @@ code {
   background: color-mix(in srgb, var(--online) 13%, transparent);
 }
 
+/* 有投递被判超时/被叫停：这个成员此刻可能并不会回应 */
+.pending--flag {
+  color: var(--busy);
+  background: color-mix(in srgb, var(--busy) 12%, transparent);
+}
+
 .roster__empty {
   margin: 4px 0 0;
   padding: 16px 14px;

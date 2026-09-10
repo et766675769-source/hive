@@ -75,11 +75,17 @@ export class Presence {
     fs.renameSync(tmp, file);
   }
 
-  /** 记录一次心跳。 */
-  beat(agentId, { state, note = '', session = null } = {}) {
+  /** 记录一次心跳。source 区分"显式心跳"与"发言/加入时的顺带刷新"。 */
+  beat(agentId, { state, note = '', session = null, source = 'heartbeat' } = {}) {
     const id = String(agentId).toLowerCase();
     const declared = PRESENCE_STATES.includes(state) ? state : 'online';
     const at = this.now();
+    const previous = this.records.get(id);
+    // 只把**显式心跳**计入间隔样本：发言、加入也会刷新 last_seen，
+    // 混进来会把"心跳频率"算成 1 秒这种假读数。
+    const beatTimes = source === 'heartbeat'
+      ? [...(previous?.beatTimes || []), at].slice(-10)
+      : (previous?.beatTimes || []);
     const record = {
       id,
       declared,
@@ -87,7 +93,9 @@ export class Presence {
       lastSeenAt: at,
       note: String(note || '').slice(0, 200),
       session: session ? String(session).slice(0, 120) : null,
-      beats: (this.records.get(id)?.beats || 0) + 1,
+      beats: (previous?.beats || 0) + 1,
+      heartbeats: (previous?.heartbeats || 0) + (source === 'heartbeat' ? 1 : 0),
+      beatTimes,
     };
     this.records.set(id, record);
     try {
@@ -114,6 +122,26 @@ export class Presence {
     return 'offline';
   }
 
+  /**
+   * 实测心跳间隔（秒）：取最近几次心跳间隔的中位数，避免单次抖动。
+   * 来源是服务端观测到的**显式心跳**时刻，不是成员自述的周期；
+   * 小于 2 秒的间隔视为并发刷新，忽略，否则会把读数拉成 1 秒这种假值。
+   */
+  heartbeatIntervalSeconds(record) {
+    const times = record?.beatTimes || [];
+    if (times.length < 2) return null;
+    const deltas = [];
+    for (let i = 1; i < times.length; i += 1) {
+      const delta = (times[i] - times[i - 1]) / 1000;
+      if (delta >= 2) deltas.push(delta);
+    }
+    if (!deltas.length) return null;
+    deltas.sort((a, b) => a - b);
+    const mid = Math.floor(deltas.length / 2);
+    const median = deltas.length % 2 ? deltas[mid] : (deltas[mid - 1] + deltas[mid]) / 2;
+    return Math.max(1, Math.round(median));
+  }
+
   /** 名册快照（含隐藏成员；对外过滤由调用方负责）。 */
   snapshot() {
     return this.agentsProvider().map((agent) => {
@@ -134,6 +162,9 @@ export class Presence {
         declared: record ? record.declared : null,
         lastSeen: record ? record.lastSeen : null,
         ageSeconds,
+        heartbeatIntervalSeconds: this.heartbeatIntervalSeconds(record),
+        beats: record ? record.beats : 0,
+        heartbeats: record ? record.heartbeats || 0 : 0,
         note: record ? record.note : '',
         everSeen: Boolean(record && record.lastSeenAt),
       };

@@ -27,6 +27,10 @@ export function agentCard(agent, presenceById) {
     state: presence ? presence.state : 'offline',
     lastSeen: presence ? presence.lastSeen : null,
     ageSeconds: presence ? presence.ageSeconds : null,
+    // 实测心跳间隔（秒，取最近几次的中位数）；不足两次心跳时为 null
+    heartbeatIntervalSeconds: presence ? presence.heartbeatIntervalSeconds ?? null : null,
+    beats: presence ? presence.beats ?? 0 : 0,
+    heartbeats: presence ? presence.heartbeats ?? 0 : 0,
     note: presence ? presence.note : '',
   };
 }

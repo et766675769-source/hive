@@ -183,9 +183,22 @@ export function createBoardServer(overrides = {}) {
     maxAttempts: config.delivery.maxAttempts,
   });
 
-  /** 租约巡检：到期的投递回收重投（再入唤醒队列），并在界面上可见。 */
+  /**
+   * 租约巡检：到期的投递回收重投（再入唤醒队列），并在界面上可见。
+   * 关键：成员**此刻确实活着**（在线 + 挂着唤醒通道）时只续租不回收——
+   * 否则一个正常的长任务会被误判超时并重投，让 Codex 白白重做一遍。
+   */
   function sweepDeliveries() {
-    const { expired, reclaimed } = delivery.sweep();
+    const presenceMap = new Map(presence.snapshot().map((item) => [item.id, item]));
+    const renewFor = (agentId) => {
+      const item = presenceMap.get(agentId);
+      if (!item || item.state === 'stale' || item.state === 'offline') return false;
+      const agent = registry.get(agentId);
+      if (!agent) return false;
+      const channel = wake.channelState(agent);
+      return Boolean(channel.inbox.waiting || channel.inbox.recent || (channel.callback && channel.callback.ok) || channel.command);
+    };
+    const { expired, reclaimed } = delivery.sweep({ renewFor });
     for (const record of reclaimed) {
       const message = store.list({ limit: store.historyInMemory }).find((item) => item.id === record.messageId);
       if (!message) continue;
@@ -253,7 +266,8 @@ export function createBoardServer(overrides = {}) {
 
   /**
    * 接入验收：不问自述，只看服务端能观测到的三件事——
-   *   ① 心跳（在 TTL 内）  ② 唤醒通道（长轮询在挂/最近挂过、回调成功、或配了本机命令）  ③ 点名闭环（被 @ 后回过实质内容）
+   *   ① 心跳（在 TTL 内）  ② 唤醒通道（长轮询在挂/最近挂过、回调成功、或配了本机命令）
+   *   ③ 点名闭环（**窗口内**回过实质内容——只看历史会让已停止回应的成员一直挂着"已验收"）
    */
   function acceptanceFor(agent, presenceItem, replies) {
     const channel = wake.channelState(agent);
@@ -262,7 +276,7 @@ export function createBoardServer(overrides = {}) {
     const channelOk = Boolean(
       channel.inbox.waiting || channel.inbox.recent || (channel.callback && channel.callback.ok) || channel.command,
     );
-    const loop = Boolean(replies && replies.count > 0);
+    const loop = Boolean(replies && replies.recentCount > 0);
     const checks = { heartbeat, channel: channelOk, loop };
     const passed = Object.values(checks).filter(Boolean).length;
     return {
@@ -270,8 +284,9 @@ export function createBoardServer(overrides = {}) {
       passed,
       total: 3,
       status: passed === 3 ? 'verified' : passed === 0 ? 'unverified' : 'partial',
+      loopWindowHours: config.acceptance.loopWindowHours,
       channel,
-      replies: replies || { count: 0, lastAt: null, lastSeq: 0 },
+      replies: replies || { count: 0, recentCount: 0, lastAt: null, lastSeq: 0 },
     };
   }
 
@@ -279,13 +294,14 @@ export function createBoardServer(overrides = {}) {
     const pending = store.pendingReplies();
     const pendingByAgent = {};
     for (const item of pending) pendingByAgent[item.agent] = (pendingByAgent[item.agent] || 0) + 1;
-    const mentionReplies = store.mentionReplies();
+    const mentionReplies = store.mentionReplies({ windowMs: config.acceptance.loopWindowHours * 3600 * 1000 });
     const presenceMap = new Map(presence.snapshot().map((item) => [item.id, item]));
     return {
       members: registry.visible().map((agent) => ({
         ...agentCard(agent, presenceMap),
         pending: pendingByAgent[agent.id] || 0,
         openDeliveries: delivery.openForAgent(agent.id).length,
+        deliveryCounts: delivery.countsFor(agent.id),
         acceptance: acceptanceFor(agent, presenceMap.get(agent.id), mentionReplies[agent.id]),
       })),
       pending,
@@ -540,7 +556,7 @@ export function createBoardServer(overrides = {}) {
           wake: payload.wake,
           joinedAt: new Date().toISOString(),
         });
-        const record = presence.beat(id, { state: payload.state || 'online', note: payload.note || '刚刚接入', session: payload.session });
+        const record = presence.beat(id, { state: payload.state || 'online', note: payload.note || '刚刚接入', session: payload.session, source: 'join' });
         return json(res, 200, {
           ok: true,
           agent: agentCard(agent, new Map([[id, { ...record, state: 'online', ageSeconds: 0 }]])),
@@ -637,19 +653,32 @@ export function createBoardServer(overrides = {}) {
             ...(idempotencyKey ? { idempotencyKey } : {}),
           },
         });
-        presence.beat(agent.id, { state: 'online', note: '正在发言', session: payload.session });
+        presence.beat(agent.id, { state: 'online', note: '正在发言', session: payload.session, source: 'message' });
 
         // 投递台账：本条点名了谁，就给谁建一条投递记录（幂等）
         delivery.ensure(message, check.mentions);
 
-        // 对方回话：被打断 → 终结；notice → working（续租）；实质内容 → replied（终态）
+        // 对方回话：通道重启丢失 → 立即重投；被打断 → 终结；notice → working（续租）；实质内容 → replied（终态）
+        const wasAborted = Boolean(payload.client && payload.client.aborted === true);
         const wasInterrupted = Boolean(payload.client && payload.client.interrupted === true);
-        const transitioned = wasInterrupted
-          ? delivery.markInterrupted(message)
-          : message.kind === 'notice'
-            ? delivery.markWorking(message)
-            : delivery.markReplied(message);
+        const transitioned = wasAborted
+          ? delivery.markLost(message)
+          : wasInterrupted
+            ? delivery.markInterrupted(message)
+            : message.kind === 'notice'
+              ? delivery.markWorking(message)
+              : delivery.markReplied(message);
         if (transitioned) broadcast('delivery', transitioned);
+
+        // 通道重启把在跑的一轮弄丢了：立刻放回唤醒队列，不等 180 秒租约
+        if (wasAborted && wasAborted !== null && message.replyTo) {
+          const original = store.list({ limit: store.historyInMemory }).find((item) => item.id === message.replyTo);
+          const target = registry.get(message.agent);
+          if (original && target) {
+            wake.requeue(target.id, wake.envelope(original, target.id));
+            broadcast('delivery', { ...transitioned, state: 'queued', note: '通道重启导致丢失，已立即重投' });
+          }
+        }
 
         // 点名即唤醒：立刻把点名送到被点名成员（长轮询 / 回调 / 本机命令 / 入队）
         const wakes = await Promise.all(
@@ -692,7 +721,7 @@ export function createBoardServer(overrides = {}) {
           });
         }
         const waitSeconds = Math.max(0, Math.min(Number(url.searchParams.get('wait') || 0) || 0, 60));
-        presence.beat(agent.id, { state: 'online', note: '监听点名中' });
+        presence.beat(agent.id, { state: 'online', note: '监听点名中', source: 'inbox' });
         const started = Date.now();
         const result = await wake.inbox(agent.id, { waitMs: waitSeconds * 1000 });
         return json(res, 200, {
@@ -747,6 +776,7 @@ export function createBoardServer(overrides = {}) {
           state: payload.state,
           note: payload.note,
           session: payload.session,
+          source: 'heartbeat',
         });
         return json(res, 200, {
           ok: true,

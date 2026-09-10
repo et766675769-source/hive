@@ -95,6 +95,9 @@ const IDENTITY = {
 
 const RUNTIME_DIR = flag('runtime', path.join(process.cwd(), 'data', 'runner', AGENT));
 const THREADS_FILE = () => path.join(RUNTIME_DIR, 'threads.json');
+// 在跑回合的落盘记录：通道若被重启/杀掉，下一次启动能立刻上报"这一轮丢了"，
+// 让黑板立即重投，而不是干等 180 秒租约。
+const ACTIVE_FILE = () => path.join(RUNTIME_DIR, 'active-turn.json');
 const PROXY = detectProxy();
 
 /**
@@ -159,6 +162,32 @@ function writeThreads(map) {
     fs.writeFileSync(THREADS_FILE(), JSON.stringify(map, null, 2), 'utf8');
   } catch (error) {
     log(`threads 落盘失败：${error.message}`);
+  }
+}
+
+/** 记下"当前在跑的回合"，供重启后上报丢失。 */
+function writeActive(record) {
+  try {
+    fs.mkdirSync(RUNTIME_DIR, { recursive: true });
+    fs.writeFileSync(ACTIVE_FILE(), JSON.stringify(record, null, 2), 'utf8');
+  } catch (error) {
+    log(`active-turn 落盘失败：${error.message}`);
+  }
+}
+
+function clearActive() {
+  try {
+    fs.rmSync(ACTIVE_FILE(), { force: true });
+  } catch {
+    /* 删不掉不影响主流程 */
+  }
+}
+
+function readActive() {
+  try {
+    return JSON.parse(stripBom(fs.readFileSync(ACTIVE_FILE(), 'utf8')));
+  } catch {
+    return null;
   }
 }
 
@@ -476,6 +505,7 @@ channel.onEvent(async (message) => {
   if (method === 'turn/completed' && active && params.turn?.id === active.turnId) {
     const finished = active;
     active = null;
+    clearActive();
     const text = (finished.finalText || '').trim();
     if (finished.interrupted) {
       try {
@@ -604,6 +634,7 @@ async function handleMention(envelope) {
     seq: envelope.seq,
     topic: envelope.topic || null,
   };
+  writeActive({ ...active, startedAt: new Date().toISOString() });
   log(`已在新回合处理 #${envelope.seq}（turn ${active.turnId}）`);
 
   await postBoard(
@@ -696,6 +727,31 @@ async function main() {
     { label: '自检表' },
   );
   log('已贴出接入自检表');
+
+  // 上一次运行时被重启/杀掉，手里那一轮就丢了：立刻上报，让黑板马上重投。
+  // 不这样做的话，投递会停在 working 直到 180 秒租约到期，用户看到的就是"没反应"。
+  const lost = readActive();
+  if (lost && lost.replyTo) {
+    log(`发现上次未完成的回合（#${lost.seq}，thread ${lost.threadId}），上报丢失并请求重投`);
+    try {
+      await postBoard(
+        {
+          agent: AGENT,
+          kind: 'notice',
+          status: '进行中',
+          topic: lost.topic || null,
+          replyTo: lost.replyTo,
+          idempotencyKey: `codex-app-server:${lost.replyTo}:lost`,
+          text: `通道上一次运行时被中断：#${lost.seq} 的那一轮（thread ${lost.threadId}）没有跑完，已请求黑板立即重投，不需要等租约到期。本条为基础设施丢失回执，不是结论。`,
+          client: { channel: 'codex-app-server', aborted: true, threadId: lost.threadId, turnId: lost.turnId },
+        },
+        { label: '丢失上报' },
+      );
+    } catch (error) {
+      log(`丢失上报失败：${error.message}`);
+    }
+  }
+  clearActive();
 
   for (;;) {
     try {

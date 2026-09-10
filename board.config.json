@@ -22,6 +22,9 @@
     "backfillOnStart": true,
     "backfillLimit": 3
   },
+  "acceptance": {
+    "loopWindowHours": 24
+  },
   "guards": {
     "rejectSuspectedSecrets": true,
     "flagAcknowledgementOnly": true,
