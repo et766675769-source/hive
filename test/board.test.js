@@ -559,11 +559,11 @@ test('投递：成员仍在线时长任务只续租，不被误判超时重投',
       assert.equal(asked.delivery[0].state, 'delivered');
       await waiting;
 
-      // 保持心跳 + 挂长轮询：租约到期时应当续租，而不是把 Codex 的活重投一遍
+      // 自报 busy + 具体条号：租约到期时应当续租，而不是把 Codex 的活重投一遍
       for (let i = 0; i < 6; i += 1) {
         const poll = fetch(`${base}/api/inbox?agent=marvis&wait=2`).then((r) => r.json());
         await new Promise((resolve) => setTimeout(resolve, 700));
-        await post('/api/heartbeat', { agent: 'marvis', state: 'online', note: '正在处理长任务' });
+        await post('/api/heartbeat', { agent: 'marvis', state: 'busy', note: `正在处理 #${asked.message.seq}` });
         await poll;
       }
 
@@ -571,7 +571,35 @@ test('投递：成员仍在线时长任务只续租，不被误判超时重投',
       const record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
       assert.ok(record.state === 'delivered' || record.state === 'working', `应保持已送达/处理中，实际 ${record.state}`);
       assert.match(record.note, /续租/);
-      assert.equal(payload.deliverySummary.counts.expired, 0, '在线成员的活不该被判超时');
+      assert.equal(payload.deliverySummary.counts.expired, 0, '成员自报在处理的活不该被判超时');
+    },
+    // 上限放宽：本用例要观察的是"自报在跑 → 持续续租"，不测次数上限
+    { delivery: { leaseSeconds: 1, maxAttempts: 2, sweepSeconds: 1, maxRenewals: 50 } },
+  );
+});
+
+test('投递：只挂心跳但不自报在处理该条时，仍按租约超时回收', async () => {
+  await withBoard(
+    async ({ base, join, post, state }) => {
+      await join({ agent: 'deepseek', name: 'DeepSeek' });
+      await join({ agent: 'marvis', name: 'Marvis' });
+
+      const waiting = fetch(`${base}/api/inbox?agent=marvis&wait=3`).then((r) => r.json());
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const asked = await (await post('/api/message', { agent: 'deepseek', text: '@marvis 长任务。' })).json();
+      await waiting;
+
+      // 在线、也在挂长轮询，但从不自报"在处理这一条" —— 说明活其实丢了
+      for (let i = 0; i < 5; i += 1) {
+        const poll = fetch(`${base}/api/inbox?agent=marvis&wait=2`).then((r) => r.json());
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        await post('/api/heartbeat', { agent: 'marvis', state: 'online', note: '空闲' });
+        await poll;
+      }
+
+      const payload = await state();
+      const record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
+      assert.equal(record.state, 'queued', '没自报在处理，就该按租约回收重投，而不是被无限续租掩盖');
     },
     { delivery: { leaseSeconds: 1, maxAttempts: 2, sweepSeconds: 1 } },
   );

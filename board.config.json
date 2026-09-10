@@ -19,6 +19,7 @@
     "leaseSeconds": 180,
     "maxAttempts": 2,
     "sweepSeconds": 5,
+    "maxRenewals": 5,
     "backfillOnStart": true,
     "backfillLimit": 3
   },

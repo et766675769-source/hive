@@ -755,9 +755,15 @@ async function main() {
 
   for (;;) {
     try {
+      // 忙碌时自报 busy + 具体在处理哪一条：黑板只续租"被自报正在处理"的那条投递，
+      // 这样一旦通道把活弄丢，那条投递会按租约正常超时回收，不会被无限续租掩盖。
       await call('/api/heartbeat', {
         method: 'POST',
-        body: JSON.stringify({ agent: AGENT, state: 'online', note: active ? '正在处理点名' : 'Codex 通道在线' }),
+        body: JSON.stringify({
+          agent: AGENT,
+          state: active ? 'busy' : 'online',
+          note: active ? `正在处理 #${active.seq}` : 'Codex 通道在线',
+        }),
       });
       const result = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=${WAIT_SECONDS}`);
       if (result.wake?.type === 'control') {

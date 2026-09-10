@@ -25,6 +25,8 @@ export function agentCard(agent, presenceById) {
     selfDeclared: Boolean(agent.selfDeclared),
     joinedAt: agent.joinedAt,
     state: presence ? presence.state : 'offline',
+    // 成员**自报**的状态（online/busy/idle）：busy 表示它声称正在处理某条点名
+    declared: presence ? presence.declared || null : null,
     lastSeen: presence ? presence.lastSeen : null,
     ageSeconds: presence ? presence.ageSeconds : null,
     // 实测心跳间隔（秒，取最近几次的中位数）；不足两次心跳时为 null

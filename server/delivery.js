@@ -23,12 +23,13 @@ const TERMINAL = new Set(['replied']);
 
 export class DeliveryLedger {
   /**
-   * @param {{ file: string, leaseSeconds?: number, maxAttempts?: number, now?: () => number }} options
+   * @param {{ file: string, leaseSeconds?: number, maxAttempts?: number, maxRenewals?: number, now?: () => number }} options
    */
-  constructor({ file, leaseSeconds = 180, maxAttempts = 2, now = () => Date.now() }) {
+  constructor({ file, leaseSeconds = 180, maxAttempts = 2, maxRenewals = 5, now = () => Date.now() }) {
     this.file = file;
     this.leaseSeconds = leaseSeconds;
     this.maxAttempts = maxAttempts;
+    this.maxRenewals = maxRenewals;
     this.now = now;
     this.records = new Map(); // key → record
     this.order = []; // key 的创建顺序（用于稳定输出）
@@ -85,6 +86,7 @@ export class DeliveryLedger {
       updatedAt: entry.at || this.now(),
       deadlineAt: null,
       note: '',
+      renewals: 0,
       history: [],
     };
 
@@ -95,6 +97,7 @@ export class DeliveryLedger {
     if (entry.topic !== undefined) record.topic = entry.topic;
     if (entry.attempts != null) record.attempts = entry.attempts;
     else if (entry.state === 'delivered') record.attempts += 1;
+    if (entry.renewals != null) record.renewals = entry.renewals;
     if (entry.deadlineAt !== undefined) record.deadlineAt = entry.deadlineAt;
     record.updatedAt = entry.at || this.now();
 
@@ -109,10 +112,10 @@ export class DeliveryLedger {
     return record;
   }
 
-  #set(messageId, agent, state, { channel, note, deadlineAt, attempts, seq, topic } = {}) {
+  #set(messageId, agent, state, { channel, note, deadlineAt, attempts, seq, topic, renewals } = {}) {
     if (!DELIVERY_STATES.includes(state)) throw new Error(`未知投递状态：${state}`);
     const at = this.now();
-    return this.#apply({ messageId, agent, state, channel, note, deadlineAt, attempts, seq, topic, at });
+    return this.#apply({ messageId, agent, state, channel, note, deadlineAt, attempts, seq, topic, renewals, at });
   }
 
   /** 为一条带点名的留言建立投递记录（幂等：已存在就返回原记录）。 */
@@ -262,13 +265,13 @@ export class DeliveryLedger {
   /**
    * 租约巡检：到期的 delivered / working 记为 expired；还有重试次数的自动回到 queued 等待重投。
    *
-   * @param {{ renewFor?: (agent: string) => boolean }} options
-   *   renewFor 返回 true 表示该成员此刻确实活着（在线且挂着唤醒通道）——
-   *   那说明这是一个**正常的长任务**，应当续租而不是判超时；
-   *   否则长任务会被误判为超时并重投，让 Codex 白白重做一遍。
+   * @param {{ renewFor?: (record: object) => boolean, maxRenewals?: number }} options
+   *   renewFor(record) 返回 true 才续租：由调用方判断"该成员是否**自报正在处理这一条**"。
+   *   注意不能用"成员在线就续租"——那样一个被弄丢的活会被无限续租，
+   *   永远不判超时，用户看到的就是"永远没反应"。
    * @returns {{ expired: object[], reclaimed: object[], renewed: number }}
    */
-  sweep({ renewFor } = {}) {
+  sweep({ renewFor, maxRenewals = this.maxRenewals } = {}) {
     const now = this.now();
     const expired = [];
     const reclaimed = [];
@@ -277,10 +280,12 @@ export class DeliveryLedger {
       if (TERMINAL.has(record.state) || record.state === 'expired') continue;
       if (!record.deadlineAt || now < record.deadlineAt) continue;
 
-      if (typeof renewFor === 'function' && renewFor(record.agent)) {
+      const canRenew = (record.renewals || 0) < maxRenewals;
+      if (canRenew && typeof renewFor === 'function' && renewFor(this.#view(record))) {
         this.#set(record.messageId, record.agent, record.state, {
-          note: '成员在线，续租（长任务进行中）',
+          note: `成员自报正在处理该条，续租（第 ${(record.renewals || 0) + 1}/${maxRenewals} 次）`,
           deadlineAt: now + this.leaseSeconds * 1000,
+          renewals: (record.renewals || 0) + 1,
         });
         renewed += 1;
         continue;

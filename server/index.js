@@ -181,22 +181,24 @@ export function createBoardServer(overrides = {}) {
     file: path.join(config.board.dataDir, 'deliveries.jsonl'),
     leaseSeconds: config.delivery.leaseSeconds,
     maxAttempts: config.delivery.maxAttempts,
+    maxRenewals: config.delivery.maxRenewals,
   });
 
   /**
    * 租约巡检：到期的投递回收重投（再入唤醒队列），并在界面上可见。
-   * 关键：成员**此刻确实活着**（在线 + 挂着唤醒通道）时只续租不回收——
-   * 否则一个正常的长任务会被误判超时并重投，让 Codex 白白重做一遍。
+   *
+   * 续租条件**必须严格**：成员得自报"正在处理这一条"（state=busy 且 note 里写着该条的 seq）。
+   * 早先写成"成员在线就续租"是错的——那样被弄丢的活会被无限续租、永远不判超时，
+   * 用户看到的就是"永远没反应"（#76 就是这样卡住的）。
    */
   function sweepDeliveries() {
     const presenceMap = new Map(presence.snapshot().map((item) => [item.id, item]));
-    const renewFor = (agentId) => {
-      const item = presenceMap.get(agentId);
-      if (!item || item.state === 'stale' || item.state === 'offline') return false;
-      const agent = registry.get(agentId);
-      if (!agent) return false;
-      const channel = wake.channelState(agent);
-      return Boolean(channel.inbox.waiting || channel.inbox.recent || (channel.callback && channel.callback.ok) || channel.command);
+    const renewFor = (record) => {
+      const item = presenceMap.get(record.agent);
+      if (!item || item.state !== 'busy') return false;
+      const claim = /#(\d+)/.exec(item.note || '');
+      if (!claim) return false;
+      return Number(claim[1]) === record.seq;
     };
     const { expired, reclaimed } = delivery.sweep({ renewFor });
     for (const record of reclaimed) {
@@ -721,7 +723,16 @@ export function createBoardServer(overrides = {}) {
           });
         }
         const waitSeconds = Math.max(0, Math.min(Number(url.searchParams.get('wait') || 0) || 0, 60));
-        presence.beat(agent.id, { state: 'online', note: '监听点名中', source: 'inbox' });
+        // 长轮询只刷新"还活着"。空闲成员显示成「监听点名中」；
+        // 但**成员自报 busy 时不覆盖**——它在处理长任务时会自报 busy + "正在处理 #N"，
+        // 覆盖掉会让租约续租判据失明，长任务被误判超时重投。
+        const current = presence.snapshot().find((item) => item.id === agent.id);
+        const busy = Boolean(current && current.declared === 'busy');
+        presence.beat(agent.id, {
+          state: busy ? 'busy' : 'online',
+          note: busy && current.note ? current.note : '监听点名中',
+          source: 'inbox',
+        });
         const started = Date.now();
         const result = await wake.inbox(agent.id, { waitMs: waitSeconds * 1000 });
         return json(res, 200, {
