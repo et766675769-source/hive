@@ -53,6 +53,32 @@ const VISIBLE = args.includes('--visible');
 
 const SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 
+/* ── 议题 → Codex 会话：同一议题的后续点名续接同一次对话 ── */
+
+const SESSIONS_FILE = path.join(RUNTIME_DIR, 'sessions.json');
+
+function readSessions() {
+  try {
+    return JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeSessions(map) {
+  try {
+    fs.mkdirSync(RUNTIME_DIR, { recursive: true });
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(map, null, 2), 'utf8');
+  } catch (error) {
+    log(`会话表保存失败：${error.message}`);
+  }
+}
+
+/** 议题（没有议题就用 __default__）→ 会话 id */
+function sessionKeyFor(envelope) {
+  return envelope.topic || '__default__';
+}
+
 /** 取最近一次 Codex 会话 id（rollout 文件名里带 uuid），用于回报可 resume 的会话。 */
 function findLatestSessionId(sinceMs) {
   try {
@@ -156,7 +182,7 @@ function q(value) {
   return `"${String(value).replace(/"/g, '""')}"`;
 }
 
-function runCodex(prompt) {
+function runCodex(prompt, { sessionId = '' } = {}) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(RUNTIME_DIR, { recursive: true });
     const stamp = Date.now();
@@ -166,23 +192,22 @@ function runCodex(prompt) {
 
     // 提示词从文件重定向进 stdin（命令行保持很短，且不依赖 stdout 管道）；
     // 回复由 codex 的 -o 写到文件，读文件即可，全程不开命名管道。
-    // disk-full-read-access：让 Codex 能读盘上其它目录（例如 obsidian 仓库），写仍然受 -s 限制。
-    const command = [
-      'codex',
-      'exec',
+    // disk-full-read-access：让 Codex 能读盘上其它目录（例如 obsidian 仓库），写仍然受会话沙箱限制。
+    // 给了 sessionId 就走 exec resume —— 同一个议题的后续点名会在同一场对话里继续。
+    const head = ['codex', 'exec'];
+    const tail = [
       '--skip-git-repo-check',
       '-c',
       'sandbox_permissions=["disk-full-read-access"]',
-      '-C',
-      q(WORKDIR),
-      '-s',
-      SANDBOX,
-      '-o',
-      q(outFile),
-      '-',
-      '<',
-      q(promptFile),
-    ].join(' ');
+    ];
+    if (sessionId) {
+      head.push('resume');
+      tail.push('-o', q(outFile), sessionId, '-', '<', q(promptFile));
+      log(`续接 Codex 会话 ${sessionId}（同一议题继续同一次对话）`);
+    } else {
+      tail.push('-C', q(WORKDIR), '-s', SANDBOX, '-o', q(outFile), '-', '<', q(promptFile));
+    }
+    const command = [...head, ...tail].join(' ');
     log(`调用 codex exec（sandbox=${SANDBOX}, cwd=${WORKDIR}${VISIBLE ? ', 独立窗口' : ''}）`);
 
     const startedAt = Date.now();
@@ -334,6 +359,11 @@ async function handleWake(envelope) {
   const state = await call('/api/state?limit=12');
   const prompt = buildPrompt(envelope, state.messages || []);
 
+  // 同一议题续接同一次 Codex 对话：这样人类在黑板上的后续指令就是"接着同一场对话推进"
+  const key = sessionKeyFor(envelope);
+  const sessions = readSessions();
+  const knownSession = PROVIDER === 'codex-cli' ? sessions[key] || '' : '';
+
   // 立刻回一条「处理中」通知：让点名的人看到反应，而不是干等 1–2 分钟。
   // 注意 kind=notice：服务端不会把它当成实质回应，「待回应」仍在。
   if (ACK) {
@@ -355,11 +385,15 @@ async function handleWake(envelope) {
     }
   }
 
-  const result = await (PROVIDERS[PROVIDER] || runDeepSeek)(prompt);
+  const result = await (PROVIDERS[PROVIDER] || runDeepSeek)(prompt, { sessionId: knownSession });
   const answer = typeof result === 'string' ? result : result.text;
   const sessionId = typeof result === 'string' ? '' : result.sessionId || '';
+  if (sessionId) {
+    sessions[key] = sessionId;
+    writeSessions(sessions);
+  }
   const text = sessionId
-    ? `${answer}\n\n（本次 Codex 会话：${sessionId} —— 终端执行 codex resume ${sessionId} 可进入同一次对话）`
+    ? `${answer}\n\n（本次 Codex 会话：${sessionId}${knownSession ? '（续接同一议题的既有对话）' : ''} —— 终端执行 codex resume ${sessionId} 可进入同一次对话）`
     : answer;
 
   const posted = await postMessage(
