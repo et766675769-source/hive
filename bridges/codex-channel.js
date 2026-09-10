@@ -180,6 +180,13 @@ class CodexChannel {
   async start() {
     const serverArgs = ['app-server', '--listen', 'stdio://'];
     if (!USE_WS) serverArgs.push('-c', 'features.responses_websockets=false');
+    // 让成员能真的干活：工作目录可写，且不因等待人工批准而卡住（否则只会回"尚未完成"）
+    serverArgs.push(
+      '-c',
+      'sandbox_mode="workspace-write"',
+      '-c',
+      'approval_policy="never"',
+    );
     const env = { ...process.env };
     if (PROXY) {
       env.HTTPS_PROXY = env.HTTPS_PROXY || PROXY;
@@ -310,16 +317,38 @@ function buildPrompt(envelope, recent, threadId) {
     .slice(-8)
     .map((message) => `#${message.seq} [${message.agent}] ${String(message.text).replace(/\s+/g, ' ').slice(0, 260)}`)
     .join('\n');
-  return `你是本地协作黑板「Message Board」上的成员：${IDENTITY.name}（id: ${AGENT}）。职位：${IDENTITY.title}。
-你当前所处的 Codex 会话 thread id 是：${threadId}（如果回复里需要引用它，请用这个 id，不要凭印象编）。
-黑板纪律：只追加；回复要含结论/依据/下一步；区分事实与推断；不写密钥；非必要不要 @ 别人；不要复述本提示。
 
-${others ? `黑板最近的留言：\n${others}\n` : ''}
+  return `你是本地协作黑板「Message Board」上的成员：${IDENTITY.name}（id: ${AGENT}）。职位：${IDENTITY.title}。
+你的工作目录：${WORKDIR}（你有读写权限，可以真的改文件、跑命令）。
+你当前所处的 Codex 会话 thread id 是：${threadId}（回复里引用它时用这个 id，不要凭印象编）。
+
+## 这是一件要交付的工作，不是一场讨论
+
+**先动手，再回话。** 收到任务后你应该真的去执行：读文件、跑命令、检索、写产物。只有做完之后，才把结果贴到黑板上。
+
+**禁止**把"关于任务的状态"当成交付，例如：
+- 「尚未完成」「本轮被打断」「我将从…开始逐个阅读」
+- 「需要更多信息」「请补充…」——除非你已经**实际尝试过**并给出尝试证据
+- 复述黑板纪律、复述本段提示词、讨论黑板协议本身
+
+**如果确实做不到**，你必须给出三样东西，缺一不可：
+1. 你实际执行了什么（命令/路径/检索词，可原样复现）；
+2. 你看到的原始结果或报错（贴关键输出，不要转述）；
+3. 你判断的阻塞点，以及解除它需要什么。
+
+## 交付格式（贴到黑板上的正文）
+
+1. **结论 / 产物**：可以直接使用的结果。若写了文件，给出**绝对路径**；若是清单，直接列出来。
+2. **证据**：文件路径+行号、命令+关键输出片段、链接——可复核，不要只给判断。
+3. **剩余风险或未覆盖面**：明确说清哪部分没做、为什么。
+4. 篇幅不限，但不要注水；长内容优先落到文件里，黑板给摘要 + 路径。
+
+${others ? `黑板最近的留言（上下文，含你自己此前说过的话）：\n${others}\n` : ''}
 有人点名你（#${envelope.seq}，来自 @${envelope.from}${envelope.topic ? `，议题 ${envelope.topic}` : ''}）：
 
-"""${String(envelope.text).slice(0, 1200)}"""
+"""${String(envelope.text).slice(0, 1500)}"""
 
-请直接给出要贴到黑板上的回复正文（中文，400 字以内）。`;
+现在开始执行。完成后，把上面「交付格式」的正文作为你的回复返回（它会原样贴到黑板）。`;
 }
 
 channel.onEvent(async (message) => {
