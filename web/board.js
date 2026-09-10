@@ -28,6 +28,7 @@ const el = {
   joinCopy: $('joinCopy'),
   composer: $('composer'),
   composerText: $('composerText'),
+  mentionList: $('mentionList'),
   composerTopic: $('composerTopic'),
   composerStatus: $('composerStatus'),
   topicOptions: $('topicOptions'),
@@ -511,6 +512,7 @@ async function sendMessage(event) {
     });
     el.composerText.value = '';
     el.composerHint.textContent = '';
+    closeMentions();
     if (payload.warnings && payload.warnings.length) toast(payload.warnings[0]);
     refresh();
   } catch (error) {
@@ -541,6 +543,115 @@ function initTheme() {
   const saved = localStorage.getItem('mb-theme');
   const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
   applyTheme(saved || (prefersDark ? 'dark' : 'light'));
+}
+
+/* ── 点名列表（输入 @ 浮出成员）───────────────────────────── */
+
+const ONLINE_STATES = new Set(['online', 'busy', 'idle']);
+const mention = { open: false, items: [], index: 0, start: 0, end: 0 };
+const PREVIEW = /[\s\u3000(（[【"'“”]|^$/;
+
+/** 找出光标前正在输入的 @片段；不在 @片段里则返回 null。 */
+function mentionContext() {
+  const value = el.composerText.value;
+  const caret = el.composerText.selectionStart ?? value.length;
+  const before = value.slice(0, caret);
+  const at = before.lastIndexOf('@');
+  if (at === -1) return null;
+  const fragment = before.slice(at + 1);
+  if (/[\s@]/.test(fragment)) return null; // 已经断开，不在点名里
+  if (!PREVIEW.test(before.slice(0, at))) return null; // @ 前面必须是空白/行首/左括号
+  return { query: fragment.toLowerCase(), start: at, end: caret };
+}
+
+function closeMentions() {
+  if (!mention.open) return;
+  mention.open = false;
+  el.mentionList.hidden = true;
+}
+
+/** 在线成员优先，其次离线；都按接入顺序。 */
+function mentionCandidates(query) {
+  return state.agents
+    .filter((agent) => agent.kind !== 'operator')
+    .filter(
+      (agent) =>
+        !query ||
+        agent.id.startsWith(query) ||
+        String(agent.name).toLowerCase().includes(query),
+    )
+    .sort((a, b) => Number(ONLINE_STATES.has(b.state)) - Number(ONLINE_STATES.has(a.state)));
+}
+
+function renderMentions() {
+  if (!mention.items.length) {
+    el.mentionList.innerHTML = `<li class="mentions__empty">${
+      state.agents.length ? '没有匹配的成员' : '还没有成员接入 —— 先点「接入新成员」'
+    }</li>`;
+  } else {
+    el.mentionList.innerHTML = mention.items
+      .map(
+        (agent, index) => `
+      <li class="mention__item ${index === mention.index ? 'is-active' : ''}" data-index="${index}"
+          role="option" aria-selected="${index === mention.index}">
+        <span class="member__mono mention__mono">${esc(agent.monogram)}</span>
+        <span class="mention__main">
+          <span class="mention__name">${esc(agent.name)}</span>
+          <span class="mention__id">@${esc(agent.id)}</span>
+        </span>
+        <span class="mention__state" data-state="${esc(agent.state)}">${esc(STATE_LABEL[agent.state] || agent.state)}</span>
+      </li>`,
+      )
+      .join('');
+  }
+  el.mentionList.hidden = false;
+}
+
+function openMentions() {
+  const context = mentionContext();
+  if (!context) return closeMentions();
+  const items = mentionCandidates(context.query);
+  mention.open = true;
+  mention.items = items;
+  mention.index = 0;
+  mention.start = context.start;
+  mention.end = context.end;
+  renderMentions();
+}
+
+function moveMention(step) {
+  if (!mention.items.length) return;
+  const total = mention.items.length;
+  mention.index = (mention.index + step + total) % total;
+  renderMentions();
+}
+
+function insertMention(agent) {
+  const value = el.composerText.value;
+  const before = value.slice(0, mention.start);
+  const after = value.slice(mention.end);
+  el.composerText.value = `${before}@${agent.id} ${after}`;
+  const caret = before.length + agent.id.length + 2;
+  el.composerText.focus();
+  el.composerText.setSelectionRange(caret, caret);
+  closeMentions();
+}
+
+function onComposerKeydown(event) {
+  if (!mention.open) return;
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    moveMention(1);
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    moveMention(-1);
+  } else if ((event.key === 'Enter' || event.key === 'Tab') && mention.items.length) {
+    event.preventDefault();
+    insertMention(mention.items[mention.index]);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    closeMentions();
+  }
 }
 
 function bind() {
@@ -582,6 +693,18 @@ function bind() {
   });
 
   el.composer.addEventListener('submit', sendMessage);
+
+  // 输入 @ 时浮出成员列表
+  el.composerText.addEventListener('input', openMentions);
+  el.composerText.addEventListener('click', openMentions);
+  el.composerText.addEventListener('keydown', onComposerKeydown);
+  el.composerText.addEventListener('blur', () => setTimeout(closeMentions, 150));
+  el.mentionList.addEventListener('mousedown', (event) => {
+    const item = event.target.closest('[data-index]');
+    if (!item) return;
+    event.preventDefault(); // 避免 blur 先于点击生效
+    insertMention(mention.items[Number(item.dataset.index)]);
+  });
 }
 
 /* ── 启动 ─────────────────────────────────────────────────── */
@@ -601,6 +724,12 @@ function bind() {
   }
   // ?join=1：直接打开「快速接入」面板，便于把接入入口作为链接发给同伴。
   if (params.has('join')) openJoinModal();
+  // ?compose=@ ：预填留言内容（截图 / 演示用），并直接展开点名列表。
+  const compose = params.get('compose');
+  if (compose !== null) {
+    el.composerText.value = compose;
+    openMentions();
+  }
   setInterval(() => refresh(), 30000);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) refresh();

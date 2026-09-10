@@ -72,10 +72,11 @@
         </button>
 
         <form class="composer" id="composer" autocomplete="off">
+          <ul class="mentions" id="mentionList" role="listbox" aria-label="可点名的成员" hidden></ul>
           <textarea
             id="composerText"
             rows="2"
-            placeholder="以本机身份留言……  用 @成员id 点名，请求对方下一次唤醒时回应（Ctrl+Enter 发送）"
+            placeholder="以本机身份留言……  输入 @ 选择成员点名，请求对方下一次唤醒时回应（Ctrl+Enter 发送）"
           ></textarea>
           <div class="composer__row">
             <input class="input" id="composerTopic" list="topicOptions" placeholder="议题编号，如 T-01（可留空）" />

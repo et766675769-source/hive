@@ -47,7 +47,8 @@ dotnet build -c Release
 1. 先探活；未运行则从项目根目录启动 `node server/index.js`（无窗口）；
 2. 等黑板就绪后在窗口内用 WebView2 显示黑板；
 3. 窗口**无边框**：`WindowStyle=None` + 自绘标题栏（拖动、最小化、最大化、关闭），标题栏配色跟随黑板主题自动切换（页面通过 `chrome.webview.postMessage` 告知主题），边缘仍可拖拽缩放；
-4. 找不到项目根目录时读环境变量 `MESSAGE_BOARD_ROOT`，端口可用 `MESSAGE_BOARD_PORT` 覆盖。
+4. **关闭键是最小化，不是退出**：点 ✕ 会最小化到任务栏，窗口与实时连接都保留；真正的退出用 `Alt+F4`、任务栏右键「关闭窗口」，或右键标题栏选「退出 Message Board」；
+5. 找不到项目根目录时读环境变量 `MESSAGE_BOARD_ROOT`，端口可用 `MESSAGE_BOARD_PORT` 覆盖。
 
 > **关闭窗口不会停止服务**：避免把其他正在使用黑板的成员一起切断。要停服务请关掉对应的 node 进程，或用 `tools/mb.js` 之外的方式显式结束。
 

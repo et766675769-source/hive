@@ -48,12 +48,16 @@ namespace MessageBoard.Shell
 
         /* ── 无边框标题栏 ─────────────────────────────────────── */
 
+        /// <summary>关闭键：最小化到任务栏，不结束进程（黑板仍是多方共用的）。</summary>
+        private void Close_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+        /// <summary>真正的退出：标题栏右键菜单；Alt+F4 与任务栏「关闭窗口」同样有效。</summary>
+        private void Quit_Click(object sender, RoutedEventArgs e) => Close();
+
         private void Min_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
 
         private void Max_Click(object sender, RoutedEventArgs e) =>
             WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-
-        private void Close_Click(object sender, RoutedEventArgs e) => Close();
 
         /* ── 主题：与黑板页面保持一致 ─────────────────────────── */
 

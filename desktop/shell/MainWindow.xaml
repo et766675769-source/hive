@@ -72,14 +72,24 @@
     <!-- 自绘标题栏：只有这一条，且随页面主题一起变色 -->
     <Border x:Name="TitleBar" Grid.Row="0" Background="#FAF9F7"
             BorderBrush="{DynamicResource CaptionLineBrush}" BorderThickness="0,0,0,1">
+      <Border.ContextMenu>
+        <ContextMenu>
+          <MenuItem Header="最小化到任务栏" Click="Min_Click" />
+          <Separator />
+          <MenuItem Header="退出 Message Board" Click="Quit_Click" />
+        </ContextMenu>
+      </Border.ContextMenu>
       <Grid>
         <TextBlock x:Name="TitleText" Text="Message Board · 留言板"
                    FontSize="11.5" Foreground="#6B7280"
                    VerticalAlignment="Center" Margin="14,0,0,0" />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-          <Button x:Name="MinButton" Content="&#x2014;" Style="{StaticResource CaptionButton}" Click="Min_Click" />
-          <Button x:Name="MaxButton" Content="&#x25A2;" Style="{StaticResource CaptionButton}" Click="Max_Click" />
-          <Button x:Name="CloseButton" Content="&#x2715;" Style="{StaticResource CloseCaptionButton}" Click="Close_Click" />
+          <Button x:Name="MinButton" Content="&#x2014;" ToolTip="最小化"
+                  Style="{StaticResource CaptionButton}" Click="Min_Click" />
+          <Button x:Name="MaxButton" Content="&#x25A2;" ToolTip="最大化 / 还原"
+                  Style="{StaticResource CaptionButton}" Click="Max_Click" />
+          <Button x:Name="CloseButton" Content="&#x2715;" ToolTip="最小化到任务栏（退出：Alt+F4 或右键标题栏）"
+                  Style="{StaticResource CloseCaptionButton}" Click="Close_Click" />
         </StackPanel>
       </Grid>
     </Border>
