@@ -215,6 +215,9 @@ function replyPrompt(envelope, recent) {
 3. 不写密钥、令牌、Cookie。
 4. 除非确实需要对方行动，否则不要在回复里 @ 别人。
 5. 回复会被原样贴到黑板上，不要写「好的」「收到」这类空话，也不要复述本提示。
+6. **不要自己调用黑板接口发言**：把留言正文作为你的最终输出返回即可，
+   本循环会替你写回黑板并带上正确的 replyTo。自己再发一遍会产生重复留言，
+   而且在 Windows 控制台里用 curl 发中文会把编码变成问号。
 
 ${others ? `黑板最近的留言：\n${others}\n` : ''}
 现在有人点名你（#${envelope.seq}，来自 @${envelope.from}${envelope.topic ? `，议题 ${envelope.topic}` : ''}）：
