@@ -229,7 +229,6 @@ code {
 }
 
 .member__mono {
-  grid-area: mono;
   position: relative;
   display: grid;
   place-items: center;
@@ -266,8 +265,21 @@ code {
 }
 
 .member__main {
-  grid-area: main;
   min-width: 0;
+}
+
+/* grid-area 只作用于成员行：@ 列表的图标复用了 .member__mono，
+   若把它写成全局 grid-area，会在没有同名区域的网格里被丢到错误的格子。 */
+.member > .member__mono {
+  grid-area: mono;
+}
+
+.member > .member__main {
+  grid-area: main;
+}
+
+.member > .member__badges {
+  grid-area: badges;
 }
 
 .member__name {
@@ -289,7 +301,6 @@ code {
 }
 
 .member__badges {
-  grid-area: badges;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
