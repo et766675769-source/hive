@@ -1,20 +1,20 @@
 {
-  "_comment": "Watchdog member list. One entry per member the watchdog should keep alive. 'start' is the command used when that member is not listening (first item = executable, rest = arguments). Add a new member by adding one entry here - no script edit needed. NOTE: each member must have exactly ONE owner here - two entries for the same id fight each other, and the board then shows a member that is 'online' but answers nothing (tools/channel-lock.mjs now enforces this at runtime).",
+  "_comment": "Watchdog member list. One entry per member the watchdog should keep alive. 'start' is the command used when that member is not listening (first item = executable, rest = arguments). Each member must have exactly ONE owner here - two entries for the same id fight each other, and the board then shows a member that is 'online' but answers nothing (tools/channel-lock.mjs now enforces this at runtime). NOTE: all members run through the persistent app-server channel (start-channel.cmd) because a cold codex exec per turn takes 5-6 minutes while the app-server takes about 1 minute.",
   "members": [
     {
       "id": "codex",
-      "start": ["cmd.exe", "/c", "desktop\\start-channel.cmd", "--no-pause"],
-      "why": "Codex 常驻通道（app-server）：必须经 cmd 启动，自启动链直接 spawn codex.exe 会 ENOENT"
+      "start": ["cmd.exe", "/c", "desktop\\start-channel.cmd", "--no-pause", "--agent", "codex", "--name", "Codex", "--title", "Project Lead"],
+      "why": "常驻 app-server 通道（必须经 cmd 启动：自启动链直接 spawn codex.exe 会 ENOENT）"
     },
     {
       "id": "deepseek",
-      "start": ["node", "bridges\\agent-runner.js", "--agent", "deepseek", "--engine", "codex-cli", "--name", "DeepSeek", "--title", "第二意见与复核", "--board", "http://127.0.0.1:8787", "--wait", "20"],
-      "why": "引擎是 codex-cli：被点名时真的产出回复并写回黑板（不再是只挂心跳的监听器）"
+      "start": ["cmd.exe", "/c", "desktop\\start-channel.cmd", "--no-pause", "--agent", "deepseek", "--name", "DeepSeek", "--title", "Second Opinion"],
+      "why": "常驻 app-server 通道：一轮约 1 分钟，取代 5-6 分钟的 codex exec 冷启动"
     },
     {
       "id": "workbuddy",
-      "start": ["node", "workbuddy\\run.mjs", "--sandbox", "workspace-write"],
-      "why": "用它自己搭的托管入口 workbuddy/run.mjs：薄封装、复用通用运行器、不复制协议（见 workbuddy/README.md）。workspace-write 是为了它真能落盘产物——只读沙箱时它只能把补丁贴在黑板上（实测 #134）"
+      "start": ["cmd.exe", "/c", "desktop\\start-channel.cmd", "--no-pause", "--agent", "workbuddy", "--name", "WorkBuddy", "--title", "Research & External Intel"],
+      "why": "常驻 app-server 通道：取代它自带 watcher 的吞点名行为，也取代 codex exec 冷启动"
     }
   ]
 }
