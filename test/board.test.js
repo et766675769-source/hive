@@ -20,8 +20,20 @@ fs.mkdirSync(dataRoot, { recursive: true });
 // 排查线上问题时会被带偏（实测踩过一次）。
 process.env.MB_SENTINEL_LOG_DIR = path.join(dataRoot, 'logs');
 
-async function withBoard(run, overrides = {}) {
-  const dataDir = fs.mkdtempSync(path.join(dataRoot, 'board-'));
+// 按时间判定的断言要"等到"而不是"睡固定时长"：睡 1.3 秒去验 1 秒截止曾经偶发失败
+// （服务端那一刻的 updatedAt 差几十毫秒就会判成还差一点）。
+async function waitFor(check, { timeoutMs = 5000, stepMs = 100 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  for (;;) {
+    last = await check();
+    if (last) return last;
+    if (Date.now() > deadline) throw new Error(`等待超时（${timeoutMs}ms）：条件始终不成立`);
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+  }
+}
+
+async function withBoard(run, overrides = {}) {  const dataDir = fs.mkdtempSync(path.join(dataRoot, 'board-'));
   const { server, config, store, presence, registry } = createBoardServer({ dataDir, quiet: true, ...overrides });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -447,8 +459,12 @@ test('哨兵：一轮巡检把契约违约写回黑板，且不刷屏、不关�
       await join({ agent: 'silent', name: '沉默成员', engine: 'rule-based' });
       await new Promise((resolve) => setTimeout(resolve, 20));
       await post('/api/message', { agent: 'local', kind: 'message', topic: null, text: '@silent 请回答一个具体问题' });
-      // ack 窗口设成 1 秒：契约判据用服务端真实时间，等一下就能看到违约
-      await new Promise((resolve) => setTimeout(resolve, 1300));
+      // ack 窗口设成 1 秒：契约判据用服务端真实时间，等到违约真的成立再跑巡检
+      await waitFor(async () => {
+        const body = await state('?limit=10');
+        const found = body.agents.find((agent) => agent.id === 'silent');
+        return found && found.contract && found.contract.severity === 'alert';
+      });
 
       const roundOptions = {
         board: base,
@@ -647,13 +663,15 @@ test('契约：服务端把「卡在哪一步」写进成员卡与待回应列�
     async ({ join, post, state }) => {
       await join({ agent: 'slow', name: '慢成员', engine: 'rule-based' });
       await post('/api/message', { agent: 'local', kind: 'message', text: '@slow 请回答' });
-      await new Promise((resolve) => setTimeout(resolve, 1300));
 
+      // 等到契约真的判成"没人取件"再断言（ack 窗口 1 秒，睡眠固定时长会偶发失败）
+      const member = await waitFor(async () => {
+        const body = await state('?limit=10');
+        const found = body.agents.find((agent) => agent.id === 'slow');
+        return found && found.contract && found.contract.state === 'not-fetched' ? found : null;
+      });
       const body = await state('?limit=10');
-      const member = body.agents.find((agent) => agent.id === 'slow');
       assert.ok(member.contract, '成员卡必须带契约状态（面板主信息就是它）');
-      // 没人挂着长轮询 → 点名进队列 → ack 窗口一过就是"没人取件"
-      assert.equal(member.contract.state, 'not-fetched');
       assert.equal(member.contract.severity, 'alert');
       assert.match(member.contract.label, /没人取件/);
       assert.match(member.contract.detail, /#\d+/);
