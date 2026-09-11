@@ -85,6 +85,25 @@ function Start-DeepseekListener {
     -ArgumentList @('tools/mb.js', 'watch', 'deepseek', '--wait', '20', '--note', 'watchdog') | Out-Null
 }
 
+# Sentinel (tools/sentinel.mjs): this watchdog only sees "is a wake channel attached", so it
+# cannot tell "attached but never answers" from healthy - a member can sit online while every
+# mention rots in the ledger (expired). The sentinel watches exactly that, reports to the board,
+# and starts a managed channel for a member that is online but silent.
+# Liveness signal is its own status file: it rewrites data\sentinel-status.json once per round.
+function Start-Sentinel {
+  Start-Process -FilePath 'node' -WorkingDirectory $root -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $logDir 'sentinel.out.log') `
+    -RedirectStandardError (Join-Path $logDir 'sentinel.err.log') `
+    -ArgumentList @('tools/sentinel.mjs', '--board', $url) | Out-Null
+}
+
+function Test-SentinelFresh {
+  $file = Join-Path $root 'data\sentinel-status.json'
+  if (-not (Test-Path $file)) { return $false }
+  $age = (New-TimeSpan -Start (Get-Item $file).LastWriteTime -End (Get-Date)).TotalSeconds
+  return ($age -lt 300)
+}
+
 # Member list is data-driven: add an entry to desktop\watchdog-members.json to adopt a
 # new member, no script edit needed. Falls back to the built-in pair when the file is absent.
 function Get-WatchedMembers {
@@ -203,6 +222,17 @@ try {
             Write-Log "watchdog: failed to start $($member.id): $($_.Exception.Message)"
           }
           Start-Sleep -Seconds 8
+        }
+      }
+
+      # Keep the sentinel alive: it is the only component that notices "online but silent".
+      if (-not (Test-SentinelFresh)) {
+        Write-Log "watchdog: sentinel status is stale - starting it"
+        try {
+          Start-Sentinel
+          Start-Sleep -Seconds 5
+        } catch {
+          Write-Log "watchdog: failed to start sentinel: $($_.Exception.Message)"
         }
       }
     } catch {
