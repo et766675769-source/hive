@@ -74,6 +74,8 @@ export function loadConfig(overrides = {}) {
     sweepSeconds: Number(overrideDelivery.sweepSeconds || rawDelivery.sweepSeconds || 5),
     // 成员自报"正在处理"时最多续租几次（每次一个租约期），防止丢失的活被无限续租
     maxRenewals: Number(overrideDelivery.maxRenewals || rawDelivery.maxRenewals || 5),
+    // 送达后多久还没收到"处理中"确认就判定信封丢失（远小于租约，专治"投给已断开的连接"）
+    ackTimeoutSeconds: Number(overrideDelivery.ackTimeoutSeconds || rawDelivery.ackTimeoutSeconds || 45),
     // 启动恢复：把历史上"被点名但没有实质回复"的留言重新放回投递队列
     backfillOnStart: (overrideDelivery.backfillOnStart ?? rawDelivery.backfillOnStart) !== false,
     backfillLimit: Number(overrideDelivery.backfillLimit || rawDelivery.backfillLimit || 3),

@@ -193,6 +193,7 @@ export function createBoardServer(overrides = {}) {
     leaseSeconds: config.delivery.leaseSeconds,
     maxAttempts: config.delivery.maxAttempts,
     maxRenewals: config.delivery.maxRenewals,
+    ackTimeoutSeconds: config.delivery.ackTimeoutSeconds,
   });
 
   /**
@@ -788,7 +789,11 @@ export function createBoardServer(overrides = {}) {
           source: 'inbox',
         });
         const started = Date.now();
-        const result = await wake.inbox(agent.id, { waitMs: waitSeconds * 1000 });
+        // 连接关闭即取消本次等待：否则被杀掉的成员留下的 waiter 会一直挂着，
+        // 新点名可能被投递给这个死 waiter（信件出队却无人收到，只能等租约回收）。
+        const inboxAbort = new AbortController();
+        res.on('close', () => inboxAbort.abort());
+        const result = await wake.inbox(agent.id, { waitMs: waitSeconds * 1000, signal: inboxAbort.signal });
         return json(res, 200, {
           ok: true,
           agent: agent.id,

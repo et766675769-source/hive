@@ -25,11 +25,12 @@ export class DeliveryLedger {
   /**
    * @param {{ file: string, leaseSeconds?: number, maxAttempts?: number, maxRenewals?: number, now?: () => number }} options
    */
-  constructor({ file, leaseSeconds = 180, maxAttempts = 2, maxRenewals = 5, now = () => Date.now() }) {
+  constructor({ file, leaseSeconds = 180, maxAttempts = 2, maxRenewals = 5, ackTimeoutSeconds = 45, now = () => Date.now() }) {
     this.file = file;
     this.leaseSeconds = leaseSeconds;
     this.maxAttempts = maxAttempts;
     this.maxRenewals = maxRenewals;
+    this.ackTimeoutSeconds = ackTimeoutSeconds;
     this.now = now;
     this.records = new Map(); // key → record
     this.order = []; // key 的创建顺序（用于稳定输出）
@@ -85,6 +86,7 @@ export class DeliveryLedger {
       createdAt: entry.at || this.now(),
       updatedAt: entry.at || this.now(),
       deadlineAt: null,
+      ackDeadlineAt: null,
       note: '',
       renewals: 0,
       history: [],
@@ -98,6 +100,7 @@ export class DeliveryLedger {
     if (entry.attempts != null) record.attempts = entry.attempts;
     else if (entry.state === 'delivered') record.attempts += 1;
     if (entry.renewals != null) record.renewals = entry.renewals;
+    if (entry.ackDeadlineAt !== undefined) record.ackDeadlineAt = entry.ackDeadlineAt;
     if (entry.deadlineAt !== undefined) record.deadlineAt = entry.deadlineAt;
     record.updatedAt = entry.at || this.now();
 
@@ -112,10 +115,10 @@ export class DeliveryLedger {
     return record;
   }
 
-  #set(messageId, agent, state, { channel, note, deadlineAt, attempts, seq, topic, renewals } = {}) {
+  #set(messageId, agent, state, { channel, note, deadlineAt, attempts, seq, topic, renewals, ackDeadlineAt } = {}) {
     if (!DELIVERY_STATES.includes(state)) throw new Error(`未知投递状态：${state}`);
     const at = this.now();
-    return this.#apply({ messageId, agent, state, channel, note, deadlineAt, attempts, seq, topic, renewals, at });
+    return this.#apply({ messageId, agent, state, channel, note, deadlineAt, attempts, seq, topic, renewals, ackDeadlineAt, at });
   }
 
   /** 为一条带点名的留言建立投递记录（幂等：已存在就返回原记录）。 */
@@ -158,6 +161,9 @@ export class DeliveryLedger {
       channel,
       note: `已送达（${channel}）`,
       deadlineAt: this.now() + this.leaseSeconds * 1000,
+      // 确认超时：送达后成员应当很快回一条「处理中」；
+      // 如果连确认都没有，多半是信封被投给了已经死掉的连接——不必等满租约。
+      ackDeadlineAt: this.now() + this.ackTimeoutSeconds * 1000,
     });
   }
 
@@ -306,6 +312,30 @@ export class DeliveryLedger {
     let renewed = 0;
     for (const record of [...this.records.values()]) {
       if (TERMINAL.has(record.state) || record.state === 'expired') continue;
+
+      // 兜底：已送达但成员连"处理中"都没回 → 判定信封丢了（例如投给了已断开的连接）
+      if (record.state === 'delivered' && record.ackDeadlineAt && now >= record.ackDeadlineAt) {
+        const view = this.#view(record);
+        expired.push(view);
+        if (record.attempts < this.maxAttempts) {
+          this.#set(record.messageId, record.agent, 'queued', {
+            attempts: record.attempts,
+            note: `已送达 ${this.ackTimeoutSeconds} 秒仍未确认收到，判定丢失并重投`,
+            deadlineAt: null,
+            ackDeadlineAt: null,
+          });
+          reclaimed.push(view);
+        } else {
+          this.#set(record.messageId, record.agent, 'expired', {
+            attempts: record.attempts,
+            note: '多次送达均未被确认，已登记为未送达',
+            deadlineAt: null,
+            ackDeadlineAt: null,
+          });
+        }
+        continue;
+      }
+
       if (!record.deadlineAt || now < record.deadlineAt) continue;
 
       const canRenew = (record.renewals || 0) < maxRenewals;

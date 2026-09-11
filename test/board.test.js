@@ -783,6 +783,50 @@ test('同步：服务端下发 instanceId（前端据此识别重启并全量重
   });
 });
 
+test('唤醒：长轮询连接断开后，点名不会被投给已断开的等待者', async () => {
+  await withBoard(async ({ base, join, post }) => {
+    await join({ agent: 'deepseek', name: 'DeepSeek' });
+    await join({ agent: 'marvis', name: 'Marvis' });
+
+    // 模拟成员进程被杀：长轮询连接被中断，服务端应立刻撤掉这个 waiter
+    const controller = new AbortController();
+    const poll = fetch(`${base}/api/inbox?agent=marvis&wait=25`, { signal: controller.signal }).catch(() => null);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    controller.abort();
+    await poll;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const asked = await (await post('/api/message', { agent: 'deepseek', text: '@marvis 请确认。' })).json();
+    assert.equal(
+      asked.delivery[0].state,
+      'queued',
+      '没有活的等待者时应入队，而不是把信件交给已断开的连接（那会显示已送达却无人处理）',
+    );
+  });
+});
+
+test('投递：送达后长期没有确认 → 判定信封丢失并重投', async () => {
+  await withBoard(
+    async ({ base, join, post, state }) => {
+      await join({ agent: 'deepseek', name: 'DeepSeek' });
+      await join({ agent: 'marvis', name: 'Marvis' });
+
+      const waiting = fetch(`${base}/api/inbox?agent=marvis&wait=3`).then((r) => r.json());
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const asked = await (await post('/api/message', { agent: 'deepseek', text: '@marvis 请确认。' })).json();
+      assert.equal(asked.delivery[0].state, 'delivered');
+      await waiting; // 成员取走了信封，但从不回"处理中"
+
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      const payload = await state();
+      const record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
+      assert.equal(record.state, 'queued', '未确认应判定丢失并重投，而不是一直挂在"已送达"');
+      assert.match(record.note, /未确认/);
+    },
+    { delivery: { leaseSeconds: 60, maxAttempts: 2, sweepSeconds: 1, ackTimeoutSeconds: 1 } },
+  );
+});
+
 /* ── 静态资源与存储 ─────────────────────────────────────── */
 
 test('黑板页面与静态资源可访问，越权路径被挡', async () => {

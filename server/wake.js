@@ -66,6 +66,13 @@ export class WakeHub {
     const entry = set.values().next().value;
     set.delete(entry);
     clearTimeout(entry.timer);
+    if (entry.onAbort && entry.signal) {
+      try {
+        entry.signal.removeEventListener('abort', entry.onAbort);
+      } catch {
+        /* 忽略 */
+      }
+    }
     return entry;
   }
 
@@ -81,7 +88,14 @@ export class WakeHub {
    * @param {string} agentId
    * @param {{ waitMs?: number }} options
    */
-  inbox(agentId, { waitMs = 0 } = {}) {
+  /**
+   * 挂一次长轮询。
+   *
+   * signal：HTTP 连接关闭时由路由层 abort。**必须有**——否则进程被杀后，
+   * 它留下的 waiter 会继续挂在服务端直到超时，期间新点名可能被投递给这个死 waiter，
+   * 结果信件出了队列却没人收到（实测：投递显示已送达，成员侧毫无反应，只能等 180 秒租约）。
+   */
+  inbox(agentId, { waitMs = 0, signal } = {}) {
     const queue = this.queues.get(agentId);
     if (queue && queue.length) return Promise.resolve({ envelope: queue.shift(), from: 'queued' });
 
@@ -95,12 +109,31 @@ export class WakeHub {
     if (ms === 0) return Promise.resolve({ envelope: null, from: 'none' });
 
     return new Promise((resolve) => {
-      const entry = { resolve, timer: null };
-      entry.timer = setTimeout(() => {
+      const entry = { resolve, timer: null, onAbort: null, signal: signal || null };
+      const finish = (payload) => {
+        if (entry.timer) clearTimeout(entry.timer);
+        if (entry.onAbort && signal) {
+          try {
+            signal.removeEventListener('abort', entry.onAbort);
+          } catch {
+            /* 忽略 */
+          }
+        }
         this.#waitersOf(agentId).delete(entry);
-        resolve({ envelope: null, from: 'timeout' });
-      }, ms);
+        resolve(payload);
+      };
+      entry.finish = finish;
+      entry.timer = setTimeout(() => finish({ envelope: null, from: 'timeout' }), ms);
       if (typeof entry.timer.unref === 'function') entry.timer.unref();
+
+      if (signal) {
+        if (signal.aborted) {
+          finish({ envelope: null, from: 'aborted' });
+          return;
+        }
+        entry.onAbort = () => finish({ envelope: null, from: 'aborted' });
+        signal.addEventListener('abort', entry.onAbort, { once: true });
+      }
       this.#waitersOf(agentId).add(entry);
     });
   }

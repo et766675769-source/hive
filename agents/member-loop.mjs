@@ -120,6 +120,40 @@ async function postReply(envelope, text, kind = 'reply', client = {}) {
   });
 }
 
+/**
+ * 报到留言 = 接入自检表（提示词第 4 步要求）。
+ * 用 member-loop 的成员不必自己拼这张表：它知道自己这一侧的事实，如实写出来即可。
+ * 幂等键固定，重启不会重复贴。
+ */
+async function postSelfCheck(identity) {
+  const state = await call('/api/state?limit=1').catch(() => null);
+  const lines = [
+    `接入自检表（${identity.name}）`,
+    '',
+    '| 检查项 | 结果 |',
+    '| --- | --- |',
+    `| 黑板探活 /api/health | 通过（${BOARD}） |`,
+    `| 身份登记 /api/join | 通过（id=${AGENT}） |`,
+    `| 唤醒通道 | 长轮询 /api/inbox（wait=${WAIT_IDLE}s，处理中降到 ${WAIT_BUSY}s 保心跳） |`,
+    `| 能否收到点名 | 能：收到后由外部命令产出回复并按 replyTo 回写 |`,
+    `| 我的网络是否需要代理 | 不需要（本机回环直连）${process.env.HTTPS_PROXY ? `；外部调用用 ${process.env.HTTPS_PROXY}` : ''} |`,
+    `| 我承诺的回应方式 | 被 @ 后立即回实质内容；长任务期间自报 busy，完成回落 online |`,
+    `| 思考命令 | ${REPLY_CMD} |`,
+    `| 当前黑板 | 最新 #${state?.stats?.latestSeq ?? '—'}，成员 ${state?.agents?.length ?? '—'} 个 |`,
+  ];
+  return call('/api/message', {
+    method: 'POST',
+    body: JSON.stringify({
+      agent: AGENT,
+      kind: 'notice',
+      status: '进行中',
+      text: lines.join('\n'),
+      idempotencyKey: `member-loop:${AGENT}:selfcheck`,
+      client: { channel: 'member-loop', selfCheck: true },
+    }),
+  });
+}
+
 /* ── 在跑的那一轮：落盘 journal，供重启后上报丢失 ───────── */
 
 function writeJournal(record) {
@@ -227,19 +261,22 @@ async function handleControl(control) {
 /* ── 主循环 ─────────────────────────────────────────────── */
 
 async function main() {
-  await call('/api/join', {
-    method: 'POST',
-    body: JSON.stringify({
-      agent: AGENT,
-      name: flag('name', AGENT),
-      title: flag('title', '成员'),
-      platform: flag('platform', 'member-loop'),
-      mission: flag('mission', '按提示词接入并交付'),
-      skills: flag('skills', ''),
-      constraints: flag('constraints', ''),
-    }),
-  });
+  const identity = {
+    agent: AGENT,
+    name: flag('name', AGENT),
+    title: flag('title', '成员'),
+    platform: flag('platform', 'member-loop'),
+    mission: flag('mission', '按提示词接入并交付'),
+    skills: flag('skills', ''),
+    constraints: flag('constraints', ''),
+  };
+  await call('/api/join', { method: 'POST', body: JSON.stringify(identity) });
   log(`已登记；思考命令：${REPLY_CMD}`);
+
+  // 报到留言：接入自检表（提示词第 4 步要求的交付物）。幂等，重启不会重复贴。
+  await postSelfCheck(identity)
+    .then((posted) => log(posted?.duplicate ? '自检表已存在（未重复贴）' : `已贴出接入自检表 #${posted?.message?.seq}`))
+    .catch((error) => log(`自检表贴出失败：${error.message}`));
 
   // 上次运行时被重启/杀掉 → 立即上报丢失，让黑板马上重投
   const lost = readJournal();

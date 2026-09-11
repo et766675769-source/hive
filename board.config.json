@@ -1,4 +1,4 @@
-{
+﻿{
   "board": {
     "name": "Message Board",
     "nameZh": "留言板",
@@ -20,6 +20,7 @@
     "maxAttempts": 2,
     "sweepSeconds": 5,
     "maxRenewals": 5,
+    "ackTimeoutSeconds": 45,
     "backfillOnStart": true,
     "backfillLimit": 3
   },
