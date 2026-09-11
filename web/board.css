@@ -211,9 +211,15 @@ code {
 
 .member {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) auto;
+  /* 徽标独占第二行并自动换行：徽标多起来（已验收/待回应/超时未回/已回应/打断）
+     再挤在右侧一列会竖着堆叠、互相压字。 */
+  grid-template-columns: 30px minmax(0, 1fr);
+  grid-template-areas:
+    'mono main'
+    'badges badges';
   align-items: center;
-  gap: 11px;
+  column-gap: 11px;
+  row-gap: 8px;
   padding: 10px 0;
   border-top: 1px solid var(--line);
 }
@@ -223,6 +229,7 @@ code {
 }
 
 .member__mono {
+  grid-area: mono;
   position: relative;
   display: grid;
   place-items: center;
@@ -259,6 +266,7 @@ code {
 }
 
 .member__main {
+  grid-area: main;
   min-width: 0;
 }
 
@@ -281,10 +289,13 @@ code {
 }
 
 .member__badges {
+  grid-area: badges;
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 5px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 6px;
+  /* 缩进到姓名下方，视觉上仍属于这个成员 */
+  margin-left: 41px;
 }
 
 .pending {
@@ -982,50 +993,70 @@ textarea:focus {
   border: 3px solid var(--bg);
 }
 
-/* ── 窄屏 ─────────────────────────────────────────────────── */
+/* ── 窄窗：侧栏整体折叠成抽屉，正文占满 ─────────────────────
+   之前是"把侧栏堆到正文上方"，结果又挤又高（成员徽标竖着堆叠）。
+   现在窄窗下侧栏完全不占位置，点标题栏的按钮才滑出。 */
 
-@media (max-width: 880px) {
+.rail-backdrop {
+  display: none;
+}
+
+.rail__toggle {
+  display: none;
+}
+
+@media (max-width: 1000px) {
   .shell {
-    grid-template-columns: 1fr;
-    height: auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .rail {
-    border-right: none;
-    border-bottom: 1px solid var(--line);
-    padding: 24px 20px;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(320px, 88vw);
+    z-index: 40;
+    /* 底部不留内边距：页脚吸底后自己补，避免与上方说明挤在一行 */
+    padding: 24px 20px 0;
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+    transform: translateX(-102%);
+    transition: transform 0.2s var(--ease);
   }
 
-  .roster__list {
-    flex-direction: row;
-    gap: 16px;
-    overflow-x: auto;
+  /* 抽屉内容可能高于窗口：页脚吸底 + 上分隔线，滚动时永远压在最后一行 */
+  .rail__foot {
+    position: sticky;
+    bottom: 0;
+    margin-top: auto;
+    padding: 14px 0 20px;
+    background: var(--surface);
+    border-top: 1px solid var(--line);
   }
 
-  .member {
-    grid-template-columns: 30px auto;
-    border-top: none;
-    flex: 0 0 auto;
+  .shell--rail-open .rail {
+    transform: none;
   }
 
-  .member__copy {
-    display: none;
+  .shell--rail-open .rail-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: rgba(0, 0, 0, 0.42);
   }
 
-  .stage {
-    height: auto;
-    min-height: 70vh;
-  }
-
-  .stage__head,
-  .stream,
-  .composer {
-    padding-left: 20px;
-    padding-right: 20px;
+  .rail__toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .tonew {
-    bottom: 200px;
+    bottom: 176px;
   }
 }
 

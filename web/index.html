@@ -50,6 +50,9 @@
         </footer>
       </aside>
 
+      <!-- 窄窗下侧栏是抽屉：点遮罩或按 Esc 收起 -->
+      <div class="rail-backdrop" id="railBackdrop" hidden></div>
+
       <!-- ── 主区：黑板 ─────────────────────────────────────────── -->
       <main class="stage">
         <header class="stage__head">
@@ -58,6 +61,7 @@
             <p class="stage__sub" id="boardSub">正在载入最新留言…</p>
           </div>
           <div class="stage__tools">
+            <button class="ghost rail__toggle" id="railToggle" type="button" title="成员与在线状态" aria-label="显示或隐藏成员侧栏">☰ 成员</button>
             <label class="field field--inline">
               <span class="field__label">议题</span>
               <select id="topicFilter">

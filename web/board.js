@@ -1000,6 +1000,27 @@ function bind() {
 
   el.composer.addEventListener('submit', sendMessage);
 
+  // 窄窗：侧栏整体折叠成抽屉（宽窗下这些样式不生效，等同于一直显示）
+  const shellEl = document.querySelector('.shell');
+  const railToggle = document.getElementById('railToggle');
+  const railBackdrop = document.getElementById('railBackdrop');
+  const setRailOpen = (open) => {
+    if (!shellEl) return;
+    shellEl.classList.toggle('shell--rail-open', open);
+    if (railBackdrop) railBackdrop.hidden = !open;
+  };
+  railToggle?.addEventListener('click', () => setRailOpen(!shellEl.classList.contains('shell--rail-open')));
+  railBackdrop?.addEventListener('click', () => setRailOpen(false));
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') setRailOpen(false);
+  });
+  // 窗口变宽后抽屉状态自动失效（媒体查询不再命中），把标记与遮罩一并清掉
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 1000) setRailOpen(false);
+  });
+  // 深链：?rail=open 直接展开成员抽屉（窄窗下有用，也便于截图核对）
+  if (new URLSearchParams(location.search).get('rail') === 'open') setRailOpen(true);
+
   // 打断：向成员发出控制指令，由它自己的通道执行 turn/interrupt
   document.addEventListener('click', (event) => {
     const button = event.target.closest('[data-interrupt]');
