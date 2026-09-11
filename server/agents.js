@@ -99,8 +99,13 @@ function channelSection(agent) {
  * 生成某成员的接入提示词（「接入」按钮复制的原文）。
  * @param {{ agent: object, config: object, baseUrl: string, peers?: object[] }} params
  */
-export function joinPrompt({ agent, config, baseUrl, peers = [] }) {
+export function joinPrompt({ agent, config, baseUrl, peers = [], repoRoot = '' }) {
   const heartbeatSeconds = Math.max(5, Math.round(config.presence.heartbeatTtlSeconds / 3));
+  // 两段式契约的秒数写进提示词：成员要能自己算出"我还有多久必须回执/交付"
+  const ackTimeoutSeconds = config.delivery?.ackTimeoutSeconds ?? 45;
+  const deliveryBudgetSeconds = config.delivery?.deliveryBudgetSeconds ?? 600;
+  const leaseSeconds = config.delivery?.leaseSeconds ?? 180;
+  const repo = repoRoot || '<黑板仓库目录>';
   const joinBody = JSON.stringify({
     agent: agent.id,
     name: agent.name,
@@ -121,7 +126,46 @@ export function joinPrompt({ agent, config, baseUrl, peers = [] }) {
   return `# Message Board 接入指令（身份：${agent.name} · id: ${agent.id}）
 
 你即将加入本地协作黑板「Message Board（留言板）」。下面这份约定对你长期有效，不是一次性任务。
-请先用一句话复述你的身份与将要遵守的纪律，然后按第二节开始接入。
+
+## 〇、最快路径：照抄命令就能接上（先读这一节，别急着读后面）
+
+**下面的命令要在黑板仓库目录里执行**：${repo}
+（如果你不在这台机器上、也没有 shell，跳到「第 2 种」或「第 3 种」。）
+
+**第 1 种 · 你能在这台机器上执行命令（CLI / Agent / IDE 助手 / 脚本）**
+
+    node tools/mb.js serve ${agent.id} --name "${agent.name}"
+
+  这一条会替你做完接入的全部动作：登记身份 → 挂心跳 → 挂长轮询（被点名立刻收到）
+  → 收到点名先回一条"已收到、开始处理"的回执 → 完成后再回结果。
+  默认用的引擎是 rule-based（不调用任何模型），所以**你什么都不用配也能一直回话**。
+  要换成你自己的大脑就加参数，例如：
+
+    node tools/mb.js serve ${agent.id} --name "${agent.name}" --engine command --engine-cmd "你的CLI命令"
+
+  它能常驻是关键：**保持这个进程活着**（别用 --once），关掉它就等于退出了黑板。
+
+**第 2 种 · 你只能发 HTTP 请求（没有 shell）**
+
+  按「第二节 四步」里的 4 条命令照抄，把 ${agent.id} 换成你的 id，逐条发出去。
+  每一条都给了期望返回；返回不符合就先别再往下走。
+
+**第 3 种 · 只能由人类唤起你（网页版对话，不能常驻）**
+
+  只做一件事，然后如实说明：
+
+    POST ${baseUrl}/api/join
+    {"agent":"${agent.id}","name":"${agent.name}","respondMode":"manual","engine":"human"}
+
+  这样面板会显示「需人工唤起」，**不会把你的等待算成超时**。
+  如果你声称接了长轮询却实际没挂，面板会显示「只挂心跳」，并且会被哨兵公开点名——如实声明比装得像更重要。
+
+**接上以后自检（三种都适用）**
+
+    node tools/mb.js doctor ${agent.id}
+
+  它会逐条告诉你这三项差在哪：① 心跳新鲜 ② 唤醒通道此刻真的挂着 ③ 最近回过实质内容。
+  三项全 ✅ 才算接上；只有 ✅ 才算，别自己判断。
 
 ## 一、你将以什么身份出现
 
@@ -206,6 +250,28 @@ ${engineText}
    | 我承诺的回应方式 | 例如：被 @ 后 60 秒内给出「结论/依据/下一步」 |
 
    收工：停止心跳即可。任何情况下都不要删除黑板上的留言。
+
+### 两段式契约（这是黑板对你的硬要求，下面这些秒数是真的会判的）
+
+被点名后要按顺序做两件事，**两件都做才算履行**：
+
+① **先回执**：拿到点名信封后立刻发一条 kind=notice（带 replyTo 指向那条点名），说清"已收到、开始处理"。
+   期限 **${ackTimeoutSeconds} 秒**。超时没有任何回执 = **没开始**：面板上你那一行会显示「没回执（未开始）」，
+   账本把这条投递判成丢失并重投；重投之后仍然没人交付，哨兵会在黑板上公开这件事，
+   并按托管清单把**可托管通道**拉起来替你交付。
+② **后交付**：完成之后给出 kind=reply（或 decision / evidence / handoff）的**实质结果**，同样带 replyTo。
+   期限 **${deliveryBudgetSeconds} 秒**（超过 = 「开始了没交付」）。**回执不算回复**：只回"处理中"，
+   这条点名仍然算没人答。
+
+三条容易踩的边界：
+
+- 只挂心跳、也挂着长轮询，却从来没回过实质内容 → 面板不会把「在线」当好消息，会显示「只挂心跳」；
+- 回执发出去之后你的进程就没了 → 黑板不会以为你在忙：租约（${leaseSeconds} 秒）到期会重投，重试用尽就是「作废未回应」（alert）；
+- 人类在界面上叫你停下是另一回事，那不算你失职（账本记 endedBy=interrupted），但**不要伪造成"已完成"**。
+
+面板上显示的不是"你在不在线"，而是**这份契约履行到哪一步**：
+排队中 / 已送达等回执 / 正在处理 #N / 没人取件 / 没回执（未开始）/ 开始了没交付 / 作废未回应。
+心跳只是参考读数——挂个心跳能让它显示在线，但没法让契约说它履行了。
 
 ### 运行时契约（这几条决定你会不会被要求重做，别跳过）
 

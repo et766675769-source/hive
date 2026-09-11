@@ -64,6 +64,11 @@ function resolveReplyCommand() {
 const REPLY_CMD = resolveReplyCommand();
 // --engine 优先：引擎是可替换插槽，命令只是"其中一种引擎"的老写法
 const ENGINE = String(flag('engine') || process.env.MB_ENGINE || '').trim().toLowerCase();
+// 默认先回执（契约的第一半）；带 --no-ack 可关
+const ACK = !args.includes('--no-ack');
+// 默认启动补做：登记之前发出的点名，长轮询永远等不到，必须自己读一次
+const CATCH_UP = !args.includes('--no-catch-up');
+const CATCH_UP_LIMIT = Math.max(1, Number(flag('catch-up-limit', 3)));
 const WAIT_IDLE = Math.max(5, Math.min(Number(flag('wait', 25)), 60));
 const WAIT_BUSY = 5;
 const REPLY_TIMEOUT_MS = Math.max(30, Number(flag('timeout', 420))) * 1000;
@@ -118,6 +123,9 @@ const heartbeat = (state, note) =>
 /** 回复写回黑板：带幂等键，重试不会刷出重复留言。 */
 async function postReply(envelope, text, kind = 'reply', client = {}) {
   const key = `member-loop:${envelope?.messageId || 'notice'}:${kind}`;
+  // 状态措辞要跟内容一致：回执和回复都是"进行中"，只有失败/无法完成才是"阻塞"。
+  // 回执写成"阻塞"会让人误以为这条已经卡住了。
+  const status = kind === 'reply' || client.stage === 'ack' ? '进行中' : '阻塞';
   return call('/api/message', {
     method: 'POST',
     body: JSON.stringify({
@@ -125,7 +133,7 @@ async function postReply(envelope, text, kind = 'reply', client = {}) {
       text,
       kind,
       topic: envelope?.topic || null,
-      status: kind === 'reply' ? '进行中' : '阻塞',
+      status,
       replyTo: envelope?.messageId || null,
       idempotencyKey: key,
       client: { channel: 'member-loop', ...client },
@@ -280,6 +288,19 @@ async function think(envelope, recent) {
 async function handleMention(envelope) {
   log(`收到点名 #${envelope.seq}（来自 @${envelope.from}）`);
   writeJournal({ messageId: envelope.messageId, seq: envelope.seq, topic: envelope.topic || null, startedAt: new Date().toISOString() });
+
+  // 契约的第一半：先回执说"我开始了"。没有这一步，面板上会一直停在
+  // 「已送达，等回执」，超过 ackTimeoutSeconds 就变成「没回执（未开始）」——
+  // 而哨兵会把它当成违约去报告和接管。回执不是结论，kind=notice 不计入交付。
+  if (ACK) {
+    await postReply(
+      envelope,
+      `已收到 #${envelope.seq} 的点名，正在处理。本条为回执（不是结论），结果稍后按 replyTo 写回。`,
+      'notice',
+      { stage: 'ack' },
+    ).catch((error) => log(`回执发送失败（不影响后续回复）：${error.message}`));
+  }
+
   await heartbeat('busy', `正在处理 #${envelope.seq}`);
 
   try {
@@ -317,20 +338,29 @@ async function handleControl(control) {
   ).catch(() => {});
 }
 
+/* ── 身份 ───────────────────────────────────────────────── */
+
+// 身份必须是模块级的：提示词（replyPrompt）与登记（main）都要用它。
+// 之前它只在 main() 里定义，于是 --engine 模式下提示词一引用就抛
+// "IDENTITY is not defined"——一个刚接入的成员第一次被点名就回了一句报错（实测踩过，
+// 而且是在"照抄一条命令的笨成员"验收里抓到的）。
+const IDENTITY = {
+  agent: AGENT,
+  name: flag('name', AGENT),
+  title: flag('title', '成员'),
+  platform: flag('platform', 'member-loop'),
+  mission: flag('mission', '按提示词接入并交付'),
+  skills: flag('skills', ''),
+  constraints: flag('constraints', ''),
+};
+
 /* ── 主循环 ─────────────────────────────────────────────── */
 
 async function main() {
-  const identity = {
-    agent: AGENT,
-    name: flag('name', AGENT),
-    title: flag('title', '成员'),
-    platform: flag('platform', 'member-loop'),
-    mission: flag('mission', '按提示词接入并交付'),
-    skills: flag('skills', ''),
-    constraints: flag('constraints', ''),
-  };
+  const identity = IDENTITY;
   await call('/api/join', { method: 'POST', body: JSON.stringify(identity) });
-  log(`已登记；思考命令：${REPLY_CMD}`);
+  log(ENGINE ? `已登记；引擎=${ENGINE}` : `已登记；思考命令：${REPLY_CMD}`);
+  if (!ENGINE && !REPLY_CMD) log('警告：既没有 --engine 也没有 --reply-cmd，被点名时无法产出回复。');
 
   // 报到留言：接入自检表（提示词第 4 步要求的交付物）。幂等，重启不会重复贴。
   await postSelfCheck(identity)
@@ -349,6 +379,39 @@ async function main() {
     ).catch((error) => log(`上报失败：${error.message}`));
   }
   clearJournal();
+
+  // 启动补做：这是"笨成员"路上最关键的一步。
+  // 点名如果在你登记**之前**发出，那一刻你不在名册、唤醒队列里没有你——
+  // 之后你挂上长轮询也永远等不到它，面板就会显示"在线却不回话"（实测就是这个：
+  // 照抄 serve 的成员登记完就干等，pending 一直挂着）。所以启动先读一次自己的待回应。
+  if (CATCH_UP) {
+    try {
+      const state = await call('/api/state?limit=50');
+      const mine = (state.pending || []).filter((item) => item.agent === AGENT);
+      if (mine.length) {
+        const targets = mine.slice(0, CATCH_UP_LIMIT);
+        log(`补做 ${targets.length} 条未回应的点名（共 ${mine.length} 条，上限 ${CATCH_UP_LIMIT}）：#${targets.map((item) => item.seq).join(', #')}`);
+        for (const item of targets) {
+          await handleMention({
+            schema: 'messageboard.protocol.v1',
+            type: 'mention',
+            agent: AGENT,
+            from: item.from,
+            messageId: item.messageId,
+            seq: item.seq,
+            topic: item.topic,
+            mentions: [AGENT],
+            text: item.excerpt,
+            at: item.at,
+            board: BOARD,
+            next: `读板并用 replyTo="${item.messageId}" 给出实质回复`,
+          });
+        }
+      }
+    } catch (error) {
+      log(`补做检查失败（不影响监听）：${error.message}`);
+    }
+  }
 
   let backoff = 1000;
   for (;;) {

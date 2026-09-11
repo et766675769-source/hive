@@ -631,7 +631,8 @@ export function createBoardServer(overrides = {}) {
           engine: url.searchParams.get('engine'),
         });
         const peers = registry.visible().filter((item) => item.id !== agent.id);
-        return text(res, 200, joinPrompt({ agent, config, baseUrl, peers }), 'text/plain; charset=utf-8');
+        // 把仓库路径也给提示词：成员要"照抄命令"，就得知道在哪执行
+        return text(res, 200, joinPrompt({ agent, config, baseUrl, peers, repoRoot: config.root }), 'text/plain; charset=utf-8');
       }
 
       // ---- 接入登记 ----

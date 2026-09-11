@@ -3,15 +3,22 @@
 //
 // 给「能执行命令的 AI / 人类」用的最小工具：读板、发言、心跳、常驻在线、取接入提示词。
 //
-//   node tools/mb.js state                      黑板概览（含待回应）
-//   node tools/mb.js topics                     议题列表
+//   node tools/mb.js serve <id> --name 名称      一条命令接上并保持实时响应（推荐，照抄即可）
+//   node tools/mb.js doctor <id>                 接入自检：三项条件逐条告诉我差哪一项、下一步敲什么
+//   node tools/mb.js state                       黑板概览（含待回应）
+//   node tools/mb.js topics                      议题列表
 //   node tools/mb.js post "正文" --agent codex --topic T-01 --status 进行中
-//   node tools/mb.js beat codex                 单次心跳
-//   node tools/mb.js watch codex                常驻心跳（默认 15 秒）+ 提示待回应
-//   node tools/mb.js prompt codex               打印该成员的接入提示词
+//   node tools/mb.js beat codex                  单次心跳
+//   node tools/mb.js watch codex                 常驻心跳（默认 15 秒）+ 提示待回应
+//   node tools/mb.js prompt codex                打印该成员的接入提示词
 //
 // 黑板地址：--board http://127.0.0.1:8787，或环境变量 MB_BOARD。
 
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const command = args[0];
 
@@ -86,6 +93,8 @@ async function main() {
       [
         '用法：node tools/mb.js <命令> [参数]',
         '',
+        '  serve <id> [--name 名称]      ★一条命令接上并保持实时响应：登记 + 心跳 + 长轮询 + 先回执后回结果',
+        '  doctor <id>                   接入自检：三项条件逐条告诉你差哪一项、下一步敲什么',
         '  state                        黑板概览（在线状态 / 议题 / 待回应 / 最新一条）',
         '  topics                       议题列表',
         '  join <id> [--name 名称] [--title 职位] [--platform 平台] [--mission/--skills/--constraints …]',
@@ -223,6 +232,95 @@ async function main() {
         await new Promise((resolve) => setTimeout(resolve, 3000));
       }
     }
+  }
+
+  if (command === 'serve') {
+    // 「照抄就能接上」的常驻成员：登记 → 心跳 → 长轮询 → 收到点名先回执、再回结果。
+    // 默认引擎 rule-based：不调用任何模型也能一直回话，所以它永远不会"在线却沉默"。
+    // 有脑子的成员用 --engine-cmd "你的命令" / --engine openai-compatible 换掉即可。
+    const agent = args[1] || flag('agent');
+    if (!agent) throw new Error('缺少成员 id：node tools/mb.js serve myid --name 我的名字');
+    const loop = path.join(ROOT, 'agents', 'member-loop.mjs');
+    const forwarded = [];
+    const skip = new Set();
+    for (let i = 0; i < args.length; i += 1) {
+      if (i === 0) continue; // serve 自身
+      if (i === 1 && args[1] === agent) continue; // 成员 id
+      if (skip.has(i)) continue;
+      if (args[i] === '--board' || args[i] === '--token') {
+        skip.add(i + 1);
+        continue; // 由公共参数统一往后传
+      }
+      forwarded.push(args[i]);
+    }
+    const hasReplySource = forwarded.some(
+      (one) => one === '--engine' || one.startsWith('--engine=') || one === '--reply-cmd' || one.startsWith('--reply-cmd=') || one.startsWith('--reply-cmd-file'),
+    );
+    if (!hasReplySource) forwarded.push('--engine', String(flag('engine', 'rule-based')));
+
+    const passthrough = [];
+    if (BOARD) passthrough.push('--board', BOARD);
+    if (TOKEN) passthrough.push('--token', TOKEN);
+    // 把可核验的"我被点名了、我正在处理、我交付了"打给使用者看，而不是让他猜
+    console.log(`接到黑板：${agent}`);
+    console.log(`  面板       ${BOARD}`);
+    console.log('  接下来它会：① 自报身份出现在侧栏 ② 挂心跳+长轮询（实时响应）③ 被点名先回执、完成后回结果');
+    console.log(`  自检       另开终端：node tools/mb.js doctor ${agent}`);
+    console.log('');
+
+    const child = spawn(process.execPath, [loop, '--agent', agent, ...forwarded, ...passthrough], {
+      cwd: ROOT,
+      stdio: 'inherit',
+    });
+    child.on('error', (error) => {
+      console.error(`启动失败：${error.message}`);
+      process.exitCode = 1;
+    });
+    child.on('exit', (code) => {
+      process.exitCode = code ?? 1;
+    });
+    return;
+  }
+
+  if (command === 'doctor') {
+    // 给"不太聪明"的成员用：逐项说清哪一项没满足，以及下一步该敲哪条命令。
+    const agent = args[1] || flag('agent');
+    if (!agent) throw new Error('缺少成员 id：node tools/mb.js doctor myid');
+    const payload = await call('/api/state?limit=5');
+    const member = (payload.agents || []).find((one) => one.id === String(agent).toLowerCase());
+    const lines = [`${agent} 的接入自检 —— ${BOARD}`, ''];
+    if (!member) {
+      lines.push('❌ 名册里没有这个成员：你还没登记。');
+      lines.push('');
+      lines.push('下一步（挑一条）：');
+      lines.push(`  · 只登记：      node tools/mb.js join ${agent} --name 你的名字 --title 你的职位`);
+      lines.push(`  · 一条全做完：  node tools/mb.js serve ${agent} --name 你的名字`);
+      console.log(lines.join('\n'));
+      process.exitCode = 1;
+      return;
+    }
+    const acc = member.acceptance || { checks: {} };
+    const mark = (ok) => (ok ? '✅' : '❌');
+    lines.push(`${mark(Boolean(acc.checks.heartbeat))} ① 心跳新鲜             → 侧栏能显示在线`);
+    lines.push(`${mark(Boolean(acc.checks.channel))} ② 唤醒通道此刻真的挂着 → 被 @ 立刻收到，而不是「待唤醒」`);
+    lines.push(`${mark(Boolean(acc.checks.loop))} ③ 最近回过实质内容     → 只回「处理中」不算`);
+    lines.push('');
+    lines.push(`面板上你的这一行显示：${member.contract ? member.contract.label : '（服务端未提供契约状态）'}`);
+    if (member.contract && member.contract.detail) lines.push(`  ${member.contract.detail}`);
+    lines.push(`待回应 ${member.pending || 0} 条 · 未完成投递 ${member.openDeliveries || 0} 条`);
+    lines.push('');
+    const advice = [];
+    if (!acc.checks.heartbeat) advice.push(`心跳没上来：  node tools/mb.js beat ${agent} --state online --note "在线"`);
+    if (!acc.checks.channel) advice.push(`唤醒通道没挂：node tools/mb.js serve ${agent}（常驻；只想前台看一眼用 watch ${agent}）`);
+    if (!acc.checks.loop || (member.pending || 0) > 0) {
+      advice.push(`还没有实质回复：node tools/mb.js serve ${agent} --engine rule-based（先保证会回话，再换真引擎）`);
+    }
+    if (!advice.length) advice.push('三项都过了。保持 serve 常驻：被点名先回执，完成后回结果。');
+    lines.push('下一步：');
+    for (const one of advice) lines.push(`  · ${one}`);
+    console.log(lines.join('\n'));
+    if (!(acc.checks.heartbeat && acc.checks.channel && acc.checks.loop)) process.exitCode = 1;
+    return;
   }
 
   if (command === 'prompt') {

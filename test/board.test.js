@@ -9,6 +9,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { createBoardServer } from '../server/index.js';
 import { Registry } from '../server/registry.js';
@@ -723,6 +724,132 @@ test('契约：作废的投递仍算违约，人类主动叫停不算', async ()
   assert.equal(interrupted.state, CONTRACT.IDLE);
 });
 
+test('接入：照抄一条命令的"笨成员"能在面板上出现、先回执再交付', async () => {
+  // 这是针对"下一个接入的 AI 可能不那么聪明"的验收：
+  // 它只做一件事——在仓库目录里跑 tools/mb.js serve，别的什么都不懂。
+  // 曾经这条路上有个真 bug（member-loop 的提示词引用了 main() 里的局部 IDENTITY），
+  // 结果它被点名后回的是"我无法完成这条指名：IDENTITY is not defined"。
+  const { spawn } = await import('node:child_process');
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  await withBoard(async ({ base, post, state }) => {
+    // 顺序很关键：先让它接上，再点名。
+    // 黑板只认可**已登记**成员的 @（parseMentions 只认名册），所以"还没登记的成员被 @ 到"
+    // 这件事在协议上根本不存在——先登记、再被点名，这就是提示词把登记放在第 1 步的原因。
+    const child = spawn(
+      process.execPath,
+      ['tools/mb.js', 'serve', 'rookie', '--name', '新人', '--board', base],
+      { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let output = '';
+    let spawnError = null;
+    child.stdout.on('data', (chunk) => {
+      output += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk) => {
+      output += chunk.toString('utf8');
+    });
+    child.on('error', (error) => {
+      spawnError = `${error.code || ''} ${error.message}`;
+    });
+
+    try {
+      // ① 它自己接上了：出现在名册里，并且挂上了唤醒通道
+      const online = await waitFor(async () => {
+        const body = await state('?limit=10');
+        const found = body.agents.find((agent) => agent.id === 'rookie');
+        return found && found.acceptance.checks.channel ? found : null;
+      }, { timeoutMs: 20000 }).catch(() => null);
+      assert.ok(
+        online,
+        `它没接上（pid=${child.pid} exitCode=${child.exitCode} spawnError=${spawnError}）：\n${output.slice(0, 500)}`,
+      );
+
+      // ② 现在点名：被 @ 后它必须"先回执、再交付"，两步都落到黑板上
+      const mention = await (
+        await post('/api/message', { agent: 'local', kind: 'message', topic: null, text: '@rookie 请确认你能实时收到点名并回话。' })
+      ).json();
+      assert.deepEqual(mention.message.mentions, ['rookie'], '点名必须被识别（它已登记）');
+
+      const replied = await waitFor(async () => {
+        const body = await state('?limit=50');
+        return body.messages.find((message) => message.agent === 'rookie' && message.kind === 'reply') || null;
+      }, { timeoutMs: 25000 }).catch((error) => {
+        throw new Error(
+          `${error.message}\npid=${child.pid} exitCode=${child.exitCode} spawnError=${spawnError}\n子进程输出：\n${output.slice(0, 800)}`,
+        );
+      });
+
+      assert.equal(replied.replyTo, mention.message.id, '回复必须挂在被点名的那条留言上');
+      assert.ok(!/is not defined/.test(replied.text), `回复不能是内部报错：${replied.text.slice(0, 120)}`);
+      assert.match(replied.text, /结论/, '默认引擎也要给出合规的"结论/依据/下一步"');
+
+      const body = await state('?limit=50');
+      const ack = body.messages.find(
+        (message) => message.agent === 'rookie' && message.kind === 'notice' && message.replyTo === mention.message.id,
+      );
+      assert.ok(ack, '要先回一条"已收到、开始处理"的回执（契约的第一半）');
+      // 比序号，不要比对象：replied 来自前一次请求的数组，用 indexOf 比对象恒为 -1
+      assert.ok(ack.seq < replied.seq, `回执要先于结果（回执 #${ack.seq}，结果 #${replied.seq}）`);
+
+      const member = body.agents.find((agent) => agent.id === 'rookie');
+      assert.equal(member.acceptance.checks.loop, true, '回过实质内容后，点名闭环应当点亮');
+      assert.equal(member.contract.state, 'idle', '交付之后契约回到"无待办"');
+      assert.equal(body.pending.some((item) => item.agent === 'rookie'), false, '待回应应当清空');
+    } finally {
+      child.kill();
+    }
+    assert.ok(output.includes('rookie'), '它自己也要打印出被接上的事实');
+  });
+});
+
+test('接入：登记之前发出的 @ 不算点名（顺序错了，别人永远等不到你）', async () => {
+  await withBoard(async ({ post, state }) => {
+    const early = await (
+      await post('/api/message', { agent: 'local', kind: 'message', text: '@latecomer 你能收到吗？' })
+    ).json();
+    assert.deepEqual(early.message.mentions, [], '名册里没有 latecomer，这条 @ 不会被当作点名');
+    assert.equal(early.wakes.length, 0, '也不会产生任何唤醒');
+
+    // 登记之后再点名才算数
+    await post('/api/join', { agent: 'latecomer', name: '迟到者' });
+    const later = await (
+      await post('/api/message', { agent: 'local', kind: 'message', text: '@latecomer 现在呢？' })
+    ).json();
+    assert.deepEqual(later.message.mentions, ['latecomer']);
+
+    const body = await state('?limit=10');
+    const pending = body.pending.filter((item) => item.agent === 'latecomer');
+    assert.equal(pending.length, 1, '只有登记之后那一条才算待回应');
+    assert.equal(pending[0].seq, later.message.seq);
+  });
+});
+
+test('接入自检：doctor 逐条说清差哪一项，并给出下一步命令', async () => {
+  const { spawn } = await import('node:child_process');
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const run = (args) =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      child.stdout.on('data', (chunk) => {
+        out += chunk.toString('utf8');
+      });
+      child.stderr.on('data', (chunk) => {
+        out += chunk.toString('utf8');
+      });
+      child.on('exit', (code) => resolve({ code, out }));
+    });
+
+  await withBoard(async ({ base }) => {
+    // 还什么都没做：doctor 必须说"你还没登记"，并给出可以直接照抄的命令
+    const before = await run(['tools/mb.js', 'doctor', 'rookie', '--board', base]);
+    assert.equal(before.code, 1, '没接上时退出码非 0（脚本里能直接用来判断）');
+    assert.match(before.out, /还没登记/);
+    assert.match(before.out, /mb\.js join rookie/);
+    assert.match(before.out, /mb\.js serve rookie/);
+  });
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {
@@ -959,11 +1086,13 @@ test('投递：成员已掉线时，租约到期自动回收重投', async () =>
       assert.equal(asked.delivery[0].state, 'delivered');
       await waiting;
 
-      // 心跳 TTL 1 秒：让它在下一次巡检前就变成 stale（= 没人接活）
-      await new Promise((resolve) => setTimeout(resolve, 4000));
-      const payload = await state();
-      const record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
-      assert.equal(record.state, 'queued', '成员掉线后过期应回收为 queued 等待重投');
+      // 心跳 TTL 1 秒：让它在下一次巡检前就变成 stale（= 没人接活）。
+      // 等到"账本真的回收了"再断言，而不是睡一个固定时长——满载时固定睡眠会抖。
+      const record = await waitFor(async () => {
+        const payload = await state();
+        const found = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
+        return found.state === 'queued' ? found : null;
+      }, { timeoutMs: 20000 });
       assert.match(record.note, /回收重投/);
       assert.equal(record.attempts, 1, '重投前仍算 1 次送达记录');
     },
@@ -986,7 +1115,9 @@ test('投递：成员仍在线时长任务只续租，不被误判超时重投',
       assert.equal(asked.delivery[0].state, 'delivered');
       await waiting;
 
-      // 自报 busy + 具体条号：租约到期时应当续租，而不是把 Codex 的活重投一遍
+      // 自报 busy + 具体条号：租约到期时应当续租，而不是把 Codex 的活重投一遍。
+      // 租约给 3 秒（而不是 1 秒）：本用例要观察的是"持续续租"这个行为，
+      // 不该因为机器满载时一次心跳晚了几百毫秒就判成超时。
       for (let i = 0; i < 6; i += 1) {
         const poll = fetch(`${base}/api/inbox?agent=marvis&wait=2`).then((r) => r.json());
         await new Promise((resolve) => setTimeout(resolve, 700));
@@ -1001,7 +1132,7 @@ test('投递：成员仍在线时长任务只续租，不被误判超时重投',
       assert.equal(payload.deliverySummary.counts.expired, 0, '成员自报在处理的活不该被判超时');
     },
     // 上限放宽：本用例要观察的是"自报在跑 → 持续续租"，不测次数上限
-    { delivery: { leaseSeconds: 1, maxAttempts: 2, sweepSeconds: 1, maxRenewals: 50 } },
+    { delivery: { leaseSeconds: 3, maxAttempts: 2, sweepSeconds: 1, maxRenewals: 50 } },
   );
 });
 
@@ -1023,9 +1154,11 @@ test('投递：只挂心跳但不自报在处理该条时，仍按租约超时�
         await post('/api/heartbeat', { agent: 'marvis', state: 'online', note: '空闲' });
       }
 
-      const payload = await state();
-      const record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
-      assert.equal(record.state, 'queued', '没自报在处理，就该按租约回收重投，而不是被无限续租掩盖');
+      const record = await waitFor(async () => {
+        const payload = await state();
+        const found = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
+        return found.state === 'queued' ? found : null;
+      }, { timeoutMs: 20000 });
       assert.match(record.note, /回收|重投/);
     },
     { delivery: { leaseSeconds: 1, maxAttempts: 2, sweepSeconds: 1 } },
