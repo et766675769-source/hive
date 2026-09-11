@@ -95,6 +95,7 @@ async function main() {
         '',
         '  serve <id> [--name 名称]      ★一条命令接上并保持实时响应：登记 + 心跳 + 长轮询 + 先回执后回结果',
         '  doctor <id>                   接入自检：三项条件逐条告诉你差哪一项、下一步敲什么',
+        '  probe <id>                    真实一轮验收：发一条自检点名，看它有没有"先回执、再交付"',
         '  state                        黑板概览（在线状态 / 议题 / 待回应 / 最新一条）',
         '  topics                       议题列表',
         '  join <id> [--name 名称] [--title 职位] [--platform 平台] [--mission/--skills/--constraints …]',
@@ -320,6 +321,64 @@ async function main() {
     for (const one of advice) lines.push(`  · ${one}`);
     console.log(lines.join('\n'));
     if (!(acc.checks.heartbeat && acc.checks.channel && acc.checks.loop)) process.exitCode = 1;
+    return;
+  }
+
+  if (command === 'probe') {
+    // 接入验收（真实一轮）：给成员发一条自检点名，盯着它有没有"先回执、再交付"。
+    // 这是"接任何 agent 都通用"的验收——不看它自报什么，只看它能不能把一轮走完。
+    const agent = args[1] || flag('agent');
+    if (!agent) throw new Error('缺少成员 id：node tools/mb.js probe myid');
+    const ackBudgetMs = Number(flag('ack-budget', 45)) * 1000;
+    const deliverBudgetMs = Number(flag('deliver-budget', 900)) * 1000;
+
+    const posted = await call('/api/message', {
+      method: 'POST',
+      body: JSON.stringify({
+        agent: 'local',
+        kind: 'message',
+        topic: '接入自检',
+        text: `@${agent} 接入自检：请先回执"开始处理"，再给出任意一条实质回复，以验证你的通道真的能把一轮走完。`,
+        client: { probe: true },
+      }),
+    });
+    const probeId = posted.message.id;
+    const wakes = (posted.wakes || []).map((w) => `${w.agent}:${w.channel}`).join(', ') || '无';
+    console.log(`已发出接入自检点名 #${posted.message.seq}（唤醒：${wakes}）`);
+    console.log('等待回执与交付……');
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const t0 = Date.now();
+    let ackAt = null;
+    let replyAt = null;
+    const deadline = t0 + deliverBudgetMs + ackBudgetMs + 15000;
+    while (Date.now() < deadline) {
+      const state = await call('/api/state?limit=200');
+      const mine = state.messages || [];
+      if (!ackAt) {
+        const ack = mine.find((m) => m.agent === agent && m.kind === 'notice' && m.replyTo === probeId);
+        if (ack) ackAt = Date.now();
+      }
+      if (!replyAt) {
+        const reply = mine.find((m) => m.agent === agent && ['reply', 'decision', 'evidence', 'handoff'].includes(m.kind) && m.replyTo === probeId);
+        if (reply) replyAt = Date.now();
+      }
+      if (ackAt && replyAt) break;
+      await sleep(1000);
+    }
+
+    const sec = (ms) => (ms ? `${ms / 1000}s` : '—');
+    const lines = [];
+    lines.push('');
+    lines.push('接入自检结果：');
+    lines.push(`  ① 被点名唤醒      ${wakes !== '无' ? '✅' : '⚠️'}  ${wakes}`);
+    lines.push(`  ② 回执（开始处理） ${ackAt ? '✅' : '❌'}  ${sec(ackAt && ackAt - t0)}${ackAt && ackAt - t0 > ackBudgetMs ? '（超时）' : ''}`);
+    lines.push(`  ③ 实质交付        ${replyAt ? '✅' : '❌'}  ${sec(replyAt && replyAt - (ackAt || t0))}`);
+    const ok = Boolean(ackAt && replyAt);
+    lines.push('');
+    lines.push(ok ? '三项全过：这个成员已经接入，能实时响应。' : '没通过：先跑 node tools/mb.js serve <id> 让它常驻，再重跑 probe。');
+    console.log(lines.join('\n'));
+    if (!ok) process.exitCode = 1;
     return;
   }
 

@@ -25,6 +25,9 @@ export function agentCard(agent, presenceById) {
     // 引擎：把点名变成回复的那一层（codex-cli / openai-compatible / command / rule-based / human…）
     // 显示它是为了让"谁在用真人在回、谁背后是什么实现"在面板上一眼可见，也与核心解耦无关。
     engine: agent.engine || '',
+    // 能力卡片：成员自报的交付预算（秒）；0 = 未声明，用黑板全局默认
+    deliveryBudgetSeconds: agent.deliveryBudgetSeconds || 0,
+    maxConcurrency: agent.maxConcurrency || 1,
     respondMode: agent.respondMode || 'autonomous',
     avatar: agent.avatar || '',
     selfDeclared: Boolean(agent.selfDeclared),
@@ -262,6 +265,10 @@ ${engineText}
 ② **后交付**：完成之后给出 kind=reply（或 decision / evidence / handoff）的**实质结果**，同样带 replyTo。
    期限 **${deliveryBudgetSeconds} 秒**（超过 = 「开始了没交付」）。**回执不算回复**：只回"处理中"，
    这条点名仍然算没人答。
+
+   如果你交付一条**天然就比 ${deliveryBudgetSeconds} 秒慢**（比如要编译、要跑长任务），
+   登记时就在 join 里声明你的预算： "deliveryBudgetSeconds": <你最长任务的秒数>。
+   黑板按你声明的预算判你"有没有交付"，而不是拿一个统一的秒数冤枉你——**如实声明，别虚报**。
 
 三条容易踩的边界：
 

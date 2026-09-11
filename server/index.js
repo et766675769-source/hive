@@ -429,7 +429,12 @@ export function createBoardServer(overrides = {}) {
         return {
           ...agentCard(agent, presenceMap),
           pending: pendingByAgent[agent.id] || 0,
-          contract: contractOf(views, { ...contractOptions, respondMode: agent.respondMode || 'autonomous' }),
+          contract: contractOf(views, {
+            ...contractOptions,
+            respondMode: agent.respondMode || 'autonomous',
+            // 能力卡片：成员自报交付预算优先，否则回落全局默认
+            deliveryBudgetSeconds: agent.deliveryBudgetSeconds || contractOptions.deliveryBudgetSeconds,
+          }),
           openDeliveries: open.length,
           deliveryCounts: delivery.countsFor(agent.id, { windowMs: config.acceptance.loopWindowHours * 3600 * 1000 }),
           acceptance: acceptanceFor(agent, presenceMap.get(agent.id), mentionReplies[agent.id]),
@@ -701,6 +706,9 @@ export function createBoardServer(overrides = {}) {
           engine: payload.engine,
           // 回应形态：autonomous（被 @ 能自己回）/ manual（需人工唤起它的对话）
           respondMode: payload.respondMode,
+          // 能力卡片：交付预算与并发上限（成员自报，未声明则用全局默认）
+          deliveryBudgetSeconds: payload.deliveryBudgetSeconds,
+          maxConcurrency: payload.maxConcurrency,
           avatar: payload.avatar,
           // 唤醒方式：成员可以声明自己的回调地址；本机唤醒命令只能由运维在配置里写
           callback: payload.callback,

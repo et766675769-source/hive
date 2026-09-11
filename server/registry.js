@@ -25,6 +25,13 @@ function tidy(value, max) {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+/** 交付预算（秒）：只接受合理区间，其余回落全局默认（0 表示"未声明"）。 */
+function clampBudget(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.round(Math.min(Math.max(n, 15), 24 * 3600));
+}
+
 /** 头像：只接受站点内路径或 http(s) 地址。 */
 function normalizeAvatar(value) {
   const url = String(value || '').trim().slice(0, 300);
@@ -78,6 +85,12 @@ export class Registry {
       // manual = 需要人类去唤起它的对话（例如只能人工交互的网页版）。
       // 接入方必须如实声明——manual 成员的点名会被标成「待人工唤起」，而不是记它超时。
       respondMode: agent.respondMode === 'manual' ? 'manual' : 'autonomous',
+      // 能力卡片（AgentCard）的一角：成员自报"我交付一条最长要多久"。
+      // 核心据此判定"开始了没交付"——慢引擎（codex-cli 要几分钟）声明长一点就不会被误判，
+      // 快引擎（rule-based 秒回）用默认值就不会让点名被拖太久。不声明则回落全局默认。
+      deliveryBudgetSeconds: clampBudget(agent.deliveryBudgetSeconds),
+      // 同时最多处理几条点名（默认 1，绝大多数成员如此）
+      maxConcurrency: Math.max(1, Math.min(Number(agent.maxConcurrency) || 1, 8)),
       hidden: Boolean(agent.hidden),
       avatar: normalizeAvatar(agent.avatar),
       wake: normalizeWake(agent.wake, agent.callback),

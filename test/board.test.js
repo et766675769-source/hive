@@ -1139,6 +1139,36 @@ test('对账：留言里已有实质回复的投递，启动时会被纠正为 r
   }
 });
 
+test('能力卡片：成员自报交付预算优先于全局，慢引擎不被误判、快引擎不被拖', async () => {
+  const { contractOf } = await import('../server/contract.js');
+  const nowMs = Date.parse('2026-09-12T00:10:00+08:00');
+  const working = (secondsAgo) => ({
+    seq: 5,
+    state: 'working',
+    updatedAt: new Date(nowMs - secondsAgo * 1000).toISOString(),
+    ackDeadlineAt: nowMs - 1000,
+  });
+
+  // 全局预算 600 秒；慢引擎自报 900 秒 → 700 秒时仍是"正在处理"，不是"开始了没交付"
+  const slow = contractOf([working(700)], { nowMs, ackTimeoutSeconds: 45, deliveryBudgetSeconds: 900 });
+  assert.equal(slow.state, 'working', '慢引擎声明 900 秒，700 秒不算违约');
+  // 快引擎没声明，回落全局 600 秒 → 700 秒就是"开始了没交付"
+  const fast = contractOf([working(700)], { nowMs, ackTimeoutSeconds: 45, deliveryBudgetSeconds: 600 });
+  assert.equal(fast.state, 'overdue');
+});
+
+test('能力卡片：join 里声明的交付预算会随成员卡下发', async () => {
+  await withBoard(async ({ join, state }) => {
+    await join({ agent: 'slow', name: '慢引擎', engine: 'codex-cli', deliveryBudgetSeconds: 900 });
+    await join({ agent: 'fast', name: '快引擎', engine: 'rule-based' });
+    const body = await state('?limit=10');
+    const byId = Object.fromEntries(body.agents.map((agent) => [agent.id, agent]));
+    assert.equal(byId.slow.deliveryBudgetSeconds, 900, '自报的预算要保留');
+    assert.equal(byId.fast.deliveryBudgetSeconds, 0, '没声明就留 0，由核心回落全局默认');
+    assert.equal(byId.slow.maxConcurrency, 1, '并发默认 1');
+  });
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {
