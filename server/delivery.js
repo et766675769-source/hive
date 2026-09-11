@@ -129,6 +129,27 @@ export class DeliveryLedger {
   #set(messageId, agent, state, { channel, client, note, deadlineAt, attempts, seq, topic, renewals, ackDeadlineAt, endedBy } = {}) {
     if (!DELIVERY_STATES.includes(state)) throw new Error(`未知投递状态：${state}`);
     const at = this.now();
+    // 终态不可回退：**已经交付过**的投递，不能被后来重复投递的失败覆盖成 expired。
+    // 实测踩过：回复到的同一秒又投递了一份（队列里的重复件），那份没人应、超时作废，
+    // 于是面板显示"作废未回应"——而回复明明就在板上。
+    const key = DeliveryLedger.keyOf(messageId, agent);
+    const existing = this.records.get(key);
+    if (existing && existing.state === 'replied' && state !== 'replied') {
+      return this.#apply({
+        messageId,
+        agent,
+        state: 'replied',
+        channel,
+        client,
+        note: `已交付后收到重复投递（${state}），按终态保留：${note || ''}`.slice(0, 160),
+        deadlineAt: null,
+        ackDeadlineAt: null,
+        renewals,
+        seq,
+        topic,
+        at,
+      });
+    }
     return this.#apply({ messageId, agent, state, channel, client, note, deadlineAt, attempts, seq, topic, renewals, ackDeadlineAt, endedBy, at });
   }
 
@@ -301,6 +322,18 @@ export class DeliveryLedger {
     return this.order
       .map((key) => this.records.get(key))
       .filter((record) => record && record.messageId === messageId)
+      .map((record) => this.#view(record));
+  }
+
+  /**
+   * 所有**没记为已交付**的投递（含已作废的）：启动对账用。
+   * 对账的意义：投递台账与留言是两套记录。历史遗留、重复投递、进程被杀，都可能造成
+   * "留言里明明有实质回复、台账却还写着作废"——面板于是显示"作废未回应"，
+   * 而回复就在板上（实测踩过 #165）。启动时按留言事实把台账纠正过来。
+   */
+  listUnreplied() {
+    return [...this.records.values()]
+      .filter((record) => record && record.state !== 'replied')
       .map((record) => this.#view(record));
   }
 

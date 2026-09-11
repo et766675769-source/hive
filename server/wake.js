@@ -102,6 +102,9 @@ export class WakeHub {
 
   #enqueue(agentId, envelope) {
     const queue = this.queues.get(agentId) || [];
+    // 同一条留言不在队列里塞第二份：重复件会导致"回复已经到了，却又投递一次、
+    // 那一份没人应、超时作废"，面板于是显示"作废未回应"（实测踩过）。
+    if (envelope && envelope.messageId && queue.some((item) => item && item.messageId === envelope.messageId)) return;
     queue.push(envelope);
     while (queue.length > this.maxQueue) queue.shift();
     this.queues.set(agentId, queue);

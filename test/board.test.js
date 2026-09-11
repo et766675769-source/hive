@@ -1046,6 +1046,99 @@ test('幂等：两个成员回同一条点名，谁的回复都不会被吞掉�
   });
 });
 
+test('投递：已交付的投递不会被后来的重复投递退回未完成（终态不可回退）', async () => {
+  const { DeliveryLedger } = await import('../server/delivery.js');
+  let clock = Date.parse('2026-09-12T00:00:00+08:00');
+  const file = path.join(dataRoot, `ledger-terminal-${Date.now()}.jsonl`);
+  const ledger = new DeliveryLedger({ file, leaseSeconds: 1, ackTimeoutSeconds: 1, maxAttempts: 2, now: () => clock });
+
+  ledger.ensure({ id: 'msg-1', seq: 1, mentions: ['ghost'] }, ['ghost']);
+  ledger.markDelivered('msg-1', 'ghost', { channel: 'inbox', ok: true, client: 'runner' });
+  ledger.markReplied({ replyTo: 'msg-1', agent: 'ghost' });
+  assert.equal(ledger.forMessage('msg-1')[0].state, 'replied');
+
+  // 队列里的重复件又来了一次（没人应），随后被租约判超时——**不能**把已交付的改回 expired
+  ledger.markDelivered('msg-1', 'ghost', { channel: 'inbox', ok: true, client: 'runner' });
+  assert.equal(ledger.forMessage('msg-1')[0].state, 'replied', '重复投递不能把已交付退回 delivered');
+  clock += 5000;
+  ledger.sweep();
+  const after = ledger.forMessage('msg-1')[0];
+  assert.equal(after.state, 'replied', '重复件超时也不能把已交付改成 expired');
+  assert.match(after.note, /终态保留/);
+  assert.equal(ledger.isUnreliableClient('ghost', 'runner'), false, '交付过的客户端不该被算作不可靠');
+});
+
+test('投递：重新派发不会把同一条点名在队列里塞两份', async () => {
+  await withBoard(
+    async ({ base, join, wake, post, state }) => {
+      await join({ agent: 'ghost', name: '幽灵' });
+      const mention = await (
+        await post('/api/message', { agent: 'local', kind: 'message', text: '@ghost 请回答' })
+      ).json();
+      const payload = { agent: 'ghost', messageId: mention.message.id };
+
+      const requeue = () =>
+        fetch(`${base}/api/requeue`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).then((r) => r.json());
+      await requeue();
+      await requeue();
+      await requeue();
+
+      // 队列深度按留言条数算，不按"点了几次"
+      const depth = wake.queueDepth();
+      assert.equal(depth.ghost, 1, `同一条不该排三份（实际 ${JSON.stringify(depth)}）`);
+
+      const body = await state('?limit=5');
+      const record = body.messages.find((message) => message.id === mention.message.id).delivery[0];
+      assert.equal(record.state, 'queued');
+    },
+    { delivery: { ackTimeoutSeconds: 1 } },
+  );
+});
+
+test('对账：留言里已有实质回复的投递，启动时会被纠正为 replied（面板不再自相矛盾）', async () => {
+  const { DeliveryLedger } = await import('../server/delivery.js');
+  const { Store } = await import('../server/store.js');
+  const dir = fs.mkdtempSync(path.join(dataRoot, 'reconcile-'));
+  const deliveryFile = path.join(dir, 'deliveries.jsonl');
+
+  // 先造一条"台账作废、留言里却有回复"的历史遗留（重复投递 + 进程被杀都可能造成）
+  const ledger = new DeliveryLedger({ file: deliveryFile, leaseSeconds: 1, ackTimeoutSeconds: 1, maxAttempts: 2 });
+  ledger.ensure({ id: 'msg-x', seq: 7, mentions: ['ghost'] }, ['ghost']);
+  ledger.markDelivered('msg-x', 'ghost', { channel: 'inbox', ok: true, client: 'ghost-client' });
+  ledger.markRecoveryDeferred('msg-x', 'ghost');
+  assert.equal(ledger.forMessage('msg-x')[0].state, 'expired');
+
+  // 真实留言流：有人回过这一条（用与黑板相同的文件布局）
+  const seed = new Store({ dataDir: dir, historyInMemory: 100, board: { name: 't', nameZh: 't' } });
+  seed.append({ agent: { id: 'ghost', name: '幽灵' }, text: '@ghost 问一句', kind: 'message' });
+  const mention = seed.list({ limit: 10 }).at(-1);
+  seed.append({
+    agent: { id: 'ghost', name: '幽灵' },
+    text: '结论：答完了。',
+    kind: 'reply',
+    replyTo: mention.id,
+  });
+  // 台账里的那条要点在同一句留言上，且状态是"作废"
+  ledger.ensure({ id: mention.id, seq: mention.seq, mentions: ['ghost'] }, ['ghost']);
+  ledger.markDelivered(mention.id, 'ghost', { channel: 'inbox', ok: true, client: 'ghost-client' });
+  ledger.markRecoveryDeferred(mention.id, 'ghost');
+  assert.equal(ledger.forMessage(mention.id)[0].state, 'expired');
+
+  const { createBoardServer } = await import('../server/index.js');
+  const { server, presence, delivery } = createBoardServer({ dataDir: dir, quiet: true });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    // 启动对账应当把"其实已经答了"的那条纠正为 replied，而不是继续报作废
+    const records = delivery.listUnreplied().filter((record) => record.messageId === mention.id);
+    assert.equal(records.length, 0, `已有实质回复的投递不该还挂在未交付里：${JSON.stringify(records)}`);
+    assert.equal(delivery.forMessage(mention.id)[0].state, 'replied');
+  } finally {
+    presence.stop();
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {

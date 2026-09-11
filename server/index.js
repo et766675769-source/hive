@@ -253,6 +253,33 @@ export function createBoardServer(overrides = {}) {
   if (typeof deliveryTimer.unref === 'function') deliveryTimer.unref();
 
   /**
+   * 台账对账：留言里已经有**实质回复**的投递，不该还停在"作废/待投递"。
+   * 留言（事实）与投递台账（过程）是两套记录，进程被杀、重复投递、历史遗留都会让它们对不上——
+   * 面板于是显示"作废未回应"，而回复就在板上（实测踩过 #165）。启动时按留言事实纠正台账，
+   * 人就不会看到自相矛盾的面板。
+   */
+  function reconcileDeliveries() {
+    const all = store.list({ limit: store.historyInMemory });
+    const substantive = new Set();
+    for (const message of all) {
+      if (!message.replyTo) continue;
+      if (message.kind === 'notice') continue; // 回执不算交付
+      substantive.add(`${message.replyTo}|${message.agent}`);
+    }
+    let fixed = 0;
+    for (const record of delivery.listUnreplied()) {
+      if (!substantive.has(`${record.messageId}|${record.agent}`)) continue;
+      const updated = delivery.markReplied({ replyTo: record.messageId, agent: record.agent });
+      if (updated) {
+        fixed += 1;
+        broadcast('delivery', updated);
+      }
+    }
+    if (fixed) audit(`对账：${fixed} 条投递其实已有实质回复，已纠正为 replied`);
+    return fixed;
+  }
+
+  /**
    * 启动恢复：进程重启会让内存里的唤醒队列清空，但"被点名却没有实质回复"是黑板上的事实。
    * 启动时把它们按成员（每人最多 backfillLimit 条）重新登记为投递并放回队列，
    * 成员下次长轮询就会取到——重启不再意味着点名永久丢失。
@@ -304,6 +331,9 @@ export function createBoardServer(overrides = {}) {
   }
   const backfill = backfillDeliveries();
   const recovered = backfill.recovered;
+  // 对账放在补投之后：先按留言事实把"其实已经答了"的投递纠正为 replied，
+  // 免得它们又被当成未回应的活重新投一遍。
+  const reconciled = reconcileDeliveries();
 
   let presenceSignature = '';
   presence.onChange((snapshot) => {
@@ -1035,7 +1065,7 @@ export function createBoardServer(overrides = {}) {
     }
   });
 
-  return { server, config, store, presence, registry, wake, delivery, recovered, statePayload };
+  return { server, config, store, presence, registry, wake, delivery, recovered, reconciled, statePayload };
 }
 
 function main() {
