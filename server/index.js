@@ -26,6 +26,7 @@ import { WakeHub } from './wake.js';
 import { DeliveryLedger } from './delivery.js';
 import { agentCard, draftAgent, joinPrompt } from './agents.js';
 import { listEngines } from '../engines/registry.mjs';
+import { contractOf } from './contract.js';
 import { SCHEMA, STATUSES, KINDS, validateMessage, localDisplay, localIso } from './protocol.js';
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -377,14 +378,26 @@ export function createBoardServer(overrides = {}) {
     for (const item of pending) pendingByAgent[item.agent] = (pendingByAgent[item.agent] || 0) + 1;
     const mentionReplies = store.mentionReplies({ windowMs: config.acceptance.loopWindowHours * 3600 * 1000 });
     const presenceMap = new Map(presence.snapshot().map((item) => [item.id, item]));
+    // 契约状态：不是"在不在线"，而是"点名有没有被履行"（回执 + 交付）。
+    // 这是面板的主信息；心跳派生的在线状态降级为参考信息。
+    const openByAgent = delivery.open({ ignore: hiddenAgentIds() });
+    const contractOptions = {
+      nowMs: Date.now(),
+      ackTimeoutSeconds: config.delivery.ackTimeoutSeconds,
+      deliveryBudgetSeconds: config.delivery.deliveryBudgetSeconds,
+    };
     return {
-      members: registry.visible().map((agent) => ({
-        ...agentCard(agent, presenceMap),
-        pending: pendingByAgent[agent.id] || 0,
-        openDeliveries: delivery.openForAgent(agent.id).length,
-        deliveryCounts: delivery.countsFor(agent.id, { windowMs: config.acceptance.loopWindowHours * 3600 * 1000 }),
-        acceptance: acceptanceFor(agent, presenceMap.get(agent.id), mentionReplies[agent.id]),
-      })),
+      members: registry.visible().map((agent) => {
+        const open = openByAgent.get(agent.id) || [];
+        return {
+          ...agentCard(agent, presenceMap),
+          pending: pendingByAgent[agent.id] || 0,
+          contract: contractOf(open, { ...contractOptions, respondMode: agent.respondMode || 'autonomous' }),
+          openDeliveries: open.length,
+          deliveryCounts: delivery.countsFor(agent.id, { windowMs: config.acceptance.loopWindowHours * 3600 * 1000 }),
+          acceptance: acceptanceFor(agent, presenceMap.get(agent.id), mentionReplies[agent.id]),
+        };
+      }),
       pending,
     };
   }
@@ -445,7 +458,9 @@ export function createBoardServer(overrides = {}) {
       presence: presence.summary(),
       messages,
       topics: store.topics(),
-      pending,
+      // 待回应列表带上投递事实：契约卡在哪一步（排队/等回执/处理中）一望可知，
+      // 哨兵与界面都据此判断，而不是靠"在线"猜。
+      pending: pending.map((item) => ({ ...item, delivery: (delivery.forMessage(item.messageId) || [])[0] || null })),
       wakeQueue: wake.queueDepth(),
       deliverySummary: delivery.summary({ ignore: hiddenAgentIds() }),
       stats: store.stats(),

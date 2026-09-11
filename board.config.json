@@ -21,6 +21,7 @@
     "sweepSeconds": 5,
     "maxRenewals": 5,
     "ackTimeoutSeconds": 45,
+    "deliveryBudgetSeconds": 600,
     "backfillOnStart": true,
     "backfillLimit": 3
   },

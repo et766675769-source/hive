@@ -377,14 +377,23 @@ function renderRoster() {
       // 心跳读数：实测间隔（服务端按最近几次心跳取中位数），不是成员自报的周期
       const hb = agent.heartbeatIntervalSeconds;
       const hbText = hb ? `心跳 ~${hb}s` : '心跳 —';
-      const sub = [
-        agent.title,
-        STATE_LABEL[agent.state] || agent.state,
-        agoOf(agent.ageSeconds),
-        hbText,
-      ]
-        .filter(Boolean)
-        .join(' · ');
+      // 主信息是**契约**（点名有没有被取件、回执、交付），不是"在线"——
+      // 挂个心跳就能显示在线，挂个心跳却不会回话。心跳降级成副信息里的一个读数。
+      const contract = agent.contract || null;
+      const heartbeat = [STATE_LABEL[agent.state] || agent.state, hbText].filter(Boolean).join(' · ');
+      const contractDuration =
+        contract && Number.isFinite(contract.waitingSeconds)
+          ? contract.waitingSeconds < 60
+            ? `${Math.round(contract.waitingSeconds)} 秒`
+            : `${Math.round(contract.waitingSeconds / 60)} 分钟`
+          : '';
+      const contractText = contract
+        ? contract.state === 'idle'
+          ? contract.label
+          : `${contract.label}${contractDuration ? `（${contractDuration}）` : ''}`
+        : STATE_LABEL[agent.state] || agent.state;
+      const sub = [contractText, agent.title, heartbeat].filter(Boolean).join(' · ');
+      const contractClass = contract && contract.severity === 'alert' ? ' member__sub--alert' : contract && contract.severity === 'warn' ? ' member__sub--warn' : '';
       const undeclared = agent.selfDeclared
         ? ''
         : '<span class="pending pending--quiet" title="只发过心跳或发言，尚未自述身份">未自述</span>';
@@ -436,7 +445,7 @@ function renderRoster() {
           )}</span>`
         : '';
       return `
-      <li class="member" data-state="${esc(agent.state)}" data-agent="${esc(agent.id)}">
+      <li class="member" data-state="${esc(agent.state)}" data-contract="${esc(contract ? contract.state : '')}" data-agent="${esc(agent.id)}">
         <span class="member__mono${agent.avatar ? ' member__mono--img' : ''}">${
           agent.avatar
             ? `<img class="mono__img" src="${esc(agent.avatar)}" alt="${esc(agent.name)}" />`
@@ -444,7 +453,9 @@ function renderRoster() {
         }</span>
         <span class="member__main">
           <span class="member__name">${esc(agent.name)}</span>
-          <span class="member__sub" title="${esc(agent.platform || '')}">${esc(sub)}</span>
+          <span class="member__sub${contractClass}" title="${esc(
+            [contract ? contract.detail : '', agent.platform || ''].filter(Boolean).join('　|　'),
+          )}">${esc(sub)}</span>
         </span>
         <span class="member__badges">
           ${accBadge}
@@ -468,7 +479,11 @@ function renderRoster() {
     .join('');
 
   el.rosterEmpty.hidden = state.agents.length > 0;
-  el.onlineCount.textContent = `${state.presence.online}/${state.presence.total}`;
+  // 契约违约（severity=alert）的成员数：面板头部的"正常 N"比"在线 N"更接近项目目标。
+  // 没有待办的成员算正常——"暂时没活"不是失职，只有违约才该被点出来。
+  const breached = state.agents.filter((agent) => agent.contract && agent.contract.severity === 'alert');
+  el.onlineCount.textContent = `${state.agents.length - breached.length}/${state.agents.length}`;
+  el.onlineCount.title = `正常履行契约的成员 / 全部成员（心跳在线 ${state.presence.online}/${state.presence.total}，仅作参考）`;
   const latest = state.messages[state.messages.length - 1];
   const counts = (state.deliverySummary && state.deliverySummary.counts) || {};
   const pendingDelivery = (counts.queued || 0) + (counts.delivered || 0) + (counts.working || 0);
@@ -476,6 +491,8 @@ function renderRoster() {
     `留言 ${state.stats ? state.stats.total : state.messages.length} 条`,
     latest ? `最新 ${esc(clockOf(latest.ts))}` : '',
     `投递中 ${pendingDelivery}`,
+    // 契约违约数（没取件 / 没回执 / 没交付）：面板要能一眼看出"有人没在履行"
+    breached.length ? `<span class="rail__alert">未履行 ${breached.length}</span>` : '',
     counts.expired ? `超时未回 ${counts.expired}` : '',
     `在线判定 ${state.presence.ttlSeconds}s`,
   ]

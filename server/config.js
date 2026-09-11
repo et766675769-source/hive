@@ -76,6 +76,9 @@ export function loadConfig(overrides = {}) {
     maxRenewals: Number(overrideDelivery.maxRenewals || rawDelivery.maxRenewals || 5),
     // 送达后多久还没收到"处理中"确认就判定信封丢失（远小于租约，专治"投给已断开的连接"）
     ackTimeoutSeconds: Number(overrideDelivery.ackTimeoutSeconds || rawDelivery.ackTimeoutSeconds || 45),
+    // 契约的交付预算：成员回了「处理中」之后，多久还没交付结果就算"开始了没交付"。
+    // 必须大于引擎自己的生成超时（agent-runner 默认 420 秒），否则会误伤正常的长任务。
+    deliveryBudgetSeconds: Number(overrideDelivery.deliveryBudgetSeconds || rawDelivery.deliveryBudgetSeconds || 600),
     // 启动恢复：把历史上"被点名但没有实质回复"的留言重新放回投递队列
     backfillOnStart: (overrideDelivery.backfillOnStart ?? rawDelivery.backfillOnStart) !== false,
     backfillLimit: Number(overrideDelivery.backfillLimit || rawDelivery.backfillLimit || 3),

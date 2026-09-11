@@ -435,52 +435,55 @@ test('哨兵：判定「在线但沉默」要有证据（点名超时 + 没有�
   assert.equal(planTakeovers(findings, [], { nowMs }).length, 0, '没有托管配置就不接管');
 });
 
-test('哨兵：一轮巡检把「在线但沉默」写回黑板，且不刷屏、不关掉别人的点名', async () => {
+test('哨兵：一轮巡检把契约违约写回黑板，且不刷屏、不关掉别人的点名', async () => {
   const { runRound } = await import('../tools/sentinel.mjs');
   const statusFile = path.join(dataRoot, `sentinel-${Date.now()}.json`);
-  await withBoard(async ({ join, base, post, state }) => {
-    // 一个"在线但沉默"的成员：登记了引擎，长轮询也挂着，但从来没人回话
-    await join({ agent: 'silent', name: '沉默成员', engine: 'rule-based' });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await post('/api/message', { agent: 'local', kind: 'message', topic: null, text: '@silent 请回答一个具体问题' });
+  await withBoard(
+    async ({ join, base, post, state }) => {
+      // 一个"接了活但没人来取"的成员：登记了引擎，长轮询没挂，点名只能排队
+      await join({ agent: 'silent', name: '沉默成员', engine: 'rule-based' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await post('/api/message', { agent: 'local', kind: 'message', topic: null, text: '@silent 请回答一个具体问题' });
+      // ack 窗口设成 1 秒：契约判据用服务端真实时间，等一下就能看到违约
+      await new Promise((resolve) => setTimeout(resolve, 1300));
 
-    // 阈值设成 1 分钟、时间往后推 5 分钟：等价于"这条点名已经等了很久"
-    const roundOptions = {
-      nowMs: Date.now() + 5 * 60000,
-      board: base,
-      statusFile,
-      silentMinutes: 1,
-      cooldownMinutes: 60,
-      takeover: false, // 测试里不真的拉进程
-    };
-    const first = await runRound(roundOptions);
-    const silentFinding = first.findings.find((finding) => finding.code === 'SILENT_WITH_PENDING');
-    assert.ok(silentFinding, '应判出「在线但沉默」');
-    assert.equal(silentFinding.member, 'silent');
-    assert.equal(silentFinding.severity, 'alert');
-    assert.ok(
-      first.acted.some((item) => item.code === 'SILENT_WITH_PENDING' && item.seq),
-      'alert 级结论会发言，并且真的落到黑板上',
-    );
+      const roundOptions = {
+        board: base,
+        statusFile,
+        silentMinutes: 1,
+        cooldownMinutes: 60,
+        takeover: false, // 测试里不真的拉进程
+      };
+      const first = await runRound(roundOptions);
+      const breach = first.findings.find((finding) => finding.code === 'NOT_FETCHED');
+      assert.ok(breach, `应判出契约违约（实际：${first.findings.map((f) => f.code).join(', ')}）`);
+      assert.equal(breach.member, 'silent');
+      assert.equal(breach.severity, 'alert');
+      assert.ok(
+        first.acted.some((item) => item.code === 'NOT_FETCHED' && item.seq),
+        'alert 级结论会发言，并且真的落到黑板上',
+      );
 
-    const body = await state('?limit=50');
-    const notices = body.messages.filter((message) => message.agent === 'sentinel');
-    assert.equal(notices.length, first.acted.length, '每条结论一条 notice，不打折也不重复');
-    assert.equal(notices[0].kind, 'notice');
-    assert.equal(notices[0].agentName, '哨兵', '发言者姓名可读');
-    assert.equal(notices[0].client.sentinel, true, '发言带哨兵标记，便于过滤');
+      const body = await state('?limit=50');
+      const notices = body.messages.filter((message) => message.agent === 'sentinel');
+      assert.equal(notices.length, first.acted.length, '每条结论一条 notice，不打折也不重复');
+      assert.equal(notices[0].kind, 'notice');
+      assert.equal(notices[0].agentName, '哨兵', '发言者姓名可读');
+      assert.equal(notices[0].client.sentinel, true, '发言带哨兵标记，便于过滤');
 
-    // 关键分寸：哨兵的 notice 不能把别人的点名"关掉"
-    assert.ok(body.pending.some((item) => item.agent === 'silent'), '点名仍是待回应');
+      // 关键分寸：哨兵的 notice 不能把别人的点名"关掉"
+      assert.ok(body.pending.some((item) => item.agent === 'silent'), '点名仍是待回应');
 
-    // 同一小时内再巡检一轮：不重复发言（幂等键按小时分桶）
-    const second = await runRound({ ...roundOptions, status: first.status });
-    assert.equal(second.acted.length, 0, '状态没变化就不该再刷一条');
-    const after = await state('?limit=50');
-    assert.equal(after.messages.filter((message) => message.agent === 'sentinel').length, notices.length);
+      // 同理：契约违约只报一次，不刷屏
+      const second = await runRound({ ...roundOptions, status: first.status });
+      assert.equal(second.acted.length, 0, '状态没变化就不该再刷一条');
+      const after = await state('?limit=50');
+      assert.equal(after.messages.filter((message) => message.agent === 'sentinel').length, notices.length);
 
-    fs.rmSync(statusFile, { force: true });
-  });
+      fs.rmSync(statusFile, { force: true });
+    },
+    { delivery: { ackTimeoutSeconds: 1 } },
+  );
 });
 
 test('哨兵：身份是隐藏的 operator（不占名册、不能被 @，但发言看得见名字）', async () => {
@@ -574,6 +577,80 @@ test('归属锁：同一成员的托管通道只有一个正主，卡死才允�
   first.release();
   assert.equal(readLock(dir), null, '正常退出要释放锁');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/* ── 契约：点名 → 回执 → 结果 ─────────────────────────────── */
+
+test('契约：四种进行中状态各有判据，违约只有三种', async () => {
+  const { contractOf, CONTRACT } = await import('../server/contract.js');
+  const nowMs = Date.parse('2026-09-12T00:10:00+08:00');
+  const view = (state, secondsAgo, extra = {}) => ({
+    seq: 42,
+    state,
+    updatedAt: new Date(nowMs - secondsAgo * 1000).toISOString(),
+    ackDeadlineAt: nowMs + 1000,
+    ...extra,
+  });
+  const options = { nowMs, ackTimeoutSeconds: 45, deliveryBudgetSeconds: 600 };
+
+  assert.equal(contractOf([], options).state, CONTRACT.IDLE);
+
+  // 排队中，还在 ack 窗口内 → 正常
+  assert.equal(contractOf([view('queued', 10)], options).state, CONTRACT.QUEUED);
+  // 排队超时 → 没人取件（这是最该报警的一种：唤醒通道挂着也没人来拿）
+  assert.equal(contractOf([view('queued', 90)], options).state, CONTRACT.NOT_FETCHED);
+
+  // 已送达、回执未过期 → 正常等待
+  assert.equal(
+    contractOf([view('delivered', 10, { ackDeadlineAt: nowMs + 30000 })], options).state,
+    CONTRACT.WAITING_ACK,
+  );
+  // 已送达、回执过期 → 没开始
+  const noAck = contractOf([view('delivered', 90, { ackDeadlineAt: nowMs - 45000 })], options);
+  assert.equal(noAck.state, CONTRACT.NO_ACK);
+  assert.match(noAck.detail, /没有.*回执/);
+
+  // 已回执、还在预算内 → 正在处理
+  assert.equal(contractOf([view('working', 120)], options).state, CONTRACT.WORKING);
+  // 已回执、超出交付预算 → 开始了没交付
+  assert.equal(contractOf([view('working', 700)], options).state, CONTRACT.OVERDUE);
+
+  // 多条里挑最"卡"的那条：违约优先于正常
+  const mixed = contractOf([view('working', 30), view('queued', 200)], options);
+  assert.equal(mixed.state, CONTRACT.NOT_FETCHED);
+  assert.equal(mixed.open, 2);
+
+  // 等人不是违约
+  const manual = contractOf([view('queued', 600)], { ...options, respondMode: 'manual' });
+  assert.equal(manual.state, CONTRACT.MANUAL);
+  assert.equal(manual.severity, 'info');
+});
+
+test('契约：服务端把「卡在哪一步」写进成员卡与待回应列表', async () => {
+  await withBoard(
+    async ({ join, post, state }) => {
+      await join({ agent: 'slow', name: '慢成员', engine: 'rule-based' });
+      await post('/api/message', { agent: 'local', kind: 'message', text: '@slow 请回答' });
+      await new Promise((resolve) => setTimeout(resolve, 1300));
+
+      const body = await state('?limit=10');
+      const member = body.agents.find((agent) => agent.id === 'slow');
+      assert.ok(member.contract, '成员卡必须带契约状态（面板主信息就是它）');
+      // 没人挂着长轮询 → 点名进队列 → ack 窗口一过就是"没人取件"
+      assert.equal(member.contract.state, 'not-fetched');
+      assert.equal(member.contract.severity, 'alert');
+      assert.match(member.contract.label, /没人取件/);
+      assert.match(member.contract.detail, /#\d+/);
+
+      // 待回应列表也要带投递事实，界面与哨兵才知道卡在哪一步
+      const pending = body.pending.find((item) => item.agent === 'slow');
+      assert.ok(pending.delivery, '待回应项要带 delivery 视图');
+      assert.equal(pending.delivery.state, 'queued');
+      assert.ok(Number(pending.delivery.updatedAt) > 0, '投递视图要带状态变更时间（判据的锚点）');
+      assert.ok(member.contract.waitingSeconds >= 1, '契约要给出"等了多久"');
+    },
+    { delivery: { ackTimeoutSeconds: 1 } },
+  );
 });
 
 /* ── 闭合接入 ───────────────────────────────────────────── */

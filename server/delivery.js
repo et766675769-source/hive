@@ -243,13 +243,16 @@ export class DeliveryLedger {
       .map((record) => this.#view(record));
   }
 
-  /** 某成员尚未终结的投递（新的在前）。 */
+  /**
+   * 该成员**未完成**的投递（queued / delivered / working），按序号从早到晚。
+   * 契约状态（server/contract.js）与哨兵都从这里取事实：一个成员当前卡在哪一步。
+   */
   openForAgent(agent) {
     return this.order
       .map((key) => this.records.get(key))
       .filter((record) => record && record.agent === agent && !TERMINAL.has(record.state) && record.state !== 'expired')
-      .map((record) => this.#view(record))
-      .reverse();
+      .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+      .map((record) => this.#view(record));
   }
 
   /**
@@ -298,8 +301,25 @@ export class DeliveryLedger {
       note: record.note,
       updatedAt: record.updatedAt,
       deadlineAt: record.deadlineAt,
+      // 契约判据要用到「回执截止」：送达后 ackTimeoutSeconds 内应当有一条「处理中」，
+      // 没有就是"没开始"。这个字段以前只在账本内部用，现在要露给面板与哨兵。
+      ackDeadlineAt: record.ackDeadlineAt || null,
+      ackOverdue: Boolean(record.ackDeadlineAt && this.now() > record.ackDeadlineAt),
       overdue: Boolean(record.deadlineAt && this.now() > record.deadlineAt),
     };
+  }
+
+  /** 名册/哨兵一次要问全部成员：按成员分组返回未完成投递。 */
+  open({ ignore } = {}) {
+    const byAgent = new Map();
+    for (const record of this.records.values()) {
+      if (TERMINAL.has(record.state) || record.state === 'expired') continue;
+      if (typeof ignore === 'function' && ignore(record.agent)) continue;
+      if (!byAgent.has(record.agent)) byAgent.set(record.agent, []);
+      byAgent.get(record.agent).push(this.#view(record));
+    }
+    for (const list of byAgent.values()) list.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+    return byAgent;
   }
 
   /**

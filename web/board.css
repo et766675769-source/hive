@@ -300,6 +300,22 @@ code {
   text-overflow: ellipsis;
 }
 
+/* 契约违约（没取件 / 没回执 / 没交付）：面板主信息直接变色，不用点开才知道 */
+.member__sub--alert {
+  color: var(--busy);
+  font-weight: 600;
+}
+
+.member__sub--warn {
+  color: var(--busy);
+}
+
+/* 面板头部：有人没在履行契约时，这个数字要比"在线数"更显眼 */
+.rail__alert {
+  color: var(--busy);
+  font-weight: 600;
+}
+
 .member__badges {
   display: flex;
   flex-wrap: wrap;

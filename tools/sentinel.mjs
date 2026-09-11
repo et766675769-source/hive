@@ -40,6 +40,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { evaluateLock, readLock } from './channel-lock.mjs';
+import { CONTRACT, humanSeconds } from '../server/contract.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -133,6 +134,12 @@ async function call(apiPath, options = {}, board = BOARD) {
 
 /**
  * 把一个成员的快照判成若干条结论。
+ *
+ * 主判据是**契约**（server/contract.js 给出的 member.contract）：
+ * 点名有没有被取件、有没有回执、有没有在预算内交付。
+ * 「在线」只是参考信息——挂个心跳就能骗过去，契约骗不过去。
+ * 只有当服务端没给出契约字段（旧版黑板）时，才退回"沉默多久"的启发式。
+ *
  * @param {object} member /api/state 里的成员卡
  * @param {{ nowMs: number, silentMinutes: number, pending?: object[] }} options
  */
@@ -144,10 +151,42 @@ export function classifyMember(member, { nowMs, silentMinutes, pending = [] }) {
   // 注意：不能用「有未完成投递」当依据——排队中的投递（queued/delivered）恰恰是
   // "没人来取"的表现，把它当成在干活，哨兵就会对最该报警的情况保持沉默（实测踩过）。
   const selfBusy = member.declared === 'busy';
-  const openDeliveries = Number(member.openDeliveries) || 0;
+  const contract = member.contract || null;
 
-  // 人类成员等人生理上就该等：只提示，不算故障
-  if (waiting && mine.length) {
+  // ── 主判据：契约违约（没取件 / 没回执 / 没交付）────────────────
+  if (contract && contract.severity === 'alert') {
+    const code =
+      contract.state === CONTRACT.NOT_FETCHED
+        ? 'NOT_FETCHED'
+        : contract.state === CONTRACT.NO_ACK
+          ? 'NO_ACK'
+          : contract.state === CONTRACT.OVERDUE
+            ? 'OVERDUE'
+            : 'CONTRACT_BREACH';
+    findings.push({
+      code,
+      severity: 'alert',
+      member: member.id,
+      title: contract.label,
+      contractState: contract.state,
+      ageMinutes: contract.waitingSeconds === null ? null : Math.round(contract.waitingSeconds / 60),
+      waitingSeconds: contract.waitingSeconds,
+      seqs: mine.map((item) => item.seq),
+      detail: `${contract.detail}（进程状态：${member.state}${selfBusy ? '，自报正在处理' : ''}）`,
+    });
+  }
+  // manual 成员等人是它的声明形态，不是故障
+  else if (contract && contract.state === CONTRACT.MANUAL) {
+    findings.push({
+      code: 'MANUAL_WAITING',
+      severity: 'info',
+      member: member.id,
+      title: '需人工唤起',
+      waitingSeconds: contract.waitingSeconds,
+      detail: `${contract.detail}这是它的声明形态，不是故障。`,
+    });
+  } else if (!contract && waiting && mine.length) {
+    // 旧版黑板没有契约字段时的等价判定
     findings.push({
       code: 'MANUAL_WAITING',
       severity: 'info',
@@ -157,7 +196,10 @@ export function classifyMember(member, { nowMs, silentMinutes, pending = [] }) {
     });
   }
 
-  if (!waiting && mine.length && !selfBusy) {
+  // ── 兜底：服务端没给契约字段时（旧版黑板），退回"沉默多久"的启发式 ──────────
+  // 契约已经报过违约就别重复报：同一个病灶说两遍只会让人以为是两个问题。
+  const contractSpoke = findings.some((finding) => finding.severity === 'alert');
+  if (!contract && !contractSpoke && !waiting && mine.length && !selfBusy) {
     const oldestMs = mine.reduce((min, item) => {
       const at = Date.parse(item.at);
       return Number.isFinite(at) ? Math.min(min, at) : min;
@@ -175,8 +217,8 @@ export function classifyMember(member, { nowMs, silentMinutes, pending = [] }) {
         detail: `状态显示「${member.state}」，却有 ${mine.length} 条点名已等 ${ageMinutes} 分钟没有实质回复（#${mine
           .map((item) => item.seq)
           .join(', #')}），且它没有自报「正在处理」。${
-          openDeliveries > 0
-            ? `账本里还有 ${openDeliveries} 条投递未完成——没有人来取的意思。`
+          Number(member.openDeliveries) > 0
+            ? `账本里还有 ${member.openDeliveries} 条投递未完成——没有人来取的意思。`
             : '投递账本里没有未完成项，说明它连取件都没做。'
         }`,
       });
@@ -237,7 +279,8 @@ export function classifyBoard(state, { nowMs = Date.now(), silentMinutes = SILEN
 
 /**
  * 该不该由哨兵把托管通道拉起来？
- * 条件（缺一不可）：结论是"在线但沉默" + 该成员有托管配置 + 没有健康的托管进程 + 不在冷却期。
+ * 条件（缺一不可）：契约违约（没取件 / 没回执 / 没交付）或长时间沉默 +
+ * 该成员有托管配置 + 没有健康的托管进程 + 不在冷却期。
  * 最后一条尤其重要：多拉起一个进程不是"更保险"，而是让一次点名刷出两条回复（实测踩过）。
  */
 export function planTakeovers(
@@ -248,7 +291,9 @@ export function planTakeovers(
   const byId = new Map((members || []).map((item) => [item.id, item]));
   const takeovers = [];
   for (const finding of findings) {
-    if (finding.code !== 'SILENT_WITH_PENDING') continue;
+    // 契约违约是最硬的证据：点名确实没被履行，不是"看起来像沉默"
+    if (finding.severity !== 'alert') continue;
+    if (!['NOT_FETCHED', 'NO_ACK', 'OVERDUE', 'CONTRACT_BREACH', 'SILENT_WITH_PENDING'].includes(finding.code)) continue;
     const entry = byId.get(finding.member);
     if (!entry) continue;
 
@@ -270,8 +315,8 @@ export function planTakeovers(
       ok: true,
       reason:
         evaluation.state === 'stale'
-          ? `在线但沉默，且原托管进程看起来卡死了（${evaluation.reason}）`
-          : '在线但沉默，且没有托管进程在跑',
+          ? `契约没被履行（${finding.title}），且原托管进程看起来卡死了（${evaluation.reason}）`
+          : `契约没被履行（${finding.title}），且没有托管进程在跑`,
       start: entry.start,
     });
   }
