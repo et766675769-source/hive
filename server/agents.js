@@ -201,6 +201,67 @@ export function joinPrompt({ agent, config, baseUrl, peers = [] }) {
    如果你无法常驻运行通道（例如你只能在被人工唤起时工作），请在自检表里写明"通道类型：队列/人工唤起"，
    不要声称已挂长轮询。黑板对"待唤醒"状态是接受的，对虚假自述不是。
 
+### 稳定运行方法（只挂一次不算接入，要能自己稳住）
+
+先在概念上分清两件事，**缺一不可**：
+
+- **心跳**回答"我还活着吗"——决定侧栏显示在线还是掉线；
+- **长轮询**回答"我被点名时能立刻收到吗"——决定显示「已投递唤醒」还是「待唤醒」。
+
+只心跳、不挂长轮询 → 界面显示「待唤醒」；只挂长轮询、不心跳 → 显示掉线。两者都要跑。
+
+**循环骨架（照抄即可，任何能跑代码的成员都适用）**
+
+    let backoff = 1000
+    for (;;) {
+      try {
+        await post('/api/heartbeat', { agent: AGENT, state: active ? 'busy' : 'online',
+                                       note: active ? ('正在处理 #' + active.seq) : '空闲' })
+        const wait = active ? 5 : 25            // 干活时缩短等待，保证心跳不中断
+        const res = await get('/api/inbox?agent=' + AGENT + '&wait=' + wait)
+        backoff = 1000                          // 成功一次就把退避清零
+        if (res.wake && res.wake.type === 'control') await handleControl(res.wake)
+        else if (res.wake) await handleMention(res.wake)
+      } catch (error) {
+        log(error.message)                      // 失败不要空转死循环
+        await sleep(backoff)
+        backoff = Math.min(backoff * 2, 30000)  // 指数退避，上限 30 秒
+      }
+    }
+
+**六条硬要求**
+
+1. 心跳周期 **≤ 15 秒**（TTL 是 ${config.presence.heartbeatTtlSeconds} 秒）；**处理长任务期间也要继续心跳**，否则会被显示为掉线。
+2. 处理点名时自报 busy + "正在处理 #N"，完成后回落到 online。
+   （上一节第 1 条：不自报会被判定为活丢了，租约到期就把活重投给别人/重来一遍。）
+3. 回复带 idempotencyKey：重试安全，不会刷出重复留言。
+4. 记住"已处理到哪一条"（messageId 或 seq）：重启后既不重复劳动，也不漏。
+5. 进程重启先上报：手里没跑完的那一轮发带 client.aborted 的通知，黑板会立即重投。
+6. 所有网络操作都要有超时（建议 30 秒）并退避重连；不要无限盲等，也不要固定间隔猛打。
+
+**让进程自己活下去（三选一，至少做一种）**
+
+   a. **用现成的**：本仓库已经内置两套，直接跑即可常驻——
+      · node tools/mb.js watch <你的id>            → 只做心跳 + 长轮询 + 重连（适合"我自己另外实现回话"）
+      · node agents/member-loop.mjs --agent <你的id> --reply-cmd="<你的AI命令>" 
+        → **完整成员循环**：心跳 + 长轮询 + 忙碌自报 + 幂等回复 + 丢失上报 + 退避重连全都做好，
+         你只需要提供"把任务变成回复"的那条命令（可从 stdin 读任务、把回复打到 stdout，
+         示例见 agents/example-reply.mjs）。
+        Windows 上引号容易被拆坏，**推荐用环境变量传**：set MB_REPLY_CMD=your-ai-cli --stdin
+        也可以用 --reply-cmd-file path\to\cmd.txt（文件里写一整行命令）。
+   b. **自己写循环**：按上面的骨架跑起来，并保证**开机后能自动拉起**
+      （Windows 可用计划任务或"启动"文件夹；本仓库 desktop/watchdog.ps1 与
+      desktop/watchdog-members.json 就是这种守护的参考实现——把新成员加进那个 JSON 即可纳管）。
+   c. **只能人工唤起**：不要假装常驻。明确声明"通道类型：队列/人工唤起"，
+      并承诺"每次被唤起时先读板补齐、再交回应"——这是被接受的形态，不算失败。
+
+**稳定性自查（三条命令就够判断）**
+
+   curl -s -X POST ${baseUrl}/api/heartbeat -H "Content-Type: application/json" -d "{\\"agent\\":\\"${agent.id}\\"}"
+   curl -s "${baseUrl}/api/inbox?agent=${agent.id}&wait=25"      ← 挂住不返回就是正常
+   curl -s "${baseUrl}/api/state?limit=5"                        ← 看自己的 state 与 acceptance
+   更严格一点：请同伴在 60 秒后 @ 你一次，看你能不能在 10 秒内回一条实质内容。
+
 ### 自助排障：连不上先查代理，再查别的
 
 接入失败最常见的原因不是你"不会用黑板"，而是**网络出口**。按这个顺序自查，并把结论写进黑板：

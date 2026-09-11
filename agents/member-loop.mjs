@@ -1,0 +1,285 @@
+#!/usr/bin/env node
+// Message Board · 通用成员循环（vendor-neutral member loop）
+//
+// 它负责**协议**，不负责"思考"：
+//   心跳（在线判定） + 长轮询（即时唤醒） + 忙碌自报（长任务不被误判丢失）
+//   + 幂等回复（重试不刷重复） + 丢失上报（重启后立即重投） + 退避重连
+// "思考"交给外部命令：命令从 stdin 收到 JSON（点名信封 + 最近留言），把回复正文打到 stdout。
+//
+// 用法：
+//   node agents/member-loop.mjs --agent workbuddy --reply-cmd "your-ai-cli --stdin"
+//   node agents/member-loop.mjs --agent workbuddy --reply-cmd "node agents/example-reply.mjs"
+//
+// 常用参数：
+//   --board <url>     黑板地址，默认 http://127.0.0.1:8787
+//   --name/--title    报到时显示的身份（省略则用默认值）
+//   --wait <秒>       空闲时长轮询等待，默认 25（处理中自动降到 5，保证心跳不断）
+//   --timeout <秒>    单次思考命令超时，默认 420
+//   --once            处理一条点名后退出（交给外部调度器保活时用）
+//
+// 思考命令怎么传（Windows 上引号很容易被拆坏，按可靠性排序）：
+//   1) 环境变量 MB_REPLY_CMD="your-ai-cli --stdin"        ← 最稳，推荐
+//   2) --reply-cmd-file path\to\reply-cmd.txt              ← 文件里写一整行命令
+//   3) --reply-cmd="your-ai-cli --stdin"                   ← 直接传（注意整体加引号）
+//
+// 这套循环就是提示词里"稳定运行方法"的可执行版本；也可以只当参考实现抄。
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+
+const args = process.argv.slice(2);
+function flag(name, fallback = null) {
+  const inline = args.find((item) => item.startsWith(`--${name}=`));
+  if (inline) return inline.slice(name.length + 3);
+  const index = args.indexOf(`--${name}`);
+  if (index === -1) return fallback;
+  const value = args[index + 1];
+  return value && !value.startsWith('--') ? value : fallback;
+}
+
+const BOARD = (flag('board') || process.env.MB_BOARD || 'http://127.0.0.1:8787').replace(/\/+$/, '');
+const AGENT = String(flag('agent', '')).toLowerCase();
+
+/**
+ * 解析"思考命令"。三种来源按可靠性排序：环境变量 > 命令文件 > 直接参数。
+ * 之所以要前两种：Windows 上把带空格的命令当参数传，很容易被 shell/调度器拆坏
+ * （实测 --reply-cmd "node agents/example-reply.mjs" 会被截成 "node"）。
+ */
+function resolveReplyCommand() {
+  if (process.env.MB_REPLY_CMD) return process.env.MB_REPLY_CMD.trim();
+  const file = flag('reply-cmd-file');
+  if (file) {
+    try {
+      const text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/)[0].trim();
+      if (text) return text;
+    } catch (error) {
+      console.error(`读取 --reply-cmd-file 失败：${error.message}`);
+    }
+  }
+  return String(flag('reply-cmd', '')).trim();
+}
+
+const REPLY_CMD = resolveReplyCommand();
+const WAIT_IDLE = Math.max(5, Math.min(Number(flag('wait', 25)), 60));
+const WAIT_BUSY = 5;
+const REPLY_TIMEOUT_MS = Math.max(30, Number(flag('timeout', 420))) * 1000;
+const ONCE = args.includes('--once');
+const QUIET = args.includes('--quiet');
+
+if (!AGENT || !REPLY_CMD) {
+  console.error('用法：node agents/member-loop.mjs --agent <id> --reply-cmd "<命令>"');
+  process.exit(2);
+}
+
+const RUNTIME_DIR = flag('runtime', path.join(process.cwd(), 'data', 'runner', AGENT));
+const JOURNAL = () => path.join(RUNTIME_DIR, 'journal.json');
+const log = (...parts) => {
+  if (!QUIET) console.log(`[member-loop ${new Date().toLocaleTimeString()} ${AGENT}]`, ...parts);
+};
+
+/* ── 黑板接口 ───────────────────────────────────────────── */
+
+async function call(apiPath, options = {}) {
+  const response = await fetch(`${BOARD}${apiPath}`, {
+    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(options.timeoutMs || 40000),
+    ...options,
+  });
+  const text = await response.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = { ok: false, error: text };
+  }
+  if (!response.ok || (body && body.ok === false)) throw new Error(body?.error || response.statusText);
+  return body;
+}
+
+const heartbeat = (state, note) =>
+  call('/api/heartbeat', { method: 'POST', body: JSON.stringify({ agent: AGENT, state, note }) }).catch((error) => {
+    log(`心跳失败：${error.message}`);
+  });
+
+/** 回复写回黑板：带幂等键，重试不会刷出重复留言。 */
+async function postReply(envelope, text, kind = 'reply', client = {}) {
+  const key = `member-loop:${envelope?.messageId || 'notice'}:${kind}`;
+  return call('/api/message', {
+    method: 'POST',
+    body: JSON.stringify({
+      agent: AGENT,
+      text,
+      kind,
+      topic: envelope?.topic || null,
+      status: kind === 'reply' ? '进行中' : '阻塞',
+      replyTo: envelope?.messageId || null,
+      idempotencyKey: key,
+      client: { channel: 'member-loop', ...client },
+    }),
+  });
+}
+
+/* ── 在跑的那一轮：落盘 journal，供重启后上报丢失 ───────── */
+
+function writeJournal(record) {
+  try {
+    fs.mkdirSync(RUNTIME_DIR, { recursive: true });
+    fs.writeFileSync(JOURNAL(), JSON.stringify(record, null, 2), 'utf8');
+  } catch (error) {
+    log(`journal 落盘失败：${error.message}`);
+  }
+}
+const clearJournal = () => {
+  try {
+    fs.rmSync(JOURNAL(), { force: true });
+  } catch {
+    /* 忽略 */
+  }
+};
+function readJournal() {
+  try {
+    return JSON.parse(fs.readFileSync(JOURNAL(), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/* ── 把"思考"交给外部命令 ───────────────────────────────── */
+
+function runReplyCommand(envelope, recent) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(REPLY_CMD, { shell: true, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* 忽略 */
+      }
+      reject(new Error(`思考命令超时（${REPLY_TIMEOUT_MS / 1000}s）`));
+    }, REPLY_TIMEOUT_MS);
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code === 0 && stdout.trim()) resolve(stdout.trim());
+      else reject(new Error(`思考命令退出码 ${code}${stderr.trim() ? `：${stderr.trim().slice(0, 300)}` : ''}`));
+    });
+
+    // 命令从 stdin 拿到：点名信封 + 黑板最近的留言（用于上下文）
+    child.stdin.end(JSON.stringify({ envelope, recent }, null, 2));
+  });
+}
+
+/* ── 处理一条点名 ───────────────────────────────────────── */
+
+async function handleMention(envelope) {
+  log(`收到点名 #${envelope.seq}（来自 @${envelope.from}）`);
+  writeJournal({ messageId: envelope.messageId, seq: envelope.seq, topic: envelope.topic || null, startedAt: new Date().toISOString() });
+  await heartbeat('busy', `正在处理 #${envelope.seq}`);
+
+  try {
+    const state = await call('/api/state?limit=20');
+    const text = await runReplyCommand(envelope, (state.messages || []).slice(-10));
+    const posted = await postReply(envelope, text, 'reply', { seq: envelope.seq });
+    log(`已回复 #${posted.message.seq}`);
+  } catch (error) {
+    log(`这一轮失败：${error.message}`);
+    // 失败要说清楚是"我丢了这轮"（aborted → 黑板立即重投）还是"我给不出答案"（notice）。
+    const infra = /超时|退出码|ENOENT|spawn/.test(error.message);
+    await postReply(
+      envelope,
+      infra
+        ? `我这轮没跑完（${error.message}），已请求黑板立即重投，不需要等租约到期。`
+        : `我无法完成这条指名：#${envelope.seq}。原因：${error.message}`,
+      'notice',
+      infra ? { aborted: true } : { failed: true },
+    ).catch((postError) => log(`失败回执也没发出去：${postError.message}`));
+  } finally {
+    clearJournal();
+    await heartbeat('online', '空闲');
+  }
+}
+
+async function handleControl(control) {
+  log(`收到控制指令：${control.action}${control.reason ? `（${control.reason}）` : ''}`);
+  await postReply(
+    null,
+    control.action === 'interrupt'
+      ? '收到打断指令：本轮已按要求中止（本条为回执）。'
+      : `收到控制指令 ${control.action}，当前实现不做处理。`,
+    'notice',
+    { control: control.action },
+  ).catch(() => {});
+}
+
+/* ── 主循环 ─────────────────────────────────────────────── */
+
+async function main() {
+  await call('/api/join', {
+    method: 'POST',
+    body: JSON.stringify({
+      agent: AGENT,
+      name: flag('name', AGENT),
+      title: flag('title', '成员'),
+      platform: flag('platform', 'member-loop'),
+      mission: flag('mission', '按提示词接入并交付'),
+      skills: flag('skills', ''),
+      constraints: flag('constraints', ''),
+    }),
+  });
+  log(`已登记；思考命令：${REPLY_CMD}`);
+
+  // 上次运行时被重启/杀掉 → 立即上报丢失，让黑板马上重投
+  const lost = readJournal();
+  if (lost && lost.messageId) {
+    log(`发现上次未完成的 #${lost.seq}，上报丢失并请求重投`);
+    await postReply(
+      lost,
+      `我的进程上次被中断：#${lost.seq} 没跑完，已请求黑板立即重投。本条为基础设施丢失回执。`,
+      'notice',
+      { aborted: true },
+    ).catch((error) => log(`上报失败：${error.message}`));
+  }
+  clearJournal();
+
+  let backoff = 1000;
+  for (;;) {
+    try {
+      await heartbeat('online', '空闲');
+      const result = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=${WAIT_IDLE}`, {
+        timeoutMs: (WAIT_IDLE + 15) * 1000,
+      });
+      backoff = 1000; // 成功一次就重置退避
+      if (result.wake?.type === 'control') {
+        await handleControl(result.wake);
+      } else if (result.wake && result.wake.from !== AGENT) {
+        await handleMention(result.wake);
+        if (ONCE) {
+          log('--once：处理完一条，退出');
+          return;
+        }
+      }
+    } catch (error) {
+      log(`循环异常：${error.message}`);
+      await new Promise((resolve) => setTimeout(resolve, backoff));
+      backoff = Math.min(backoff * 2, 30000);
+    }
+  }
+}
+
+main().catch((error) => {
+  console.error(`member-loop 失败：${error.message}`);
+  process.exitCode = 1;
+});
