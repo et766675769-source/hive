@@ -171,6 +171,9 @@ export function createBoardServer(overrides = {}) {
   // 从而强制全量重同步，而不是拿旧投影继续渲染。
   const instanceId = `${startedAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const clients = new Set();
+  // 流式草稿：成员正在写、还没最终交付的"逐字进度"。它**不是留言**（不进 JSONL、不算只追加），
+  // 只是把"这 1 分钟里它在写什么"实时投给面板的临时视图。成员最终贴出 reply 时草稿即清除。
+  const drafts = new Map();
 
   // 审计日志：每次写留言的**结果**（成功/被拒/疑似密钥/空话）都记一行。
   // "成员说回了但面板没有"这类问题，看这里就知道是"没发"还是"发了被拒"。
@@ -503,6 +506,7 @@ export function createBoardServer(overrides = {}) {
       // 待回应列表带上投递事实：契约卡在哪一步（排队/等回执/处理中）一望可知，
       // 哨兵与界面都据此判断，而不是靠"在线"猜。
       pending: pending.map((item) => ({ ...item, delivery: (delivery.forMessage(item.messageId) || [])[0] || null })),
+      drafts: [...drafts.values()],
       wakeQueue: wake.queueDepth(),
       deliverySummary: delivery.summary({ ignore: hiddenAgentIds() }),
       stats: store.stats(),
@@ -874,6 +878,12 @@ export function createBoardServer(overrides = {}) {
           }
         }
 
+        // 成员这条留言（回执或最终回复）落地后，它对应那条"正在写"的草稿就作废了
+        if (message.replyTo) {
+          const draftKey = `${message.agent}|${message.replyTo}`;
+          if (drafts.delete(draftKey)) broadcast('draft-done', { agent: message.agent, replyTo: message.replyTo });
+        }
+
         // 点名即唤醒：立刻把点名送到被点名成员（长轮询 / 回调 / 本机命令 / 入队）
         // preferClient：同一个成员挂了两个长轮询时，优先交给"拿过活而且交付过"的那个，
         // 避免不可靠的客户端反复把点名抢走又什么都不做。
@@ -976,6 +986,26 @@ export function createBoardServer(overrides = {}) {
           source: result.from,
           waitedMs: Date.now() - started,
         });
+      }
+
+      // ---- 流式草稿：成员正在写、还没最终交付的逐字进度 ----
+      if (pathname === '/api/draft' && req.method === 'POST') {
+        const payload = await readJson(req, res);
+        if (!payload) return undefined;
+        const id = String(payload.agent || '').trim().toLowerCase();
+        const replyTo = String(payload.replyTo || '').trim();
+        if (!id || !replyTo) {
+          return json(res, 400, { ok: false, code: 'MISSING_FIELD', error: '需要 agent 与 replyTo。' });
+        }
+        const draft = {
+          agent: id,
+          replyTo,
+          text: String(payload.text || '').slice(0, 12000),
+          at: payload.at || Date.now(),
+        };
+        drafts.set(`${id}|${replyTo}`, draft);
+        broadcast('draft', draft);
+        return json(res, 200, { ok: true, draft });
       }
 
       // ---- 重新派发某条点名（人类在界面上要求"再来一次"）----

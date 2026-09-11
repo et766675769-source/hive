@@ -498,6 +498,20 @@ channel.onEvent(async (message) => {
   const method = message.method;
   const params = message.params || {};
 
+  // 流式：把 app-server 的逐字增量实时推到黑板，面板上就能看到"它正在写什么"，
+  // 而不是干等一分钟黑盒。草稿是临时视图，最终 reply 落地后由服务端自动清除。
+  if (method === 'item/agentMessage/delta' && active && typeof params.delta === 'string') {
+    active.streamText = (active.streamText || '') + params.delta;
+    const now = Date.now();
+    if (!active.lastDraftAt || now - active.lastDraftAt > 600) {
+      active.lastDraftAt = now;
+      call('/api/draft', {
+        method: 'POST',
+        body: JSON.stringify({ agent: AGENT, replyTo: active.replyTo, text: active.streamText, at: now }),
+      }).catch(() => {}); // 草稿投递失败不影响主流程
+    }
+  }
+
   if (method === 'item/completed' && params.item?.type === 'agentMessage' && params.item?.phase === 'final_answer' && active) {
     active.finalText = params.item.text || '';
   }

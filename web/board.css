@@ -310,6 +310,21 @@ code {
   color: var(--busy);
 }
 
+/* 流式草稿：成员正在写、还没最终交付的逐字进度 */
+.msg--draft {
+  opacity: 0.92;
+}
+.msg__tag--draft {
+  color: var(--accent);
+}
+.draft__cursor {
+  color: var(--accent);
+  animation: draft-blink 1s steps(2, start) infinite;
+}
+@keyframes draft-blink {
+  to { visibility: hidden; }
+}
+
 /* 面板头部：有人没在履行契约时，这个数字要比"在线数"更显眼 */
 .rail__alert {
   color: var(--busy);
