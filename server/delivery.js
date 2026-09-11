@@ -197,6 +197,34 @@ export class DeliveryLedger {
     });
   }
 
+  /**
+   * 服务重启恢复：把台账从重启前残留的 delivered/working **拉回 queued**。
+   * 否则会出现"唤醒队列里有这条、台账却还写着 working"的不一致——
+   * 面板显示与真实投递状态对不上，正是用户说的"重启后像卡住"。
+   */
+  markRecoveredQueued(messageId, agent) {
+    const key = DeliveryLedger.keyOf(messageId, agent);
+    if (!this.records.has(key)) return null;
+    return this.#set(messageId, agent, 'queued', {
+      note: '服务重启后恢复，已重新入队投递',
+      deadlineAt: null,
+      renewals: 0,
+    });
+  }
+
+  /**
+   * 重启恢复时超出 backfillLimit、本轮不自动重投的条目：
+   * 必须留一条**可见**记录（expired + 说明），而不是静默忽略。
+   */
+  markRecoveryDeferred(messageId, agent) {
+    const key = DeliveryLedger.keyOf(messageId, agent);
+    if (!this.records.has(key)) return null;
+    return this.#set(messageId, agent, 'expired', {
+      note: '服务重启恢复时超出重投上限，已登记为未自动重投（可手动重发点名）',
+      deadlineAt: null,
+    });
+  }
+
   /** 某条留言的全部投递记录。 */
   forMessage(messageId) {
     return this.order

@@ -54,6 +54,8 @@ const state = {
   newCount: 0,
   filter: '',
   seenSeq: 0,
+  // 服务实例标识：换实例（重启）时前端强制全量重同步
+  instanceId: null,
 };
 
 const STATE_LABEL = {
@@ -277,6 +279,18 @@ function applyWakeResult(result) {
   holder.appendChild(span);
 }
 
+/**
+ * 把 state.messages 里的 delivery / wake 投影就地刷到已渲染的留言节点上。
+ * 目的：SSE 是"就地改徽标"的，若 state.messages 不同步，下一次全量渲染会把徽标覆盖回旧值；
+ * 这里只改徽标、不重排 DOM，因此不会跳动滚动位置。
+ */
+function syncMessageChips() {
+  for (const message of state.messages) {
+    for (const record of message.delivery || []) applyDelivery({ ...record, messageId: message.id });
+    for (const record of message.wake || []) applyWakeResult({ ...record, messageId: message.id });
+  }
+}
+
 function markLatest() {
   const nodes = [...el.stream.querySelectorAll('.msg')];
   for (const node of nodes) {
@@ -488,6 +502,7 @@ function checkAssetsVersion(incoming) {
 
 function applyState(payload, { animateLast = false } = {}) {
   checkAssetsVersion(payload.assets);
+  state.instanceId = (payload.board && payload.board.instanceId) || state.instanceId;
   state.agents = payload.agents || [];
   state.topics = payload.topics || [];
   state.pending = payload.pending || [];
@@ -502,23 +517,60 @@ function applyState(payload, { animateLast = false } = {}) {
   renderAll({ animateLast });
 }
 
+/** 服务端换了实例（重启/换端口）→ 旧投影一律作废，强制全量重同步。 */
+function noteInstance(payload) {
+  const incoming = payload && payload.instanceId;
+  if (!incoming) return false;
+  if (!state.instanceId) {
+    state.instanceId = incoming;
+    return false;
+  }
+  if (state.instanceId !== incoming) {
+    state.instanceId = incoming;
+    // 清掉"已渲染序号"，让下一次 refresh 必然走全量分支
+    state.seenSeq = -1;
+    toast('服务已重启，正在重新同步…');
+    refresh();
+    return true;
+  }
+  return false;
+}
+
 async function refresh({ quiet = true } = {}) {
   try {
     const payload = await api('/api/state?limit=300');
     const incomingLatest = (payload.messages || []).reduce((max, msg) => Math.max(max, msg.seq), 0);
+    const instance = (payload.board && payload.board.instanceId) || null;
+    if (instance && state.instanceId && instance !== state.instanceId) {
+      state.instanceId = instance;
+      applyState(payload, { animateLast: true });
+      toast('服务已重启，已重新同步');
+      return;
+    }
+    state.instanceId = instance || state.instanceId;
     if (incomingLatest !== state.seenSeq) {
       const previousCount = state.messages.length;
       applyState(payload, { animateLast: previousCount > 0 });
       if (state.following) scrollToNewest({ smooth: false });
       return;
     }
-    // 消息没变（心跳/待回应可能变了）：只刷新侧栏与页眉，避免打断阅读。
+    // 消息没变：**所有侧栏/统计字段都要同步**，不能只更新一部分——
+    // 否则"投递中/待唤醒/主题/头像"会一直停在旧值，直到某条新留言出现。
     state.agents = payload.agents || state.agents;
     state.pending = payload.pending || state.pending;
     state.presence = payload.presence || state.presence;
     state.stats = payload.stats || state.stats;
+    state.deliverySummary = payload.deliverySummary || state.deliverySummary;
+    state.wakeQueue = payload.wakeQueue || state.wakeQueue;
+    state.topics = payload.topics || state.topics;
+    state.avatars = payload.avatars || state.avatars;
+    // 留言的 delivery/wake 投影也要写回：SSE 是"就地改徽标"的，
+    // 若 state.messages 还是旧的，下一次全量渲染就会把徽标覆盖回去。
+    state.messages = payload.messages || state.messages;
     renderRoster();
     renderBoardSub();
+    renderRailMeta();
+    syncMessageChips();
   } catch (error) {
     if (!quiet) toast(`读取黑板失败：${error.message}`);
   }
@@ -540,12 +592,28 @@ function subscribe() {
   source.addEventListener('hello', (event) => {
     setConnection('open');
     try {
-      checkAssetsVersion(JSON.parse(event.data).assets);
+      const payload = JSON.parse(event.data);
+      checkAssetsVersion(payload.assets);
+      // 服务换了实例（重启）→ 立刻全量重同步，别再用旧投影渲染
+      noteInstance(payload);
     } catch {
       /* 忽略 */
     }
   });
   source.addEventListener('error', () => setConnection('closed'));
+  // 服务端每 15 秒带一次 ping：既证明连接活着（比等 error 早得多），
+  // 又能让页面发现"自己漏了消息"——序号对不上就立刻补拉，不再干等 30 秒轮询。
+  source.addEventListener('ping', (event) => {
+    setConnection('open');
+    try {
+      const payload = JSON.parse(event.data);
+      if (typeof payload.latestSeq === 'number' && payload.latestSeq !== state.seenSeq) {
+        refresh();
+      }
+    } catch {
+      /* 忽略 */
+    }
+  });
   source.addEventListener('message', (event) => {
     try {
       onNewMessage(JSON.parse(event.data));

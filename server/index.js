@@ -154,6 +154,9 @@ export function createBoardServer(overrides = {}) {
   presence.start();
 
   const startedAt = Date.now();
+  // 实例标识：前端据此识别"服务换了一个实例"（重启/换端口），
+  // 从而强制全量重同步，而不是拿旧投影继续渲染。
+  const instanceId = `${startedAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const clients = new Set();
 
   function broadcast(event, data) {
@@ -222,17 +225,23 @@ export function createBoardServer(overrides = {}) {
    * 成员下次长轮询就会取到——重启不再意味着点名永久丢失。
    */
   function backfillDeliveries() {
-    if (!config.delivery.backfillOnStart) return 0;
+    if (!config.delivery.backfillOnStart) return { recovered: 0, deferred: 0 };
     const pending = store.pendingReplies();
     const perAgent = new Map();
+    const deferredByAgent = new Map();
+    // 倒序 = 新的在前；超出 backfillLimit 的**不能静默丢掉**，记为 deferred 并在黑板上可见
     for (const item of [...pending].reverse()) {
       const list = perAgent.get(item.agent) || [];
-      if (list.length >= config.delivery.backfillLimit) continue;
+      if (list.length >= config.delivery.backfillLimit) {
+        deferredByAgent.set(item.agent, [...(deferredByAgent.get(item.agent) || []), item]);
+        continue;
+      }
       list.push(item);
       perAgent.set(item.agent, list);
     }
     const all = store.list({ limit: store.historyInMemory });
     let recovered = 0;
+    let deferred = 0;
     for (const [agentId, items] of perAgent) {
       const agent = registry.get(agentId);
       if (!agent || agent.hidden) continue;
@@ -240,21 +249,48 @@ export function createBoardServer(overrides = {}) {
         const message = all.find((entry) => entry.id === item.messageId);
         if (!message) continue;
         delivery.ensure(message, [agentId]);
+        // 关键：台账必须被拉回 queued（重启前可能是 delivered/working），
+        // 否则会出现"队列里有、台账却还在 working"的不一致。
+        delivery.markRecoveredQueued(message.id, agentId);
         wake.requeue(agentId, wake.envelope(message, agentId));
         recovered += 1;
       }
     }
-    return recovered;
+    for (const [agentId, items] of deferredByAgent) {
+      const agent = registry.get(agentId);
+      if (!agent || agent.hidden) continue;
+      for (const item of items) {
+        const message = all.find((entry) => entry.id === item.messageId);
+        if (!message) continue;
+        delivery.ensure(message, [agentId]);
+        delivery.markRecoveryDeferred(message.id, agentId);
+        deferred += 1;
+      }
+    }
+    return { recovered, deferred };
   }
-  const recovered = backfillDeliveries();
+  const backfill = backfillDeliveries();
+  const recovered = backfill.recovered;
 
   let presenceSignature = '';
   presence.onChange((snapshot) => {
     const visible = snapshot.filter((item) => !item.hidden);
-    const signature = visible.map((item) => `${item.id}:${item.state}:${item.joinedAt}`).join('|');
+    // 签名必须包含"面板会显示的东西"：只按 id:state 去重会让同状态心跳不推送，
+    // 面板上的 lastSeen / note / 心跳间隔就只能等 30 秒轮询——成员状态看起来"不同步"。
+    // ageSeconds 按 15 秒分桶，避免每 5 秒就推一次无意义刷新。
+    const signature = visible
+      .map((item) =>
+        [item.id, item.state, item.declared, item.note, item.heartbeatIntervalSeconds, Math.floor((item.ageSeconds ?? 0) / 15)].join(
+          ':',
+        ),
+      )
+      .join('|');
     if (signature === presenceSignature) return;
     presenceSignature = signature;
-    broadcast('presence', { agents: visible, presence: presence.summary() });
+    // 广播**完整成员卡**（含验收徽标、投递计数、心跳读数、头像），
+    // 前端会直接用它覆盖成员列表；裸在线快照会让这些字段瞬间消失。
+    const { members } = memberCards();
+    broadcast('presence', { agents: members, presence: presence.summary() });
   });
 
   /** id → 头像地址（含隐藏成员，界面据此渲染发言者头像）。 */
@@ -355,6 +391,7 @@ export function createBoardServer(overrides = {}) {
         localAgentId: config.localOperator ? config.localOperator.id : 'local',
         startedAt: localIso(new Date(startedAt)),
         uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+        instanceId,
       },
       agents: members,
       avatars: avatarMap(),
@@ -592,11 +629,20 @@ export function createBoardServer(overrides = {}) {
           'X-Accel-Buffering': 'no',
         });
         res.write('retry: 3000\n\n');
-        res.write(`event: hello\ndata: ${JSON.stringify({ protocol: SCHEMA, serverTime: localIso(), assets })}\n\n`);
+        res.write(`event: hello\ndata: ${JSON.stringify({ protocol: SCHEMA, serverTime: localIso(), assets, instanceId })}\n\n`);
         clients.add(res);
         const keepAlive = setInterval(() => {
           try {
             res.write(`: keep-alive ${localIso()}\n\n`);
+            // 带数据的保活：客户端据此发现"漏了消息"并在 ~15 秒内自愈，
+            // 而不是干等 30 秒轮询——这是"黑板已有新内容、界面还是旧的"的主要来源。
+            res.write(
+              `event: ping\ndata: ${JSON.stringify({
+                serverTime: localIso(),
+                latestSeq: store.stats().latestSeq,
+                presence: presence.summary(),
+              })}\n\n`,
+            );
           } catch {
             clearInterval(keepAlive);
           }
