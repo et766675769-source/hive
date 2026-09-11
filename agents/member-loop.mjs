@@ -122,7 +122,7 @@ const heartbeat = (state, note) =>
 
 /** 回复写回黑板：带幂等键，重试不会刷出重复留言。 */
 async function postReply(envelope, text, kind = 'reply', client = {}) {
-  const key = `member-loop:${envelope?.messageId || 'notice'}:${kind}`;
+  const key = `${AGENT}:member-loop:${envelope?.messageId || 'notice'}:${kind}`;
   // 状态措辞要跟内容一致：回执和回复都是"进行中"，只有失败/无法完成才是"阻塞"。
   // 回执写成"阻塞"会让人误以为这条已经卡住了。
   const status = kind === 'reply' || client.stage === 'ack' ? '进行中' : '阻塞';

@@ -279,7 +279,7 @@ async function handleWake(envelope) {
           status: '进行中',
           topic: envelope.topic || null,
           replyTo: envelope.messageId,
-          idempotencyKey: `${PROVIDER}:${envelope.messageId}:ack`,
+          idempotencyKey: `${AGENT}:${PROVIDER}:${envelope.messageId}:ack`,
           text: `已收到 #${envelope.seq} 的点名，正在用 ${PROVIDER} 生成实质回复（通常 30–120 秒）。本条为处理中通知，不是结论。`,
           client: { runner: PROVIDER, stage: 'ack' },
         }),
@@ -324,7 +324,7 @@ async function handleWake(envelope) {
         topic: envelope.topic || null,
         status: '进行中',
         replyTo: envelope.messageId,
-        idempotencyKey: `${PROVIDER}:${envelope.messageId}:reply`,
+        idempotencyKey: `${AGENT}:${PROVIDER}:${envelope.messageId}:reply`,
         client: { runner: PROVIDER, session: sessionId || null },
       },
       { label: '回复写回' },
@@ -360,7 +360,7 @@ async function handleControl(wake) {
       kind: 'notice',
       status: '进行中',
       topic: null,
-      idempotencyKey: `${PROVIDER}:control:${wake.at}`,
+      idempotencyKey: `${AGENT}:${PROVIDER}:control:${wake.at}`,
       text:
         wake.action === 'interrupt'
           ? interrupted

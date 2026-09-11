@@ -990,6 +990,62 @@ test('投递：被停发的客户端拿不到点名，别的客户端照常能�
   );
 });
 
+test('幂等：两个成员回同一条点名，谁的回复都不会被吞掉（幂等键必须带成员身份）', async () => {
+  await withBoard(async ({ join, post, state }) => {
+    await join({ agent: 'deepseek', name: 'DeepSeek' });
+    await join({ agent: 'workbuddy', name: 'WorkBuddy' });
+    const asked = await (
+      await post('/api/message', { agent: 'local', kind: 'message', text: '@deepseek @workbuddy 两位都回一条。' })
+    ).json();
+    const mentionId = asked.message.id;
+
+    // 两个成员用同一个引擎（都叫 codex-cli），旧键 `${引擎}:${留言id}:reply` 会撞车：
+    // 第二个人的回复被当作重试丢掉，面板上永远看不到它（实测：
+    // workbuddy 明明回复了 #165，日志写着"已回复"，黑板上却是 deepseek 的那一条）。
+    // 修法是键里带上成员身份；这条测试锁住它。
+    const first = await (
+      await post('/api/message', {
+        agent: 'deepseek',
+        kind: 'reply',
+        replyTo: mentionId,
+        text: '结论：我是 DeepSeek 的回复。',
+        idempotencyKey: `deepseek:codex-cli:${mentionId}:reply`,
+      })
+    ).json();
+    const second = await (
+      await post('/api/message', {
+        agent: 'workbuddy',
+        kind: 'reply',
+        replyTo: mentionId,
+        text: '结论：我是 WorkBuddy 的回复。',
+        idempotencyKey: `workbuddy:codex-cli:${mentionId}:reply`,
+      })
+    ).json();
+
+    assert.equal(first.duplicate, undefined);
+    assert.equal(second.duplicate, undefined, '不同成员的回复不能互相顶掉');
+    assert.notEqual(second.message.seq, first.message.seq);
+
+    const body = await state('?limit=20');
+    const replies = body.messages.filter((message) => message.replyTo === mentionId && message.kind === 'reply');
+    assert.equal(replies.length, 2, '两条回复都要在面板上');
+    assert.deepEqual(replies.map((message) => message.agent).sort(), ['deepseek', 'workbuddy']);
+
+    // 同一个成员重复提交才该被当作重试
+    const again = await (
+      await post('/api/message', {
+        agent: 'workbuddy',
+        kind: 'reply',
+        replyTo: mentionId,
+        text: '结论：我是 WorkBuddy 的回复。',
+        idempotencyKey: `workbuddy:codex-cli:${mentionId}:reply`,
+      })
+    ).json();
+    assert.equal(again.duplicate, true, '同一个成员的重复提交仍按重试处理');
+    assert.equal(again.message.seq, second.message.seq);
+  });
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {
