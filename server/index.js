@@ -771,13 +771,30 @@ export function createBoardServer(overrides = {}) {
           }
         }
 
+        // 防"点名雪崩"：自动成员在**回复线程里**（带 replyTo）顺口 @ 别人，不该自动唤醒对方。
+        // 否则两个自动成员互相点名、越滚越多，面板上堆满"没回执 / 超时未回"
+        // （线上 #161→#165 实测：Codex 回 #161 时又 @ 了 deepseek 与 workbuddy）。
+        // 人类（本机操作员）、新开一条留言、以及显式交接（kind=handoff/decision）都不受此限。
+        // 注意：被静音的 @ 也**不进留言的 mentions 字段**——否则它虽然不被唤醒，却仍会
+        // 在"待回应"里一直挂着，雪球照滚。正文里的 @ 原样保留，只是不当点名。
+        const isOperator = agent.kind === 'operator';
+        const explicitHandoff = check.kind === 'handoff' || check.kind === 'decision';
+        const threaded = Boolean(payload.replyTo);
+        const muteAiMentions = !isOperator && !explicitHandoff && threaded;
+        const wakeTargets = check.mentions.filter((id) => {
+          const target = registry.get(id);
+          return Boolean(target) && !target.hidden;
+        });
+        const effectiveTargets = muteAiMentions ? [] : wakeTargets;
+        const mutedMentions = muteAiMentions ? wakeTargets : [];
+
         const message = store.append({
           agent,
           text: check.text,
           kind: check.kind,
           topic: check.topic,
           status: check.status,
-          mentions: check.mentions,
+          mentions: effectiveTargets,
           flags: check.flags,
           replyTo: payload.replyTo ? String(payload.replyTo) : null,
           evidence: payload.evidence ? String(payload.evidence).slice(0, 2000) : null,
@@ -795,11 +812,7 @@ export function createBoardServer(overrides = {}) {
 
         // 投递台账：只给**真实成员**建投递；隐藏的本机操作员是人类，不参与投递
         //（否则 @本机 的留言会永远挂在"待回应/投递中"，把侧栏计数撑成噪声）
-        const wakeTargets = check.mentions.filter((id) => {
-          const target = registry.get(id);
-          return Boolean(target) && !target.hidden;
-        });
-        delivery.ensure(message, wakeTargets);
+        delivery.ensure(message, effectiveTargets);
 
         // 对方回话：通道重启丢失 → 立即重投；被打断 → 终结；notice → working（续租）；实质内容 → replied（终态）
         const wasAborted = Boolean(payload.client && payload.client.aborted === true);
@@ -825,7 +838,7 @@ export function createBoardServer(overrides = {}) {
 
         // 点名即唤醒：立刻把点名送到被点名成员（长轮询 / 回调 / 本机命令 / 入队）
         const wakes = await Promise.all(
-          wakeTargets
+          effectiveTargets
             .map((target) => registry.get(target))
             .filter(Boolean)
             .map((target) => wake.deliver(target, wake.envelope(message, target.id))),
@@ -844,6 +857,10 @@ export function createBoardServer(overrides = {}) {
             ...(check.flags.includes('ACK_ONLY')
               ? ['本条只有寒暄、没有实质内容：被 @ 时请给结论、依据与下一步。']
               : []),
+            ...mutedMentions.map(
+              (id) =>
+                `你在回复里 @ 了 ${id}：自动成员的回复不会自动唤醒对方（防止互相点名滚雪球）。真需要它行动，请用 kind=handoff 明确交接。`,
+            ),
             ...wakes
               .filter((item) => item.channel === 'queued')
               .map((item) => `@${item.agent} 当前没有监听通道，点名已入队，等它下次读板。`),

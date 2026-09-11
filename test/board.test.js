@@ -896,6 +896,41 @@ test('契约：人类可以「重新派发」一条违约的点名，让它重�
   );
 });
 
+test('防点名雪崩：回复线程里的 @ 不自动唤醒，新留言与 handoff 才唤醒', async () => {
+  await withBoard(async ({ join, post, state }) => {
+    await join({ agent: 'aa', name: '甲' });
+    await join({ agent: 'bb', name: '乙' });
+    const seed = await (await post('/api/message', { agent: 'local', kind: 'message', text: '起点（供 replyTo 用）' })).json();
+
+    // 自动成员在**回复线程里**（带 replyTo）顺口 @ 了别人：正文里的 @ 保留，
+    // 但不当作点名（不进 mentions、不唤醒、不计待回应）
+    const m1 = await (
+      await post('/api/message', { agent: 'aa', kind: 'reply', replyTo: seed.message.id, text: '请参考 @bb 之前说的。' })
+    ).json();
+    assert.match(m1.message.text, /@bb/, '正文里的 @ 原样保留，人看得见');
+    assert.deepEqual(m1.message.mentions, [], '但不当作结构化点名');
+    assert.equal(m1.wakes.length, 0, '也不自动唤醒对方');
+    assert.match(m1.warnings.join('\n'), /不会自动唤醒/);
+    assert.equal((await state('?limit=10')).pending.some((item) => item.agent === 'bb'), false);
+
+    // 新开一条留言（无 replyTo）@ 仍然唤醒 —— 这是正常的点名
+    const m2 = await (await post('/api/message', { agent: 'aa', kind: 'message', text: '@bb 请你做事。' })).json();
+    assert.equal(m2.wakes.length, 1);
+    assert.equal(m2.wakes[0].agent, 'bb');
+
+    // 人类（本机操作员 local）@ 仍然唤醒
+    const m3 = await (await post('/api/message', { agent: 'local', kind: 'message', text: '@bb 再确认一次。' })).json();
+    assert.equal(m3.wakes.length, 1);
+
+    // 显式交接（handoff）即使在回复线程里也唤醒
+    const m4 = await (
+      await post('/api/message', { agent: 'aa', kind: 'handoff', replyTo: seed.message.id, text: '@bb 这个交给你。' })
+    ).json();
+    assert.equal(m4.wakes.length, 1);
+    assert.equal(m4.wakes[0].agent, 'bb');
+  });
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {
