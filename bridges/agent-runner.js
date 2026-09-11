@@ -415,7 +415,7 @@ async function runTurn(wake, queued) {
   while (!done) {
     let polled;
     try {
-      polled = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=3`);
+      polled = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=3&client=agent-runner`);
     } catch {
       await sleep(2000);
       continue;
@@ -514,7 +514,7 @@ async function main() {
   for (;;) {
     try {
       await heartbeat('online', `运行器在线（${PROVIDER}）`);
-      const result = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=${WAIT_SECONDS}`);
+      const result = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=${WAIT_SECONDS}&client=agent-runner`);
       // 先区分信封类型：control（打断等控制指令）**不是**点名，
       // 它没有 seq/正文；当成点名会让模型看到一堆 undefined（实测踩过）。
       if (result.wake && result.wake.type === 'control') {

@@ -35,7 +35,7 @@ async function waitFor(check, { timeoutMs = 5000, stepMs = 100 } = {}) {
 }
 
 async function withBoard(run, overrides = {}) {  const dataDir = fs.mkdtempSync(path.join(dataRoot, 'board-'));
-  const { server, config, store, presence, registry } = createBoardServer({ dataDir, quiet: true, ...overrides });
+  const { server, config, store, presence, registry, delivery, wake } = createBoardServer({ dataDir, quiet: true, ...overrides });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   const post = (apiPath, body) =>
@@ -47,7 +47,7 @@ async function withBoard(run, overrides = {}) {  const dataDir = fs.mkdtempSync(
   const state = async (query = '?limit=50') => (await fetch(`${base}/api/state${query}`)).json();
   const join = (identity) => post('/api/join', identity);
   try {
-    await run({ base, dataDir, config, store, presence, registry, post, state, join });
+    await run({ base, dataDir, config, store, presence, registry, delivery, wake, post, state, join });
   } finally {
     presence.stop();
     await new Promise((resolve) => server.close(resolve));
@@ -929,6 +929,65 @@ test('防点名雪崩：回复线程里的 @ 不自动唤醒，新留言与 hand
     assert.equal(m4.wakes.length, 1);
     assert.equal(m4.wakes[0].agent, 'bb');
   });
+});
+
+test('投递：拿了活却不交付的客户端会被判为不可靠（账本层面，可判定）', async () => {
+  const { DeliveryLedger } = await import('../server/delivery.js');
+  let clock = Date.parse('2026-09-12T00:00:00+08:00');
+  const file = path.join(dataRoot, `ledger-client-${Date.now()}.jsonl`);
+  const ledger = new DeliveryLedger({ file, leaseSeconds: 1, ackTimeoutSeconds: 1, maxAttempts: 2, now: () => clock });
+
+  // 两条**不同**的点名，都被同一个客户端接走，然后什么都不做：
+  // 先因未确认被回收，再次送达仍无人确认 → 重试用尽，终态作废。
+  // （判据按"条"算，不按"次"算：一条点名被折腾两次，也只说明这个客户端丢了一条活。）
+  for (const id of ['msg-1', 'msg-2']) {
+    ledger.ensure({ id, seq: Number(id.slice(-1)), mentions: ['ghost'] }, ['ghost']);
+    ledger.markDelivered(id, 'ghost', { channel: 'inbox', ok: true, client: 'ghost-client' });
+    clock += 2000;
+    ledger.sweep();
+    ledger.markDelivered(id, 'ghost', { channel: 'inbox', ok: true, client: 'ghost-client' });
+    clock += 2000;
+    ledger.sweep();
+  }
+
+  const stats = ledger.clientStats('ghost').get('ghost-client');
+  assert.ok(stats, '账本要能按客户端统计');
+  assert.equal(stats.taken, 2, '两条点名都是它接走的');
+  assert.equal(stats.expired, 2, '两条都作废');
+  assert.equal(stats.replied, 0);
+  assert.equal(ledger.isUnreliableClient('ghost', 'ghost-client'), true, '拿了 2 条、0 交付 → 不可靠');
+
+  // 反例：一个交付过的客户端永远不被判不可靠；没见过的客户端也不背锅
+  const good = new DeliveryLedger({ file: `${file}-good`, leaseSeconds: 1, ackTimeoutSeconds: 1, now: () => clock });
+  good.ensure({ id: 'msg-3', seq: 3, mentions: ['ghost'] }, ['ghost']);
+  good.markDelivered('msg-3', 'ghost', { channel: 'inbox', ok: true, client: 'good-client' });
+  good.markReplied({ replyTo: 'msg-3', agent: 'ghost' });
+  assert.equal(good.isUnreliableClient('ghost', 'good-client'), false);
+  assert.equal(good.isUnreliableClient('ghost', 'never-seen'), false);
+});
+
+test('投递：被停发的客户端拿不到点名，别的客户端照常能拿到', async () => {
+  await withBoard(
+    async ({ base, join, delivery }) => {
+      await join({ agent: 'ghost', name: '幽灵' });
+      // 直接把账本做成"这个客户端拿了 2 条都没交付"（不必和定时器赛跑）：
+      // markRecoveryDeferred 表达的正是"重试用尽、登记为未自动重投"的终态。
+      for (const id of ['seed-1', 'seed-2']) {
+        delivery.ensure({ id, seq: Number(id.slice(-1)), mentions: ['ghost'] }, ['ghost']);
+        delivery.markDelivered(id, 'ghost', { channel: 'inbox', ok: true, client: 'ghost-client' });
+        delivery.markRecoveryDeferred(id, 'ghost');
+      }
+      assert.equal(delivery.isUnreliableClient('ghost', 'ghost-client'), true, '账本已认定它不可靠');
+
+      const muted = await (await fetch(`${base}/api/inbox?agent=ghost&wait=0&client=ghost-client`)).json();
+      assert.equal(muted.source, 'client-muted', `被停发的客户端应当收到 muted（实际 ${JSON.stringify(muted).slice(0, 140)}）`);
+      assert.equal(muted.wake, null);
+
+      const other = await (await fetch(`${base}/api/inbox?agent=ghost&wait=0&client=fresh-client`)).json();
+      assert.notEqual(other.source, 'client-muted', '没拿过活的客户端不受影响');
+    },
+    { delivery: { ackTimeoutSeconds: 1, leaseSeconds: 1, maxAttempts: 2, sweepSeconds: 1 } },
+  );
 });
 
 /* ── 闭合接入 ───────────────────────────────────────────── */

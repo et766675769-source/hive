@@ -59,11 +59,35 @@ export class WakeHub {
     return this.waiters.get(agentId);
   }
 
-  /** 取一个正在等待的 inbox；没有则返回 null。 */
-  #takeWaiter(agentId) {
+  /** 取一个正在等待的 inbox；没有则返回 null。
+   *
+   *  同一个成员可能有两个客户端在挂长轮询：我们的运行器（会自报身份）、以及成员自带的
+   *  外部客户端（往往什么都不报）。默认"先来先得"会把信交给先挂上的那个，而它可能拿了就不干活
+   *  （实测 #161/#165：外部客户端两次接走、两次什么都不做，我们的运行器一次都没收到）。
+   *
+   *  取件顺序因此改成：**自报身份且靠谱的 → 自报身份的 → 匿名的**。
+   *  自报身份是"可以被追责"的前提；匿名客户端只在没有别人接的时候才拿得到信。 */
+  #takeWaiter(agentId, { prefer } = {}) {
     const set = this.waiters.get(agentId);
     if (!set || !set.size) return null;
-    const entry = set.values().next().value;
+    let entry = null;
+    if (typeof prefer === 'function') {
+      for (const candidate of set.values()) {
+        if (candidate.client && prefer(candidate.client)) {
+          entry = candidate;
+          break;
+        }
+      }
+    }
+    if (!entry) {
+      for (const candidate of set.values()) {
+        if (candidate.client) {
+          entry = candidate;
+          break;
+        }
+      }
+    }
+    if (!entry) entry = set.values().next().value;
     set.delete(entry);
     clearTimeout(entry.timer);
     if (entry.onAbort && entry.signal) {
@@ -95,9 +119,9 @@ export class WakeHub {
    * 它留下的 waiter 会继续挂在服务端直到超时，期间新点名可能被投递给这个死 waiter，
    * 结果信件出了队列却没人收到（实测：投递显示已送达，成员侧毫无反应，只能等 180 秒租约）。
    */
-  inbox(agentId, { waitMs = 0, signal } = {}) {
+  inbox(agentId, { waitMs = 0, signal, client = null } = {}) {
     const queue = this.queues.get(agentId);
-    if (queue && queue.length) return Promise.resolve({ envelope: queue.shift(), from: 'queued' });
+    if (queue && queue.length) return Promise.resolve({ envelope: queue.shift(), from: 'queued', client: null });
 
     const ms = Math.max(0, Math.min(Number(waitMs) || 0, MAX_WAIT_MS));
     // 记录"这个成员确实会挂轮询"，用于接入验收（不问自述，只看行为）
@@ -109,7 +133,7 @@ export class WakeHub {
     if (ms === 0) return Promise.resolve({ envelope: null, from: 'none' });
 
     return new Promise((resolve) => {
-      const entry = { resolve, timer: null, onAbort: null, signal: signal || null };
+      const entry = { resolve, timer: null, onAbort: null, signal: signal || null, client: client || null };
       const finish = (payload) => {
         if (entry.timer) clearTimeout(entry.timer);
         if (entry.onAbort && signal) {
@@ -170,15 +194,17 @@ export class WakeHub {
     return (this.queues.get(agentId) || []).length;
   }
 
-  /** 投递一次唤醒，返回 { channel, ok, error }。 */
-  async deliver(agent, envelope) {
+  /** 投递一次唤醒，返回 { channel, ok, error, client }。 */
+  async deliver(agent, envelope, { preferClient } = {}) {
     const result = { agent: agent.id, messageId: envelope.messageId, seq: envelope.seq, at: localIso() };
 
-    const waiter = this.#takeWaiter(agent.id);
+    const waiter = this.#takeWaiter(agent.id, { prefer: preferClient });
     if (waiter) {
       waiter.resolve({ envelope, from: 'inbox' });
       result.channel = 'inbox';
       result.ok = true;
+      // 记下是哪个客户端接走的：它要是拿了不交付，账本下一轮就能认出来
+      result.client = waiter.client || null;
       return this.#record(result);
     }
 

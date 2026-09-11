@@ -1111,20 +1111,33 @@ body.is-resizing {
     left: 0;
     width: min(320px, 88vw);
     z-index: 40;
-    /* 底部不留内边距：页脚吸底后自己补，避免与上方说明挤在一行 */
+    /* 底部不留内边距：页脚固定在抽屉底部后自己补 */
     padding: 24px 20px 0;
     background: var(--surface);
     border-right: 1px solid var(--line);
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
     transform: translateX(-102%);
     transition: transform 0.2s var(--ease);
+    /* 关键：抽屉自己**不再滚动**，改成"名单区滚动、页脚固定"。
+       之前页脚是 position:sticky，压在滚动内容上面——侧栏内容一超高，
+       说明文字就从页脚底下透出来，看着就是两层字叠在一起（截图实测）。
+       正常文档流里滚动永远不会重叠，所以这里不用 sticky。 */
+    overflow: hidden;
   }
 
-  /* 抽屉内容可能高于窗口：页脚吸底 + 上分隔线，滚动时永远压在最后一行 */
+  /* 只有名单区滚动：抽屉内容再高也顶不到页脚 */
+  .roster {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 2px;
+  }
+
   .rail__foot {
-    position: sticky;
-    bottom: 0;
-    margin-top: auto;
+    position: static;
+    flex: 0 0 auto;
+    margin-top: 0;
     padding: 14px 0 20px;
     background: var(--surface);
     border-top: 1px solid var(--line);

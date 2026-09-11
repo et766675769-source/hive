@@ -181,7 +181,7 @@ async function main() {
     const agent = args[1] || flag('agent');
     if (!agent) throw new Error('缺少成员 id：node tools/mb.js inbox codex --wait 25');
     const waitSeconds = Math.max(0, Math.min(Number(flag('wait', 25)), 60));
-    const result = await call(`/api/inbox?agent=${encodeURIComponent(agent)}&wait=${waitSeconds}`);
+    const result = await call(`/api/inbox?agent=${encodeURIComponent(agent)}&wait=${waitSeconds}&client=mb-cli`);
     if (!result.wake) {
       console.log(`等待 ${result.waitedMs}ms，没有点名（source=${result.source}）。`);
       return;
@@ -208,7 +208,7 @@ async function main() {
 
     const tick = async () => {
       await call('/api/heartbeat', { method: 'POST', body: JSON.stringify({ agent, state, note }) });
-      const result = await call(`/api/inbox?agent=${encodeURIComponent(agent)}&wait=${waitSeconds}`);
+      const result = await call(`/api/inbox?agent=${encodeURIComponent(agent)}&wait=${waitSeconds}&client=mb-cli`);
       if (result.wake) {
         report(result.wake);
         if (once) {

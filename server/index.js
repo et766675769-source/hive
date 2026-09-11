@@ -837,15 +837,20 @@ export function createBoardServer(overrides = {}) {
         }
 
         // 点名即唤醒：立刻把点名送到被点名成员（长轮询 / 回调 / 本机命令 / 入队）
+        // preferClient：同一个成员挂了两个长轮询时，优先交给"拿过活而且交付过"的那个，
+        // 避免不可靠的客户端反复把点名抢走又什么都不做。
         const wakes = await Promise.all(
           effectiveTargets
             .map((target) => registry.get(target))
             .filter(Boolean)
-            .map((target) => wake.deliver(target, wake.envelope(message, target.id))),
+            .map((target) =>
+              wake.deliver(target, wake.envelope(message, target.id), {
+                preferClient: (client) => !delivery.isUnreliableClient(target.id, client, { minDrops: 2 }),
+              }),
+            ),
         );
         for (const result of wakes) {
-          const record = delivery.markDelivered(message.id, result.agent, result);
-          if (record) broadcast('delivery', record);
+          const record = delivery.markDelivered(message.id, result.agent, result);          if (record) broadcast('delivery', record);
         }
 
         return json(res, 200, {
@@ -881,6 +886,9 @@ export function createBoardServer(overrides = {}) {
           });
         }
         const waitSeconds = Math.max(0, Math.min(Number(url.searchParams.get('wait') || 0) || 0, 60));
+        // 客户端标识：同一个成员可能同时被两个客户端长轮询（我们的运行器 + 它自带的外部客户端）。
+        // 不区分的话，黑板只能"先来先得"，而先来的那个可能拿了活就不干。
+        const clientToken = String(url.searchParams.get('client') || '').trim().slice(0, 60) || 'unknown';
         // 长轮询只刷新"还活着"。空闲成员显示成「监听点名中」；
         // 但**成员自报 busy 时不覆盖**——它在处理长任务时会自报 busy + "正在处理 #N"，
         // 覆盖掉会让租约续租判据失明，长任务被误判超时重投。
@@ -891,17 +899,36 @@ export function createBoardServer(overrides = {}) {
           note: busy && current.note ? current.note : '监听点名中',
           source: 'inbox',
         });
+        // 已经证明"拿了不交付"的客户端：不再把点名交给它，只让它挂着（不注册 waiter）。
+        // 这样另一个真能干活的客户端才拿得到信封——否则点名会被反复抢走、反复过期。
+        if (clientToken !== 'unknown' && delivery.isUnreliableClient(agent.id, clientToken)) {
+          const stats = delivery.clientStats(agent.id).get(clientToken) || {};
+          audit(`inbox ${agent.id}: 客户端 ${clientToken} 已被判为不可靠（拿了 ${stats.taken} 次、作废 ${stats.expired} 次、交付 0 次），本轮不发信`);
+          await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
+          return json(res, 200, {
+            ok: true,
+            agent: agent.id,
+            wake: null,
+            source: 'client-muted',
+            waitedMs: waitSeconds * 1000,
+            note: `客户端 ${clientToken} 在本成员上拿了活却没交付过：黑板暂时不再把点名交给它，请修好它或停掉它；点名的投递会交给别的客户端。`,
+          });
+        }
         const started = Date.now();
         // 连接关闭即取消本次等待：否则被杀掉的成员留下的 waiter 会一直挂着，
         // 新点名可能被投递给这个死 waiter（信件出队却无人收到，只能等租约回收）。
         const inboxAbort = new AbortController();
         res.on('close', () => inboxAbort.abort());
-        const result = await wake.inbox(agent.id, { waitMs: waitSeconds * 1000, signal: inboxAbort.signal });
+        const result = await wake.inbox(agent.id, { waitMs: waitSeconds * 1000, signal: inboxAbort.signal, client: clientToken });
         // 关键：**从队列取走**信件时，也要把投递状态推进到「已送达」。
         // （直连投递已在 POST /api/message 里标过，这里只补队列这条路径；
         //   否则"信件被取走了、但面板还显示待投递/待回应"——看起来就像没反应。）
         if (result.from === 'queued' && result.envelope && result.envelope.type === 'mention') {
-          const record = delivery.markDelivered(result.envelope.messageId, agent.id, { channel: 'inbox', ok: true });
+          const record = delivery.markDelivered(result.envelope.messageId, agent.id, {
+            channel: 'inbox',
+            ok: true,
+            client: clientToken,
+          });
           if (record) broadcast('delivery', record);
         }
         return json(res, 200, {

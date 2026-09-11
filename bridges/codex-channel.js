@@ -793,7 +793,7 @@ async function main() {
           note: active ? `正在处理 #${active.seq}` : 'Codex 通道在线',
         }),
       }).finally(() => lockHandle?.beat?.());
-      const result = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=${WAIT_SECONDS}`);
+      const result = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=${WAIT_SECONDS}&client=codex-channel`);
       if (result.wake?.type === 'control') {
         await handleControl(result.wake);
       } else if (result.wake && result.wake.from !== AGENT) {

@@ -417,7 +417,7 @@ async function main() {
   for (;;) {
     try {
       await heartbeat('online', '空闲');
-      const result = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=${WAIT_IDLE}`, {
+      const result = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=${WAIT_IDLE}&client=member-loop`, {
         timeoutMs: (WAIT_IDLE + 15) * 1000,
       });
       backoff = 1000; // 成功一次就重置退避

@@ -21,6 +21,13 @@ import { stripBom } from './protocol.js';
 export const DELIVERY_STATES = ['queued', 'delivered', 'working', 'replied', 'expired'];
 const TERMINAL = new Set(['replied']);
 
+/** 累加一条投递记录到客户端统计里。 */
+function statisticsBump(entry, record) {
+  entry.taken += 1;
+  if (record.state === 'expired' && record.endedBy !== 'interrupted') entry.expired += 1;
+  if (record.state === 'replied') entry.replied += 1;
+}
+
 export class DeliveryLedger {
   /**
    * @param {{ file: string, leaseSeconds?: number, maxAttempts?: number, maxRenewals?: number, now?: () => number }} options
@@ -82,6 +89,8 @@ export class DeliveryLedger {
       topic: entry.topic ?? null,
       state: 'queued',
       channel: null,
+      // 最近一次是哪个客户端接走的（同一成员可能有多个长轮询客户端）
+      client: null,
       attempts: 0,
       createdAt: entry.at || this.now(),
       updatedAt: entry.at || this.now(),
@@ -94,6 +103,7 @@ export class DeliveryLedger {
 
     if (entry.state) record.state = entry.state;
     if (entry.channel !== undefined) record.channel = entry.channel;
+    if (entry.client !== undefined) record.client = entry.client || null;
     if (entry.note !== undefined) record.note = entry.note || '';
     if (entry.seq != null) record.seq = entry.seq;
     if (entry.topic !== undefined) record.topic = entry.topic;
@@ -116,10 +126,10 @@ export class DeliveryLedger {
     return record;
   }
 
-  #set(messageId, agent, state, { channel, note, deadlineAt, attempts, seq, topic, renewals, ackDeadlineAt, endedBy } = {}) {
+  #set(messageId, agent, state, { channel, client, note, deadlineAt, attempts, seq, topic, renewals, ackDeadlineAt, endedBy } = {}) {
     if (!DELIVERY_STATES.includes(state)) throw new Error(`未知投递状态：${state}`);
     const at = this.now();
-    return this.#apply({ messageId, agent, state, channel, note, deadlineAt, attempts, seq, topic, renewals, ackDeadlineAt, endedBy, at });
+    return this.#apply({ messageId, agent, state, channel, client, note, deadlineAt, attempts, seq, topic, renewals, ackDeadlineAt, endedBy, at });
   }
 
   /** 为一条带点名的留言建立投递记录（幂等：已存在就返回原记录）。 */
@@ -145,7 +155,7 @@ export class DeliveryLedger {
    * 注意：channel=queued 表示"没人接，先进队列"——那是**没送到**，状态保持 queued，
    * 不能算 delivered，否则界面上会把"没人听"显示成"已送达"。
    */
-  markDelivered(messageId, agent, { channel, ok, error } = {}) {
+  markDelivered(messageId, agent, { channel, ok, error, client } = {}) {
     const reachedSomeone = Boolean(ok) && Boolean(channel) && channel !== 'queued';
     if (!reachedSomeone) {
       return this.#set(messageId, agent, 'queued', {
@@ -160,13 +170,50 @@ export class DeliveryLedger {
     }
     return this.#set(messageId, agent, 'delivered', {
       channel,
-      note: `已送达（${channel}）`,
+      // 记下"是哪个客户端拿走的"：同一个成员可能有两个客户端在长轮询
+      // （我们的运行器 + 它自带的外部客户端），必须能分清谁拿了活却没交付
+      client: client || null,
+      note: `已送达（${channel}${client ? ` · ${client}` : ''}）`,
       deadlineAt: this.now() + this.leaseSeconds * 1000,
       // 确认超时：送达后成员应当很快回一条「处理中」；
       // 如果连确认都没有，多半是信封被投给了已经死掉的连接——不必等满租约。
       ackDeadlineAt: this.now() + this.ackTimeoutSeconds * 1000,
     });
   }
+
+  /**
+   * 按客户端统计"拿了活之后干得怎么样"。
+   *
+   * 存在的理由：一个成员可能同时被两个客户端长轮询（我们的运行器、以及它自带的外部客户端）。
+   * 黑板把点名交给先来的人，而"先来的人"可能拿了就不干活——于是点名一次次被它抢走、
+   * 一次次过期，真正能交付的那个客户端永远收不到（实测：#161/#165 就是这样一条都没送达）。
+   *
+   * @returns {Map<string, { taken: number, expired: number, replied: number }>}
+   */
+  clientStats(agent) {
+    const stats = new Map();
+    for (const record of this.records.values()) {
+      if (!record || record.agent !== agent) continue;
+      for (const client of new Set([record.client].filter(Boolean))) {
+        const entry = stats.get(client) || { taken: 0, expired: 0, replied: 0 };
+        statisticsBump(entry, record);
+        stats.set(client, entry);
+      }
+    }
+    return stats;
+  }
+
+  /**
+   * 这个客户端是不是"拿了不交付"？连续拿过 minDrops 次、一次都没交付过 → 是。
+   * 判据只看事实（账本里的 expired / replied），不看它自称什么。
+   */
+  isUnreliableClient(agent, client, { minDrops = 2 } = {}) {
+    if (!client) return false;
+    const entry = this.clientStats(agent).get(client);
+    if (!entry) return false;
+    return entry.expired >= minDrops && entry.replied === 0;
+  }
+
 
   /** 对方回了「处理中」通知 → working（同时把租约续上）。 */
   markWorking(message) {
@@ -311,6 +358,7 @@ export class DeliveryLedger {
       topic: record.topic,
       state: record.state,
       channel: record.channel,
+      client: record.client || null,
       attempts: record.attempts,
       note: record.note,
       updatedAt: record.updatedAt,
