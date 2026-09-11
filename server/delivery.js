@@ -369,10 +369,26 @@ export class DeliveryLedger {
     return { expired, reclaimed };
   }
 
-  summary() {
+  /**
+   * 台账计数。
+   * @param {{ ignore?: Set<string>|string[] }} options
+   *   ignore：不参与统计的成员（例如隐藏的本机操作员——它是"人"，
+   *   @本机 的历史投递会一直挂在 queued，把侧栏「投递中」撑成噪声）。
+   */
+  summary({ ignore } = {}) {
+    const skip = ignore instanceof Set ? ignore : new Set(ignore || []);
     const counts = { queued: 0, delivered: 0, working: 0, replied: 0, expired: 0 };
-    for (const record of this.records.values()) counts[record.state] = (counts[record.state] || 0) + 1;
-    return { counts, leaseSeconds: this.leaseSeconds, maxAttempts: this.maxAttempts };
+    for (const record of this.records.values()) {
+      if (skip.has(record.agent)) continue;
+      counts[record.state] = (counts[record.state] || 0) + 1;
+    }
+    return {
+      counts,
+      leaseSeconds: this.leaseSeconds,
+      maxAttempts: this.maxAttempts,
+      maxRenewals: this.maxRenewals,
+      ackTimeoutSeconds: this.ackTimeoutSeconds,
+    };
   }
 
   snapshot() {

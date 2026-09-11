@@ -190,11 +190,17 @@ export class Store {
    * 判定为「已回应」的条件：被点名者在点名之后发了留言，且
    *   replyTo 指向该条，或处于同一议题；
    *   且该留言不是「处理中通知」（kind=notice）——光说"收到/在处理"不算回应。
+   *
+   * @param {{ ignore?: Set<string>|string[] }} options
+   *   ignore：不计入"待回应"的成员。隐藏的本机操作员（人类，不是成员）应当传进来，
+   *   否则 @本机 的留言会永远挂在待回应里，把侧栏计数撑成噪声。
    */
-  pendingReplies() {
+  pendingReplies({ ignore } = {}) {
+    const skip = ignore instanceof Set ? ignore : new Set(ignore || []);
     const pending = [];
     for (const msg of this.messages) {
       for (const target of msg.mentions) {
+        if (skip.has(target)) continue;
         const answered = this.messages.some(
           (later) =>
             later.seq > msg.seq &&

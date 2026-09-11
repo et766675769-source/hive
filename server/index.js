@@ -235,7 +235,7 @@ export function createBoardServer(overrides = {}) {
    */
   function backfillDeliveries() {
     if (!config.delivery.backfillOnStart) return { recovered: 0, deferred: 0 };
-    const pending = store.pendingReplies();
+    const pending = store.pendingReplies({ ignore: hiddenAgentIds() });
     const perAgent = new Map();
     const deferredByAgent = new Map();
     // 倒序 = 新的在前；超出 backfillLimit 的**不能静默丢掉**，记为 deferred 并在黑板上可见
@@ -337,8 +337,15 @@ export function createBoardServer(overrides = {}) {
     };
   }
 
+  /**
+   * 隐藏成员（本机操作员）的 id 集合：它是"人"，不参与投递与"待回应"计数。
+   */
+  function hiddenAgentIds() {
+    return new Set(registry.all().filter((agent) => agent.hidden).map((agent) => agent.id));
+  }
+
   function memberCards() {
-    const pending = store.pendingReplies();
+    const pending = store.pendingReplies({ ignore: hiddenAgentIds() });
     const pendingByAgent = {};
     for (const item of pending) pendingByAgent[item.agent] = (pendingByAgent[item.agent] || 0) + 1;
     const mentionReplies = store.mentionReplies({ windowMs: config.acceptance.loopWindowHours * 3600 * 1000 });
@@ -413,7 +420,7 @@ export function createBoardServer(overrides = {}) {
       topics: store.topics(),
       pending,
       wakeQueue: wake.queueDepth(),
-      deliverySummary: delivery.summary(),
+      deliverySummary: delivery.summary({ ignore: hiddenAgentIds() }),
       stats: store.stats(),
       enums: { statuses: STATUSES, kinds: KINDS },
     };
@@ -712,8 +719,13 @@ export function createBoardServer(overrides = {}) {
         });
         presence.beat(agent.id, { state: 'online', note: '正在发言', session: payload.session, source: 'message' });
 
-        // 投递台账：本条点名了谁，就给谁建一条投递记录（幂等）
-        delivery.ensure(message, check.mentions);
+        // 投递台账：只给**真实成员**建投递；隐藏的本机操作员是人类，不参与投递
+        //（否则 @本机 的留言会永远挂在"待回应/投递中"，把侧栏计数撑成噪声）
+        const wakeTargets = check.mentions.filter((id) => {
+          const target = registry.get(id);
+          return Boolean(target) && !target.hidden;
+        });
+        delivery.ensure(message, wakeTargets);
 
         // 对方回话：通道重启丢失 → 立即重投；被打断 → 终结；notice → working（续租）；实质内容 → replied（终态）
         const wasAborted = Boolean(payload.client && payload.client.aborted === true);
@@ -739,7 +751,7 @@ export function createBoardServer(overrides = {}) {
 
         // 点名即唤醒：立刻把点名送到被点名成员（长轮询 / 回调 / 本机命令 / 入队）
         const wakes = await Promise.all(
-          check.mentions
+          wakeTargets
             .map((target) => registry.get(target))
             .filter(Boolean)
             .map((target) => wake.deliver(target, wake.envelope(message, target.id))),
