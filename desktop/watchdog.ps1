@@ -133,6 +133,28 @@ function Test-Listening($state, [string]$id) {
   return $false
 }
 
+# Ownership lock (data\runner\<id>\runner.lock): the managed channel writes it and renews it.
+# Starting a second channel for the same member is not "extra safety" - it is how one mention
+# ends up producing two replies (seen in practice). A lock held by a live process that is still
+# renewing means "leave it alone"; a process that stopped renewing is treated as wedged.
+function Test-OwnedAndHealthy([string]$id) {
+  $file = Join-Path $root ("data\runner\{0}\runner.lock" -f $id)
+  if (-not (Test-Path $file)) { return $false }
+  try {
+    $lock = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $lock.pid) { return $false }
+    if (-not (Get-Process -Id ([int]$lock.pid) -ErrorAction SilentlyContinue)) { return $false }
+    $beat = $lock.beatAt
+    if (-not $beat) { $beat = $lock.startedAt }
+    if (-not $beat) { return $false }
+    $age = (New-TimeSpan -Start ([datetime]$beat) -End (Get-Date)).TotalMinutes
+    if ($age -ge 5) { return $false }
+    return $true
+  } catch {
+    return $false
+  }
+}
+
 $watched = Get-WatchedMembers
 Write-Log ("watchdog: watching members: " + (($watched | ForEach-Object { $_.id }) -join ', '))
 
@@ -170,6 +192,10 @@ try {
         # (this covers members that joined after the watchdog was written).
         foreach ($member in $watched) {
           if (Test-Listening $state $member.id) { continue }
+          if (Test-OwnedAndHealthy $member.id) {
+            Write-Log "watchdog: $($member.id) has no live channel, but a healthy managed process owns it - not starting a second one"
+            continue
+          }
           Write-Log "watchdog: $($member.id) is not listening (state: $online) - starting it"
           try {
             Start-Member $member

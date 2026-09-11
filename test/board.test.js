@@ -545,6 +545,37 @@ test('哨兵：托管清单带 BOM 也能读，读不出来必须说出来（不
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('归属锁：同一成员的托管通道只有一个正主，卡死才允许接管', async () => {
+  const { evaluateLock, acquireLock, readLock } = await import('../tools/channel-lock.mjs');
+  const nowMs = Date.parse('2026-09-12T00:00:00+08:00');
+  const alive = () => true;
+  const dead = () => false;
+
+  assert.equal(evaluateLock(null, { nowMs }).state, 'free');
+  assert.equal(evaluateLock({ pid: 1 }, { nowMs, isAlive: dead }).state, 'free', '进程没了就该让位');
+
+  const fresh = { pid: 4242, startedAt: new Date(nowMs - 60000).toISOString(), beatAt: new Date(nowMs - 30000).toISOString() };
+  assert.equal(evaluateLock(fresh, { nowMs, isAlive: alive }).state, 'held');
+  assert.match(evaluateLock(fresh, { nowMs, isAlive: alive }).reason, /4242/);
+
+  // 进程还在、但很久没心跳：卡死，必须允许接管，否则这个成员会永久沉默
+  const stale = { pid: 4242, startedAt: new Date(nowMs - 3600000).toISOString(), beatAt: new Date(nowMs - 30 * 60000).toISOString() };
+  assert.equal(evaluateLock(stale, { nowMs, isAlive: alive }).state, 'stale');
+  assert.match(evaluateLock(stale, { nowMs, isAlive: alive }).reason, /没有心跳/);
+
+  // 真实取锁：同一目录第二次取会看到"已被持有"
+  const dir = fs.mkdtempSync(path.join(dataRoot, 'lock-'));
+  const first = acquireLock(dir, { agent: 'demo' });
+  assert.equal(first.held, false);
+  assert.equal(readLock(dir).pid, process.pid);
+  const second = acquireLock(dir, { agent: 'demo' });
+  assert.equal(second.held, true, '第二个进程必须让位');
+  assert.match(second.reason, new RegExp(String(process.pid)));
+  first.release();
+  assert.equal(readLock(dir), null, '正常退出要释放锁');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {

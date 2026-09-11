@@ -31,6 +31,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { register, resolveEngine, runEngine, listEngines, checkEngine } from '../engines/registry.mjs';
+import { acquireLock } from '../tools/channel-lock.mjs';
 
 const args = process.argv.slice(2);
 function flag(name, fallback = null) {
@@ -163,6 +164,10 @@ async function heartbeat(state, note) {
     });
   } catch (error) {
     log(`心跳上报失败（${state}）：${error.message}`);
+  } finally {
+    // 顺带续约归属锁：watchdog 与哨兵据此判断"这个成员的通道还活着"，
+    // 只有锁长时间不刷新（进程卡死）时才允许别人接管。
+    lockHandle?.beat?.();
   }
 }
 
@@ -170,6 +175,9 @@ async function heartbeat(state, note) {
 
 // 当前正在生成的那一轮的取消句柄：控制指令（打断）通过它中止生成。
 let activeAbort = null;
+
+// 归属锁句柄：心跳时顺带续约，退出时释放（同成员不允许两个托管通道）
+let lockHandle = null;
 
 let busyReason = ''; // 生成期间向服务端自报的状态说明（续租用）
 
@@ -425,6 +433,29 @@ async function runTurn(wake, queued) {
 }
 
 async function main() {
+  // 归属锁：同一个成员只能有一个托管通道。多一个进程不是"更保险"，而是
+  // 一条点名刷出两条回复、以及面板"在线却不回话"的根因（实测踩过）。
+  const lock = acquireLock(RUNTIME_DIR, { agent: AGENT });
+  if (lock.held) {
+    log(`同一成员已有托管通道在跑（${lock.reason}）；本进程退出，避免一次点名两条回复。`);
+    return;
+  }
+  if (lock.state === 'error') log(`归属锁警告：${lock.reason}（继续启动）`);
+  else log(`已取得归属锁（${lock.reason}）`);
+  lockHandle = lock;
+  const releaseLock = () => lock.release?.();
+  process.on('exit', releaseLock);
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    try {
+      process.on(signal, () => {
+        releaseLock();
+        process.exit(0);
+      });
+    } catch {
+      /* 平台不支持该信号就跳过 */
+    }
+  }
+
   // 加载外部引擎文件（可选）：第三方引擎不需要改核心
   for (const file of ENGINE_FILES) {
     try {

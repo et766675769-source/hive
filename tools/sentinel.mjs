@@ -39,6 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { evaluateLock, readLock } from './channel-lock.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -87,6 +88,8 @@ const FAIL_ON_ALERT = args.includes('--fail-on-alert');
 const STATUS_FILE = flag('status-file') || env('STATUS_FILE') || path.join(ROOT, 'data', 'sentinel-status.json');
 const LOG_DIR = flag('log-dir') || path.join(ROOT, 'data', 'logs');
 const MEMBERS_FILE = flag('members-file') || env('MEMBERS_FILE') || path.join(ROOT, 'desktop', 'watchdog-members.json');
+// 托管通道的归属锁目录（每个成员一个子目录，与 agent-runner 的 --runtime 对应）
+const RUNTIME_ROOT = flag('runtime-root') || env('RUNTIME_ROOT') || path.join(ROOT, 'data', 'runner');
 
 const SENTINEL_ID = 'sentinel';
 // 哨兵的身份来自 board.config.json 的预置项（kind=operator、hidden）：它不占名册成员位，
@@ -234,22 +237,43 @@ export function classifyBoard(state, { nowMs = Date.now(), silentMinutes = SILEN
 
 /**
  * 该不该由哨兵把托管通道拉起来？
- * 条件（缺一不可）：结论是"在线但沉默" + 该成员有托管配置 + 不在冷却期 + 不是 manual 成员。
+ * 条件（缺一不可）：结论是"在线但沉默" + 该成员有托管配置 + 没有健康的托管进程 + 不在冷却期。
+ * 最后一条尤其重要：多拉起一个进程不是"更保险"，而是让一次点名刷出两条回复（实测踩过）。
  */
-export function planTakeovers(findings, members, { status = {}, nowMs = Date.now(), cooldownMinutes = COOLDOWN_MINUTES } = {}) {
+export function planTakeovers(
+  findings,
+  members,
+  { status = {}, nowMs = Date.now(), cooldownMinutes = COOLDOWN_MINUTES, lockOf = () => null, isAlive = undefined } = {},
+) {
   const byId = new Map((members || []).map((item) => [item.id, item]));
   const takeovers = [];
   for (const finding of findings) {
     if (finding.code !== 'SILENT_WITH_PENDING') continue;
     const entry = byId.get(finding.member);
     if (!entry) continue;
+
+    // 有人正当地持有该成员的托管锁 → 它只是在慢，不是在沉默，别抢
+    const evaluation = evaluateLock(lockOf(finding.member), isAlive ? { nowMs, isAlive } : { nowMs });
+    if (evaluation.state === 'held') {
+      takeovers.push({ member: finding.member, ok: false, reason: `已有托管进程在跑，不动它（${evaluation.reason}）` });
+      continue;
+    }
+
     const last = Date.parse((status.takeovers && status.takeovers[finding.member]) || '') || 0;
     const waitedMinutes = last ? (nowMs - last) / 60000 : Number.POSITIVE_INFINITY;
     if (waitedMinutes < cooldownMinutes) {
       takeovers.push({ member: finding.member, ok: false, reason: `冷却中（${Math.round(waitedMinutes)}/${cooldownMinutes} 分钟）` });
       continue;
     }
-    takeovers.push({ member: finding.member, ok: true, reason: '在线但沉默，且存在托管配置', start: entry.start });
+    takeovers.push({
+      member: finding.member,
+      ok: true,
+      reason:
+        evaluation.state === 'stale'
+          ? `在线但沉默，且原托管进程看起来卡死了（${evaluation.reason}）`
+          : '在线但沉默，且没有托管进程在跑',
+      start: entry.start,
+    });
   }
   return takeovers;
 }
@@ -297,6 +321,11 @@ export function readManagedMembers(file = MEMBERS_FILE, onWarn = log) {
 
 function readMembers() {
   return readManagedMembers(MEMBERS_FILE);
+}
+
+/** 该成员的托管锁内容（运行器目录由 --runtime-root 或默认 data/runner 决定）。 */
+function lockOf(agentId) {
+  return readLock(path.join(RUNTIME_ROOT, agentId));
 }
 
 function writeStatus(status, statusFile = STATUS_FILE) {
@@ -452,7 +481,9 @@ export async function runRound(options = {}) {
   const acted = [];
 
   const managed = members || readMembers();
-  const plans = takeover ? planTakeovers(findings, managed, { status: previous, nowMs, cooldownMinutes }) : [];
+  const plans = takeover
+    ? planTakeovers(findings, managed, { status: previous, nowMs, cooldownMinutes, lockOf: options.lockOf || lockOf })
+    : [];
   const planById = new Map(plans.map((item) => [item.member, item]));
 
   for (const finding of findings) {
