@@ -338,10 +338,17 @@ export function createBoardServer(overrides = {}) {
   }
 
   /**
-   * 隐藏成员（本机操作员）的 id 集合：它是"人"，不参与投递与"待回应"计数。
+   * 不参与投递/待回应/计数的成员：
+   *   ① 隐藏成员（本机操作员是人类，不是成员）
+   *   ② 已不在名册里的成员（例如被清理掉的测试成员）——台账只追加，
+   *      它们的旧记录会永远停在 queued，把侧栏「投递中」撑成噪声。
    */
   function hiddenAgentIds() {
-    return new Set(registry.all().filter((agent) => agent.hidden).map((agent) => agent.id));
+    const skip = new Set(registry.all().filter((agent) => agent.hidden).map((agent) => agent.id));
+    for (const record of delivery.snapshot()) {
+      if (!registry.get(record.agent)) skip.add(record.agent);
+    }
+    return skip;
   }
 
   function memberCards() {
