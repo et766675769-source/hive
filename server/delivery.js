@@ -235,6 +235,22 @@ export class DeliveryLedger {
     return entry.expired >= minDrops && entry.replied === 0;
   }
 
+  /**
+   * 该成员是否已经有一个**交付过的实名客户端**。
+   *
+   * 为什么需要它：不报身份的客户端（`unknown`）永远无法被"拿了不交付"的规则罚到——
+   * 它在账本里没有名字，攒不出自己的黑历史。但只要这个成员已经有一个实名客户端确实交付过，
+   * 就更该把点名交给那个实名客户端；匿名的不该再来抢。
+   * （实测：workbuddy 自带的外部 watcher 不报身份、反复抢走点名却从不交付，
+   *   而它能做的只有"抢"，罚不到它，所以用这条规则把它挡在外面。）
+   */
+  hasDeliveringNamedClient(agent) {
+    for (const [client, stats] of this.clientStats(agent)) {
+      if (client && client !== 'unknown' && stats.replied > 0) return true;
+    }
+    return false;
+  }
+
 
   /** 对方回了「处理中」通知 → working（同时把租约续上）。 */
   markWorking(message) {

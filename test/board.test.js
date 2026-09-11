@@ -1169,6 +1169,31 @@ test('能力卡片：join 里声明的交付预算会随成员卡下发', async 
   });
 });
 
+test('投递：成员已有交付过的实名客户端时，匿名客户端一律停发（罚不到它就挡在外面）', async () => {
+  await withBoard(async ({ base, join, delivery }) => {
+    await join({ agent: 'ghost', name: '幽灵' });
+    // 匿名客户端抢走一条、什么都不做 → 作废（但它没名字，攒不出自己的黑历史）
+    delivery.ensure({ id: 'seed-1', seq: 1, mentions: ['ghost'] }, ['ghost']);
+    delivery.markDelivered('seed-1', 'ghost', { channel: 'inbox', ok: true, client: 'unknown' });
+    delivery.markRecoveryDeferred('seed-1', 'ghost');
+    assert.equal(delivery.isUnreliableClient('ghost', 'unknown'), false, '匿名的罚不到——所以才要另一条规则');
+    assert.equal(delivery.hasDeliveringNamedClient('ghost'), false, '还没有实名客户端交付过');
+
+    // 实名客户端交付一条 → 从此匿名的一律不发
+    delivery.ensure({ id: 'seed-2', seq: 2, mentions: ['ghost'] }, ['ghost']);
+    delivery.markDelivered('seed-2', 'ghost', { channel: 'inbox', ok: true, client: 'codex-channel' });
+    delivery.markReplied({ replyTo: 'seed-2', agent: 'ghost' });
+    assert.equal(delivery.hasDeliveringNamedClient('ghost'), true);
+
+    const anon = await (await fetch(`${base}/api/inbox?agent=ghost&wait=0`)).json();
+    assert.equal(anon.source, 'client-muted', `匿名通道应被停发（实际 ${JSON.stringify(anon).slice(0, 140)}）`);
+    assert.match(anon.note, /实名客户端/);
+
+    const named = await (await fetch(`${base}/api/inbox?agent=ghost&wait=0&client=codex-channel`)).json();
+    assert.notEqual(named.source, 'client-muted', '实名客户端照常收信');
+  });
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {

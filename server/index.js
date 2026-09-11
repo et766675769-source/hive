@@ -949,9 +949,16 @@ export function createBoardServer(overrides = {}) {
         });
         // 已经证明"拿了不交付"的客户端：不再把点名交给它，只让它挂着（不注册 waiter）。
         // 这样另一个真能干活的客户端才拿得到信封——否则点名会被反复抢走、反复过期。
-        if (clientToken !== 'unknown' && delivery.isUnreliableClient(agent.id, clientToken)) {
+        // 匿名客户端（unknown）另有一条规则：只要该成员已经有交付过的实名客户端，
+        // 匿名的一律不发——不报身份的客户端罚不到它，只能用这条把它挡在外面（实测 workbuddy 的 watcher）。
+        const mutedReason = delivery.isUnreliableClient(agent.id, clientToken)
+          ? `客户端 ${clientToken} 拿了活却没交付过`
+          : clientToken === 'unknown' && delivery.hasDeliveringNamedClient(agent.id)
+            ? '本成员已有交付过的实名客户端，匿名的通道不再发信'
+            : '';
+        if (mutedReason) {
           const stats = delivery.clientStats(agent.id).get(clientToken) || {};
-          audit(`inbox ${agent.id}: 客户端 ${clientToken} 已被判为不可靠（拿了 ${stats.taken} 次、作废 ${stats.expired} 次、交付 0 次），本轮不发信`);
+          audit(`inbox ${agent.id}: 停发（${mutedReason}），本轮不发信`);
           await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
           return json(res, 200, {
             ok: true,
@@ -959,7 +966,7 @@ export function createBoardServer(overrides = {}) {
             wake: null,
             source: 'client-muted',
             waitedMs: waitSeconds * 1000,
-            note: `客户端 ${clientToken} 在本成员上拿了活却没交付过：黑板暂时不再把点名交给它，请修好它或停掉它；点名的投递会交给别的客户端。`,
+            note: `停发：${mutedReason}。请修好它或停掉它；点名会交给别的客户端。`,
           });
         }
         const started = Date.now();
