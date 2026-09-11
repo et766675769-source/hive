@@ -145,6 +145,12 @@ export class Store {
 
   /**
    * 读取留言（默认最近 200 条，按时间正序）。
+   *
+   * since 的两种语义（重要）：
+   *   since = 0  → "给我最新的 N 条"（取末尾，界面首屏用）
+   *   since > 0  → "给我 since 之后**最早**的 N 条"（取开头，增量补拉用）
+   * 第二种必须从最早的开始，否则断线期间新增超过 limit 条时，
+   * 每次补拉都取末尾会把中间那些永久跳过——分页也救不回来。
    */
   list({ limit = 200, since = 0, topic = null, agent = null, status = null } = {}) {
     let items = this.messages.filter((msg) => Number(msg.seq) > Number(since || 0));
@@ -152,7 +158,7 @@ export class Store {
     if (agent) items = items.filter((msg) => msg.agent === String(agent).toLowerCase());
     if (status) items = items.filter((msg) => msg.status === status);
     const max = Math.max(1, Math.min(Number(limit) || 200, this.historyInMemory));
-    return items.slice(-max);
+    return Number(since || 0) > 0 ? items.slice(0, max) : items.slice(-max);
   }
 
   topics() {

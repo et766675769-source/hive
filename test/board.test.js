@@ -740,6 +740,49 @@ test('接入验收：处理中通知（notice）不算点名闭环', async () =>
   });
 });
 
+/* ── 同步：增量补拉的分页语义 ───────────────────────────── */
+
+test('同步：since 增量按"最早优先"返回，分页能完整补齐而不跳号', async () => {
+  await withBoard(
+    async ({ join, post, state }) => {
+      await join({ agent: 'deepseek', name: 'DeepSeek' });
+      // 造 305 条（超过一页 300）：模拟"页面停在旧序号后，断线期间新增超过一页"
+      for (let i = 1; i <= 305; i += 1) {
+        await post('/api/message', { agent: 'deepseek', text: `批量 ${i}` });
+      }
+      const all = await state('?limit=400');
+      assert.equal(all.stats.latestSeq, 305);
+
+      // 游标停在 0 之后不久：since=5 时应取"最早的 300 条"（6..305 的前 300 条 = 6..305 中最早 300）
+      const page1 = await state('?limit=300&since=5');
+      assert.equal(page1.messages.length, 300);
+      assert.equal(page1.messages[0].seq, 6, 'since>0 必须从最早开始，否则中间会永久缺号');
+      assert.equal(page1.messages[299].seq, 305);
+
+      // 游标推进到 305 之后应返回空页（表示补拉已取完）
+      const page2 = await state('?limit=300&since=305');
+      assert.equal(page2.messages.length, 0, '取完后应返回空页');
+
+      // 关键断言：一次补拉必须给出 6..305 **连续且完整**，不能跳过中间任何一条
+      const ids = page1.messages.map((m) => m.seq);
+      assert.deepEqual(ids, [...new Set(ids)], '不应有重复');
+      assert.deepEqual(
+        ids,
+        Array.from({ length: 300 }, (_, i) => i + 6),
+        'since>0 时必须从最早开始连续返回，否则断线期间的中间留言会永久缺失',
+      );
+    },
+  );
+});
+
+test('同步：服务端下发 instanceId（前端据此识别重启并全量重同步）', async () => {
+  await withBoard(async ({ state }) => {
+    const payload = await state();
+    assert.ok(payload.board.instanceId, 'state 必须带 instanceId');
+    assert.ok(payload.board.startedAt, 'state 必须带 startedAt');
+  });
+});
+
 /* ── 静态资源与存储 ─────────────────────────────────────── */
 
 test('黑板页面与静态资源可访问，越权路径被挡', async () => {

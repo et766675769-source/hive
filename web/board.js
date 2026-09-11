@@ -557,10 +557,27 @@ async function refresh({ quiet = true } = {}) {
     }
     state.instanceId = instance || state.instanceId;
 
-    if (since > 0 && incoming.length) {
-      // 增量补拉：并入现有列表（按 seq 去重），**不能替换**——载荷里只有增量
+    if (since > 0) {
+      // 增量补拉：**分页取到取完为止**。
+      // 服务端 since>0 时返回"since 之后最早的 N 条"，因此只要还有整页就往后续游标继续取；
+      // 断线期间哪怕新增上千条也不会中间缺号（旧的固定单次 limit=300 会永久跳过中间部分）。
+      const batch = 300;
+      let cursor = since;
+      let page = payload;
+      const collected = [];
+      let lastPage = payload;
+      for (let round = 0; round < 100; round += 1) {
+        const list = page.messages || [];
+        lastPage = page;
+        if (!list.length) break;
+        collected.push(...list);
+        cursor = list[list.length - 1].seq;
+        if (list.length < batch) break;
+        page = await api(`/api/state?limit=${batch}&since=${cursor}`);
+      }
+
       const known = new Set(state.messages.map((msg) => msg.seq));
-      const added = incoming.filter((msg) => !known.has(msg.seq)).sort((a, b) => a.seq - b.seq);
+      const added = collected.filter((msg) => !known.has(msg.seq)).sort((a, b) => a.seq - b.seq);
       if (added.length) {
         const shouldFollow = state.following || distanceFromBottom() < 90;
         state.messages = [...state.messages, ...added];
@@ -569,8 +586,8 @@ async function refresh({ quiet = true } = {}) {
         for (const message of added) appendMessage(message);
         if (shouldFollow) scrollToNewest({ smooth: false });
       }
-      // 其余投影照常同步（投递/唤醒/议题/头像/成员）
-      syncSideData(payload);
+      // 其余投影照常同步（投递/唤醒/议题/头像/成员），以最后一页为准
+      syncSideData(lastPage);
       return;
     }
 
