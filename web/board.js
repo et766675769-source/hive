@@ -1021,6 +1021,63 @@ function bind() {
   // 深链：?rail=open 直接展开成员抽屉（窄窗下有用，也便于截图核对）
   if (new URLSearchParams(location.search).get('rail') === 'open') setRailOpen(true);
 
+  // 右下角拖拽角标：只在桌面外壳里出现（WebView2 提供 chrome.webview）。
+  // 拖拽量按**增量**发给外壳，由外壳改窗口尺寸；浏览器里保持隐藏（网页无权改浏览器窗口）。
+  const grip = document.getElementById('resizeGrip');
+  const webview = window.chrome?.webview;
+  if (grip && webview) {
+    grip.hidden = false;
+    let lastX = 0;
+    let lastY = 0;
+    const pending = { dx: 0, dy: 0, scheduled: false };
+    const flush = () => {
+      pending.scheduled = false;
+      if (!pending.dx && !pending.dy) return;
+      const dx = pending.dx;
+      const dy = pending.dy;
+      pending.dx = 0;
+      pending.dy = 0;
+      try {
+        webview.postMessage(JSON.stringify({ type: 'resize', dx, dy }));
+      } catch {
+        /* 外壳未处理时忽略 */
+      }
+    };
+    grip.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      grip.setPointerCapture(event.pointerId);
+      lastX = event.clientX;
+      lastY = event.clientY;
+      document.body.classList.add('is-resizing');
+    });
+    grip.addEventListener('pointermove', (event) => {
+      if (!grip.hasPointerCapture(event.pointerId)) return;
+      const dx = event.clientX - lastX;
+      const dy = event.clientY - lastY;
+      if (!dx && !dy) return;
+      lastX = event.clientX;
+      lastY = event.clientY;
+      // 累积到下一帧再发，避免每个 pointermove 都跨进程通信
+      pending.dx += dx;
+      pending.dy += dy;
+      if (!pending.scheduled) {
+        pending.scheduled = true;
+        requestAnimationFrame(flush);
+      }
+    });
+    const endDrag = (event) => {
+      try {
+        grip.releasePointerCapture(event.pointerId);
+      } catch {
+        /* 忽略 */
+      }
+      flush();
+      document.body.classList.remove('is-resizing');
+    };
+    grip.addEventListener('pointerup', endDrag);
+    grip.addEventListener('pointercancel', endDrag);
+  }
+
   // 打断：向成员发出控制指令，由它自己的通道执行 turn/interrupt
   document.addEventListener('click', (event) => {
     const button = event.target.closest('[data-interrupt]');

@@ -373,11 +373,33 @@ namespace MessageBoard.Shell
                 {
                     ApplyTheme(theme.GetString() ?? "light");
                 }
+
+                // 页面右下角的拖拽角标：按累计位移实时改窗口尺寸。
+                // 用"增量"而不是绝对坐标，避免与 WebView2 的 DPI/缩放换算打架。
+                if (doc.RootElement.TryGetProperty("type", out var type) &&
+                    string.Equals(type.GetString(), "resize", StringComparison.OrdinalIgnoreCase) &&
+                    doc.RootElement.TryGetProperty("dx", out var dx) &&
+                    doc.RootElement.TryGetProperty("dy", out var dy))
+                {
+                    ResizeBy(dx.GetDouble(), dy.GetDouble());
+                }
             }
             catch
             {
                 /* 页面消息异常不影响外壳 */
             }
+        }
+
+        /// <summary>按位移调整窗口大小（受 MinWidth/MinHeight 约束）。</summary>
+        private void ResizeBy(double dx, double dy)
+        {
+            if (double.IsNaN(dx) || double.IsNaN(dy)) return;
+            var width = Width;
+            var height = Height;
+            if (double.IsNaN(width) || width <= 0) width = ActualWidth;
+            if (double.IsNaN(height) || height <= 0) height = ActualHeight;
+            Width = Math.Max(MinWidth, width + dx);
+            Height = Math.Max(MinHeight, height + dy);
         }
     }
 }

@@ -993,6 +993,46 @@ textarea:focus {
   border: 3px solid var(--bg);
 }
 
+/* ── 右下角拖拽角标（仅桌面外壳）─────────────────────────────
+   无边框窗口虽然四边 6px 可拖，但看不见；这个角标给出明确的可用区域。
+   普通浏览器里没有 window.chrome.webview，角标保持隐藏（网页无权改浏览器窗口）。 */
+
+.grip {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  z-index: 60;
+  cursor: nwse-resize;
+  touch-action: none;
+  /* 两道斜线，最简的"可拖拽"提示 */
+  background-image:
+    linear-gradient(135deg, transparent 44%, var(--ink-3) 44%, var(--ink-3) 56%, transparent 56%),
+    linear-gradient(135deg, transparent 70%, var(--ink-3) 70%, var(--ink-3) 80%, transparent 80%);
+  background-size: 18px 18px;
+  background-position: right bottom;
+  opacity: 0.5;
+  transition: opacity 0.16s var(--ease);
+}
+
+.grip:hover,
+.grip:active {
+  opacity: 1;
+}
+
+/* 拖拽时全局锁住文本选择，避免选中页面文字 */
+body.is-resizing {
+  user-select: none;
+  cursor: nwse-resize;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grip {
+    transition: none;
+  }
+}
+
 /* ── 窄窗：侧栏整体折叠成抽屉，正文占满 ─────────────────────
    之前是"把侧栏堆到正文上方"，结果又挤又高（成员徽标竖着堆叠）。
    现在窄窗下侧栏完全不占位置，点标题栏的按钮才滑出。 */
