@@ -207,6 +207,20 @@ export class DeliveryLedger {
   }
 
   /**
+   * 人类在界面上点「重新派发」：清空续租计数、回到 queued，重新给一条完整的窗口。
+   * 与 markRecoveredQueued（服务重启恢复）分开记，审计里能分清是"人"还是"基础设施"做的。
+   */
+  markRequeued(messageId, agent) {
+    const key = DeliveryLedger.keyOf(messageId, agent);
+    if (!this.records.has(key)) return null;
+    return this.#set(messageId, agent, 'queued', {
+      note: '人工重新派发（界面上点了「重新派发」）',
+      deadlineAt: null,
+      renewals: 0,
+    });
+  }
+
+  /**
    * 服务重启恢复：把台账从重启前残留的 delivered/working **拉回 queued**。
    * 否则会出现"唤醒队列里有这条、台账却还写着 working"的不一致——
    * 面板显示与真实投递状态对不上，正是用户说的"重启后像卡住"。

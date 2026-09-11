@@ -26,6 +26,7 @@ import path from 'node:path';
 import { spawn, execSync } from 'node:child_process';
 
 import { stripBom } from '../server/protocol.js';
+import { acquireLock } from '../tools/channel-lock.mjs';
 
 /**
  * 找出本机应给 Codex 用的 HTTP 代理。
@@ -97,6 +98,8 @@ const IDENTITY = {
 };
 
 const RUNTIME_DIR = flag('runtime', path.join(process.cwd(), 'data', 'runner', AGENT));
+// 归属锁句柄：心跳时顺带续约，退出时释放（codex 也是"一个成员一个通道"）
+let lockHandle = null;
 const THREADS_FILE = () => path.join(RUNTIME_DIR, 'threads.json');
 // 在跑回合的落盘记录：通道若被重启/杀掉，下一次启动能立刻上报"这一轮丢了"，
 // 让黑板立即重投，而不是干等 180 秒租约。
@@ -696,6 +699,28 @@ async function handleControl(control) {
 }
 
 async function main() {
+  // 归属锁：codex 也是"一个成员一个通道"。此前它不写锁，于是 watchdog 与哨兵都可能在
+  // 它已经在跑时再拉起一个 app-server，出现两个 codex.exe 抢同一个身份（实测见过）。
+  const lock = acquireLock(RUNTIME_DIR, { agent: AGENT });
+  if (lock.held) {
+    log(`同一成员已有托管通道在跑（${lock.reason}）；本进程退出。`);
+    return;
+  }
+  lockHandle = lock;
+  const releaseLock = () => lock.release?.();
+  process.on('exit', releaseLock);
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    try {
+      process.on(signal, () => {
+        releaseLock();
+        process.exit(0);
+      });
+    } catch {
+      /* 忽略 */
+    }
+  }
+  log(lock.state === 'error' ? `归属锁警告：${lock.reason}（继续启动）` : `已取得归属锁（${lock.reason}）`);
+
   await channel.start();
 
   const joined = await call('/api/join', {
@@ -767,7 +792,7 @@ async function main() {
           state: active ? 'busy' : 'online',
           note: active ? `正在处理 #${active.seq}` : 'Codex 通道在线',
         }),
-      });
+      }).finally(() => lockHandle?.beat?.());
       const result = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=${WAIT_SECONDS}`);
       if (result.wake?.type === 'control') {
         await handleControl(result.wake);

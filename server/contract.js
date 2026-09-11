@@ -94,6 +94,8 @@ export function contractOf(views = [], options = {}) {
     severity: top.severity,
     waitingSeconds: top.waitingSeconds,
     seq: top.view.seq ?? null,
+    // 让界面能给"这一条"直接发「重新派发」：只有 messageId 才能精确定位到那次投递
+    messageId: top.view.messageId ?? null,
     open: open.length + expired.length,
     detail: top.detail,
   };

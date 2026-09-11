@@ -87,6 +87,9 @@ const HELP = `Message Board · 留言板
   GET  /api/export?format=md|jsonl     导出黑板
   POST /api/message                    追加留言
   POST /api/heartbeat                  心跳（在线状态）
+  POST /api/interrupt                  打断某成员正在进行的任务
+  POST /api/requeue                    重新派发一条违约的点名（{agent, messageId}）
+  GET  /api/engines                    可用引擎清单（核心不依赖任何一个）
 `;
 
 /**
@@ -890,6 +893,32 @@ export function createBoardServer(overrides = {}) {
           wake: result.envelope,
           source: result.from,
           waitedMs: Date.now() - started,
+        });
+      }
+
+      // ---- 重新派发某条点名（人类在界面上要求"再来一次"）----
+      if (pathname === '/api/requeue' && req.method === 'POST') {
+        const payload = await readJson(req, res);
+        if (!payload) return undefined;
+        const id = String(payload.agent || '').trim().toLowerCase();
+        const messageId = String(payload.messageId || payload.replyTo || '').trim();
+        if (!id || !messageId) {
+          return json(res, 400, { ok: false, code: 'MISSING_FIELD', error: '需要 agent 与 messageId。' });
+        }
+        const target = registry.get(id);
+        if (!target) return json(res, 404, { ok: false, code: 'UNKNOWN_AGENT', error: `名册中没有成员 ${id}。` });
+        const original = store.list({ limit: store.historyInMemory }).find((item) => item.id === messageId);
+        if (!original) return json(res, 404, { ok: false, code: 'UNKNOWN_MESSAGE', error: '找不到要重新派发的那条留言。' });
+
+        const record = delivery.markRequeued(messageId, id);
+        // 重新入队：有监听通道会立刻收到；没有就继续排队，等它读板。
+        wake.requeue(id, wake.envelope(original, id));
+        if (record) broadcast('delivery', record);
+        return json(res, 200, {
+          ok: true,
+          agent: id,
+          delivery: delivery.forMessage(messageId),
+          note: '已重新入队：有监听通道会立刻收到，否则等它下次读板。',
         });
       }
 

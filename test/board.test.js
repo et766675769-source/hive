@@ -850,6 +850,52 @@ test('接入自检：doctor 逐条说清差哪一项，并给出下一步命令'
   });
 });
 
+test('契约：人类可以「重新派发」一条违约的点名，让它重新走一遍投递', async () => {
+  await withBoard(
+    async ({ base, join, post, state }) => {
+      await join({ agent: 'ghost', name: '幽灵', engine: 'rule-based' });
+      const mention = await (
+        await post('/api/message', { agent: 'local', kind: 'message', text: '@ghost 请回答' })
+      ).json();
+
+      // 没挂通道 → 排队 → 过 ack 窗口 → 契约违约（没人取件），并带上 messageId 供界面按钮定位
+      await waitFor(async () => {
+        const body = await state('?limit=10');
+        const member = body.agents.find((agent) => agent.id === 'ghost');
+        return member && member.contract && member.contract.severity === 'alert' ? member : null;
+      });
+      const before = await state('?limit=10');
+      const member = before.agents.find((agent) => agent.id === 'ghost');
+      assert.equal(member.contract.state, 'not-fetched');
+      assert.equal(member.contract.messageId, mention.message.id, '契约要给出 messageId，界面才能"这一条"重新派发');
+
+      const requeued = await (
+        await fetch(`${base}/api/requeue`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent: 'ghost', messageId: mention.message.id }),
+        })
+      ).json();
+      assert.equal(requeued.ok, true);
+      assert.match(requeued.note, /重新入队/);
+
+      // 重新派发后，这一条的投递回到 queued（窗口重新计），不再是"作废"
+      const record = requeued.delivery[0];
+      assert.equal(record.state, 'queued');
+      assert.match(record.note, /人工重新派发/);
+      assert.equal(record.ackDeadlineAt, null, '回执截止要清零，重新给完整窗口');
+
+      // 缺参数要明确报错
+      const bad = await (
+        await fetch(`${base}/api/requeue`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: 'ghost' }) })
+      ).json();
+      assert.equal(bad.ok, false);
+      assert.equal(bad.code, 'MISSING_FIELD');
+    },
+    { delivery: { ackTimeoutSeconds: 1 } },
+  );
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {

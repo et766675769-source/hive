@@ -467,6 +467,13 @@ function renderRoster() {
           ${repliedBadge}
           ${undeclared}
           ${
+            agent.contract && agent.contract.severity === 'alert' && agent.contract.messageId
+              ? `<button class="member__interrupt" type="button" data-requeue="${esc(agent.id)}:${esc(agent.contract.messageId)}" title="契约已违约（${esc(
+                  agent.contract.label,
+                )}）：让这条点名重新走一遍投递">重新派发</button>`
+              : ''
+          }
+          ${
             agent.openDeliveries
               ? `<button class="member__interrupt" type="button" data-interrupt="${esc(agent.id)}" title="打断它正在进行的任务（${
                   agent.openDeliveries
@@ -1183,6 +1190,27 @@ function bind() {
         refresh();
       })
       .catch((error) => toast(`打断失败：${error.message}`))
+      .finally(() => {
+        button.disabled = false;
+      });
+  });
+
+  // 重新派发：契约违约后，让这一条点名重新走一遍投递（人可确认的补救动作）
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-requeue]');
+    if (!button) return;
+    const [agentId, messageId] = button.dataset.requeue.split(':');
+    if (!window.confirm(`重新派发 @${agentId} 的这条点名？哨兵也会在违约时自动接管，这里是手动先走一步。`)) return;
+    button.disabled = true;
+    api('/api/requeue', {
+      method: 'POST',
+      body: JSON.stringify({ agent: agentId, messageId }),
+    })
+      .then((result) => {
+        toast(result.note || `已重新派发 @${agentId}`);
+        refresh();
+      })
+      .catch((error) => toast(`重新派发失败：${error.message}`))
       .finally(() => {
         button.disabled = false;
       });
