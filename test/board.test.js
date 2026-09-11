@@ -587,19 +587,19 @@ test('投递：只挂心跳但不自报在处理该条时，仍按租约超时�
       const waiting = fetch(`${base}/api/inbox?agent=marvis&wait=3`).then((r) => r.json());
       await new Promise((resolve) => setTimeout(resolve, 200));
       const asked = await (await post('/api/message', { agent: 'deepseek', text: '@marvis 长任务。' })).json();
-      await waiting;
+      assert.equal(asked.delivery[0].state, 'delivered');
+      await waiting; // 取走了这一条
 
-      // 在线、也在挂长轮询，但从不自报"在处理这一条" —— 说明活其实丢了
+      // 之后**只心跳、不再取件**，且从不自报"在处理这一条" → 说明活其实丢了
       for (let i = 0; i < 5; i += 1) {
-        const poll = fetch(`${base}/api/inbox?agent=marvis&wait=2`).then((r) => r.json());
         await new Promise((resolve) => setTimeout(resolve, 600));
         await post('/api/heartbeat', { agent: 'marvis', state: 'online', note: '空闲' });
-        await poll;
       }
 
       const payload = await state();
       const record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
       assert.equal(record.state, 'queued', '没自报在处理，就该按租约回收重投，而不是被无限续租掩盖');
+      assert.match(record.note, /回收|重投/);
     },
     { delivery: { leaseSeconds: 1, maxAttempts: 2, sweepSeconds: 1 } },
   );
@@ -825,6 +825,23 @@ test('投递：送达后长期没有确认 → 判定信封丢失并重投', asy
     },
     { delivery: { leaseSeconds: 60, maxAttempts: 2, sweepSeconds: 1, ackTimeoutSeconds: 1 } },
   );
+});
+
+test('投递：从队列取件时，投递状态更新为已送达', async () => {
+  await withBoard(async ({ base, join, post, state }) => {
+    await join({ agent: 'deepseek', name: 'DeepSeek' });
+    await join({ agent: 'marvis', name: 'Marvis' });
+
+    const asked = await (await post('/api/message', { agent: 'deepseek', text: '@marvis 请确认。' })).json();
+    assert.equal(asked.delivery[0].state, 'queued', '无人监听时应先入队');
+
+    const inbox = await (await fetch(`${base}/api/inbox?agent=marvis&wait=1`)).json();
+    assert.equal(inbox.wake.seq, asked.message.seq);
+
+    const payload = await state();
+    const record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
+    assert.equal(record.state, 'delivered', '从队列取走信件后，投递状态必须推进为已送达（否则面板永远显示待投递）');
+  });
 });
 
 /* ── 静态资源与存储 ─────────────────────────────────────── */

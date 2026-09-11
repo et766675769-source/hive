@@ -167,6 +167,18 @@ export function createBoardServer(overrides = {}) {
   const instanceId = `${startedAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const clients = new Set();
 
+  // 审计日志：每次写留言的**结果**（成功/被拒/疑似密钥/空话）都记一行。
+  // "成员说回了但面板没有"这类问题，看这里就知道是"没发"还是"发了被拒"。
+  const auditFile = path.join(config.board.dataDir, 'logs', 'audit.log');
+  function audit(line) {
+    try {
+      fs.mkdirSync(path.dirname(auditFile), { recursive: true });
+      fs.appendFileSync(auditFile, `${localIso()} ${line}\n`, 'utf8');
+    } catch {
+      /* 审计落盘失败不影响主流程 */
+    }
+  }
+
   function broadcast(event, data) {
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const res of clients) {
@@ -692,7 +704,10 @@ export function createBoardServer(overrides = {}) {
           agentsById: registry.byId(),
           guards: config.guards,
         });
-        if (!check.ok) return json(res, 400, { ok: false, code: check.code, error: check.error });
+        if (!check.ok) {
+          audit(`reject ${agentId}: ${check.code} — ${check.error}`);
+          return json(res, 400, { ok: false, code: check.code, error: check.error });
+        }
 
         // 幂等：同一个 idempotencyKey 只落一条留言（重试不再产生重复）
         const idempotencyKey = payload.idempotencyKey ? String(payload.idempotencyKey).slice(0, 200) : '';
@@ -724,6 +739,11 @@ export function createBoardServer(overrides = {}) {
             ...(idempotencyKey ? { idempotencyKey } : {}),
           },
         });
+        audit(
+          `post #${message.seq} ${agent.id} kind=${message.kind} replyTo=${payload.replyTo ? 'yes' : 'no'}${
+            check.flags.includes('ACK_ONLY') ? ' [ACK_ONLY]' : ''
+          }${check.flags.includes('SUSPECTED_SECRET') ? ' [SUSPECTED_SECRET]' : ''}`,
+        );
         presence.beat(agent.id, { state: 'online', note: '正在发言', session: payload.session, source: 'message' });
 
         // 投递台账：只给**真实成员**建投递；隐藏的本机操作员是人类，不参与投递
@@ -813,6 +833,13 @@ export function createBoardServer(overrides = {}) {
         const inboxAbort = new AbortController();
         res.on('close', () => inboxAbort.abort());
         const result = await wake.inbox(agent.id, { waitMs: waitSeconds * 1000, signal: inboxAbort.signal });
+        // 关键：**从队列取走**信件时，也要把投递状态推进到「已送达」。
+        // （直连投递已在 POST /api/message 里标过，这里只补队列这条路径；
+        //   否则"信件被取走了、但面板还显示待投递/待回应"——看起来就像没反应。）
+        if (result.from === 'queued' && result.envelope && result.envelope.type === 'mention') {
+          const record = delivery.markDelivered(result.envelope.messageId, agent.id, { channel: 'inbox', ok: true });
+          if (record) broadcast('delivery', record);
+        }
         return json(res, 200, {
           ok: true,
           agent: agent.id,
