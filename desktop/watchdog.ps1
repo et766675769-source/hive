@@ -85,6 +85,43 @@ function Start-DeepseekListener {
     -ArgumentList @('tools/mb.js', 'watch', 'deepseek', '--wait', '20', '--note', 'watchdog') | Out-Null
 }
 
+# Member list is data-driven: add an entry to desktop\watchdog-members.json to adopt a
+# new member, no script edit needed. Falls back to the built-in pair when the file is absent.
+function Get-WatchedMembers {
+  $file = Join-Path $PSScriptRoot 'watchdog-members.json'
+  if (Test-Path $file) {
+    try {
+      $parsed = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
+      $list = @()
+      foreach ($item in $parsed.members) {
+        if ($item.enabled -eq $false) { continue }
+        if (-not $item.id -or -not $item.start) { continue }
+        $list += [pscustomobject]@{ id = [string]$item.id; start = @($item.start) }
+      }
+      if ($list.Count -gt 0) { return $list }
+    } catch {
+      Write-Log "watchdog: watchdog-members.json unreadable - falling back to built-ins ($($_.Exception.Message))"
+    }
+  }
+  return @(
+    [pscustomobject]@{ id = 'codex'; start = @('cmd.exe', '/c', 'desktop\start-channel.cmd', '--no-pause') },
+    [pscustomobject]@{ id = 'deepseek'; start = @('node', 'tools\mb.js', 'watch', 'deepseek', '--wait', '20', '--note', 'watchdog') }
+  )
+}
+
+function Start-Member($member) {
+  $exe = [string]$member.start[0]
+  $rest = @()
+  if ($member.start.Count -gt 1) { $rest = @($member.start[1..($member.start.Count - 1)]) }
+  $params = @{ FilePath = $exe; WorkingDirectory = $root; WindowStyle = 'Hidden'; ArgumentList = $rest }
+  # Do not redirect for cmd-style launchers: they spawn their own children and write their own logs.
+  if ($exe -notmatch 'cmd\.exe$') {
+    $params.RedirectStandardOutput = (Join-Path $logDir "$($member.id).log")
+    $params.RedirectStandardError = (Join-Path $logDir "$($member.id).err.log")
+  }
+  Start-Process @params | Out-Null
+}
+
 function Test-Listening($state, [string]$id) {
   if (-not $state) { return $false }
   $entry = $state.agents | Where-Object { $_.id -eq $id }
@@ -95,6 +132,9 @@ function Test-Listening($state, [string]$id) {
   if ($channel.callback -and $channel.callback.ok) { return $true }
   return $false
 }
+
+$watched = Get-WatchedMembers
+Write-Log ("watchdog: watching members: " + (($watched | ForEach-Object { $_.id }) -join ', '))
 
 Write-Log "watchdog: start (port=$Port interval=${IntervalSeconds}s root=$root)"
 Write-Log "watchdog: press Ctrl+C to stop. Each line below is one check." -ConsoleOnly
@@ -126,15 +166,17 @@ try {
           }) -join '  '
         Write-Log "check #$round - $listening  (states: $online)" -ConsoleOnly
 
-        if (-not (Test-Listening $state 'codex')) {
-          Write-Log "watchdog: codex is not listening (state: $online) - starting channel"
-          Start-CodexChannel
-          Start-Sleep -Seconds 10
-        }
-        if (-not (Test-Listening $state 'deepseek')) {
-          Write-Log "watchdog: deepseek is not listening (state: $online) - starting listener"
-          Start-DeepseekListener
-          Start-Sleep -Seconds 5
+        # Data-driven: start whichever watched member has no live channel right now
+        # (this covers members that joined after the watchdog was written).
+        foreach ($member in $watched) {
+          if (Test-Listening $state $member.id) { continue }
+          Write-Log "watchdog: $($member.id) is not listening (state: $online) - starting it"
+          try {
+            Start-Member $member
+          } catch {
+            Write-Log "watchdog: failed to start $($member.id): $($_.Exception.Message)"
+          }
+          Start-Sleep -Seconds 8
         }
       }
     } catch {

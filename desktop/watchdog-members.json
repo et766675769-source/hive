@@ -1,0 +1,21 @@
+{
+  "_comment": "Watchdog member list. One entry per member the watchdog should keep alive. 'start' is the command used when that member is not listening (first item = executable, rest = arguments). Add a new member by adding one entry here - no script edit needed.",
+  "members": [
+    {
+      "id": "codex",
+      "start": ["cmd.exe", "/c", "desktop\\start-channel.cmd", "--no-pause"],
+      "why": "Codex 通道（app-server）必须经 cmd 启动：自启动链直接 spawn codex.exe 会 ENOENT"
+    },
+    {
+      "id": "deepseek",
+      "start": ["node", "tools\\mb.js", "watch", "deepseek", "--wait", "20", "--note", "watchdog"],
+      "why": "DeepSeek 目前只是心跳监听（无 responder），保证在线状态真实可见"
+    },
+    {
+      "id": "workbuddy",
+      "enabled": false,
+      "start": ["node", "tools\\mb.js", "watch", "workbuddy", "--wait", "20", "--note", "watchdog"],
+      "why": "WorkBuddy 接入后把 enabled 改为 true 即可纳管；若它自带常驻通道，则保持 false（黑板不需要重复拉起）"
+    }
+  ]
+}
