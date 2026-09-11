@@ -130,7 +130,15 @@ function assetsVersion(root) {
 export function createBoardServer(overrides = {}) {
   const config = loadConfig(overrides);
   fs.mkdirSync(config.board.dataDir, { recursive: true });
-  const assets = assetsVersion(config.root);
+  // 前端资源版本：带 2 秒缓存地**动态**计算，而不是启动时算一次。
+  // 否则在同一个服务进程里热替换 web/ 文件后，已打开的页面不会自动刷新
+  //（只有服务重启才会被 instanceId 兜住）。
+  let assetsCache = { at: 0, value: assetsVersion(config.root) };
+  function currentAssets() {
+    const now = Date.now();
+    if (now - assetsCache.at > 2000) assetsCache = { at: now, value: assetsVersion(config.root) };
+    return assetsCache.value;
+  }
 
   const store = new Store({
     dataDir: config.board.dataDir,
@@ -381,7 +389,7 @@ export function createBoardServer(overrides = {}) {
       protocol: SCHEMA,
       serverTime: localIso(),
       serverDisplayTime: localDisplay(),
-      assets,
+      assets: currentAssets(),
       board: {
         name: config.board.name,
         nameZh: config.board.nameZh,
@@ -629,7 +637,7 @@ export function createBoardServer(overrides = {}) {
           'X-Accel-Buffering': 'no',
         });
         res.write('retry: 3000\n\n');
-        res.write(`event: hello\ndata: ${JSON.stringify({ protocol: SCHEMA, serverTime: localIso(), assets, instanceId })}\n\n`);
+        res.write(`event: hello\ndata: ${JSON.stringify({ protocol: SCHEMA, serverTime: localIso(), assets: currentAssets(), instanceId })}\n\n`);
         clients.add(res);
         const keepAlive = setInterval(() => {
           try {

@@ -472,6 +472,9 @@ function scrollToNewest({ smooth = true } = {}) {
 function onNewMessage(message) {
   state.messages.push(message);
   if (state.messages.length > 2000) state.messages.splice(0, state.messages.length - 2000);
+  // 必须同步 seenSeq：否则下一次 15 秒 ping 会误判"漏了消息"而全量刷新，
+  // 造成多余重渲染并可能打断阅读位置。
+  if (typeof message.seq === 'number' && message.seq > state.seenSeq) state.seenSeq = message.seq;
   const shouldFollow = state.following || distanceFromBottom() < 90;
   appendMessage(message);
   renderBoardSub();
@@ -538,42 +541,71 @@ function noteInstance(payload) {
 
 async function refresh({ quiet = true } = {}) {
   try {
-    const payload = await api('/api/state?limit=300');
-    const incomingLatest = (payload.messages || []).reduce((max, msg) => Math.max(max, msg.seq), 0);
+    // 带回游标：服务端按 seq > since 过滤，因此断线期间哪怕新增超过 300 条，
+    // 也能完整补回（旧的固定 limit=300 只取末尾 300 条，中间会永久缺号）。
+    const since = state.seenSeq > 0 ? state.seenSeq : 0;
+    const payload = await api(`/api/state?limit=300${since ? `&since=${since}` : ''}`);
+    const incoming = payload.messages || [];
     const instance = (payload.board && payload.board.instanceId) || null;
     if (instance && state.instanceId && instance !== state.instanceId) {
       state.instanceId = instance;
-      applyState(payload, { animateLast: true });
+      // 换实例：增量游标可能对不上，强制全量
+      const full = await api('/api/state?limit=300');
+      applyState(full, { animateLast: true });
       toast('服务已重启，已重新同步');
       return;
     }
     state.instanceId = instance || state.instanceId;
+
+    if (since > 0 && incoming.length) {
+      // 增量补拉：并入现有列表（按 seq 去重），**不能替换**——载荷里只有增量
+      const known = new Set(state.messages.map((msg) => msg.seq));
+      const added = incoming.filter((msg) => !known.has(msg.seq)).sort((a, b) => a.seq - b.seq);
+      if (added.length) {
+        const shouldFollow = state.following || distanceFromBottom() < 90;
+        state.messages = [...state.messages, ...added];
+        if (state.messages.length > 5000) state.messages.splice(0, state.messages.length - 5000);
+        state.seenSeq = Math.max(state.seenSeq, ...added.map((msg) => msg.seq));
+        for (const message of added) appendMessage(message);
+        if (shouldFollow) scrollToNewest({ smooth: false });
+      }
+      // 其余投影照常同步（投递/唤醒/议题/头像/成员）
+      syncSideData(payload);
+      return;
+    }
+
+    const incomingLatest = incoming.reduce((max, msg) => Math.max(max, msg.seq), 0);
     if (incomingLatest !== state.seenSeq) {
       const previousCount = state.messages.length;
       applyState(payload, { animateLast: previousCount > 0 });
       if (state.following) scrollToNewest({ smooth: false });
       return;
     }
-    // 消息没变：**所有侧栏/统计字段都要同步**，不能只更新一部分——
-    // 否则"投递中/待唤醒/主题/头像"会一直停在旧值，直到某条新留言出现。
-    state.agents = payload.agents || state.agents;
-    state.pending = payload.pending || state.pending;
-    state.presence = payload.presence || state.presence;
-    state.stats = payload.stats || state.stats;
-    state.deliverySummary = payload.deliverySummary || state.deliverySummary;
-    state.wakeQueue = payload.wakeQueue || state.wakeQueue;
-    state.topics = payload.topics || state.topics;
-    state.avatars = payload.avatars || state.avatars;
-    // 留言的 delivery/wake 投影也要写回：SSE 是"就地改徽标"的，
-    // 若 state.messages 还是旧的，下一次全量渲染就会把徽标覆盖回去。
-    state.messages = payload.messages || state.messages;
-    renderRoster();
-    renderBoardSub();
-    renderRailMeta();
-    syncMessageChips();
+    syncSideData(payload, { withMessages: true });
   } catch (error) {
     if (!quiet) toast(`读取黑板失败：${error.message}`);
   }
+}
+
+/**
+ * 同步"侧栏/统计/投影"这一类字段。
+ * withMessages=true 时也把留言的 delivery/wake 投影写回（SSE 是就地改徽标的，
+ * 若 state.messages 不同步，下一次全量渲染会把徽标覆盖回旧值）。
+ */
+function syncSideData(payload, { withMessages = false } = {}) {
+  state.agents = payload.agents || state.agents;
+  state.pending = payload.pending || state.pending;
+  state.presence = payload.presence || state.presence;
+  state.stats = payload.stats || state.stats;
+  state.deliverySummary = payload.deliverySummary || state.deliverySummary;
+  state.wakeQueue = payload.wakeQueue || state.wakeQueue;
+  state.topics = payload.topics || state.topics;
+  state.avatars = payload.avatars || state.avatars;
+  if (withMessages && payload.messages) state.messages = payload.messages;
+  renderRoster();
+  renderBoardSub();
+  renderRailMeta();
+  syncMessageChips();
 }
 
 function setConnection(status) {

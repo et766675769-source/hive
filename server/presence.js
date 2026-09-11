@@ -182,9 +182,24 @@ export class Presence {
     };
   }
 
+  /**
+   * 变更签名：必须包含**界面上会显示的东西**。
+   * 早先只比 `id:state`，于是"状态没变但 lastSeen/note/心跳间隔变了"的心跳不会通知订阅者，
+   * 面板上的「上次心跳 X 秒前」「心跳 ~25s」只能等 30 秒轮询——这就是"成员状态不同步"的根因。
+   * ageSeconds 按 15 秒分桶，避免每几秒就推一次无意义刷新。
+   */
   #signature() {
     return this.snapshot()
-      .map((item) => `${item.id}:${item.state}`)
+      .map((item) =>
+        [
+          item.id,
+          item.state,
+          item.declared,
+          item.note,
+          item.heartbeatIntervalSeconds,
+          Math.floor((item.ageSeconds ?? 0) / 15),
+        ].join(':'),
+      )
       .join('|');
   }
 
