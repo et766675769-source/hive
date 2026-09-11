@@ -71,6 +71,10 @@ export class Registry {
       constraints: tidy(agent.constraints, 200),
       channel: ['http', 'file', 'desktop'].includes(agent.channel) ? agent.channel : 'http',
       kind: agent.kind === 'operator' ? 'operator' : 'ai',
+      // 回应形态：autonomous = 被 @ 后能自己产出实质回复；
+      // manual = 需要人类去唤起它的对话（例如只能人工交互的网页版）。
+      // 接入方必须如实声明——manual 成员的点名会被标成「待人工唤起」，而不是记它超时。
+      respondMode: agent.respondMode === 'manual' ? 'manual' : 'autonomous',
       hidden: Boolean(agent.hidden),
       avatar: normalizeAvatar(agent.avatar),
       wake: normalizeWake(agent.wake, agent.callback),

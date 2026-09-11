@@ -105,6 +105,19 @@ function linkifyMentions(escaped) {
   return escaped.replace(/@([A-Za-z0-9][A-Za-z0-9_-]{0,31})/g, '<b>@$1</b>');
 }
 
+/** 正文格式化：转义 + 点名高亮 + 换行成 <br>。 */
+function formatBody(text) {
+  return linkifyMentions(esc(text)).replace(/\n/g, '<br>');
+}
+
+/** 结论摘要：AI 回复按「结论在前」写，所以取开头一段即可，点开才看全文。 */
+function summarizeText(text) {
+  const flat = String(text).replace(/\s+/g, ' ').trim();
+  const cap = 260;
+  if (flat.length <= cap) return flat;
+  return `${flat.slice(0, cap)}…`;
+}
+
 function clockOf(iso) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return String(iso || '');
@@ -226,6 +239,17 @@ function messageNode(message, { animate = true } = {}) {
     ? `<img class="mono__img" src="${esc(avatar)}" alt="${esc(message.agentName || message.agent)}" />`
     : esc(agent ? agent.monogram : '?');
 
+  // AI 的长回复默认折叠：结论在前，点开才看全文
+  const substantive = ['reply', 'decision', 'evidence', 'handoff'].includes(message.kind);
+  const collapsed = substantive && String(message.text).length > 360;
+  const bodyHtml = collapsed
+    ? `<div class="msg__text msg__text--collapsed" data-collapsible>
+         <p class="msg__summary">${formatBody(summarizeText(message.text))}</p>
+         <div class="msg__full" hidden>${formatBody(message.text)}</div>
+         <button class="msg__expand" type="button" aria-expanded="false">展开全文</button>
+       </div>`
+    : `<p class="msg__text">${formatBody(message.text)}</p>`;
+
   article.innerHTML = `
     <div class="msg__mono${avatar ? ' msg__mono--img' : ''}">${mono}</div>
     <div class="msg__body">
@@ -238,7 +262,7 @@ function messageNode(message, { animate = true } = {}) {
         <span data-role="wakes">${wakeChips}</span>
         <span data-role="deliveries">${deliveryChips}</span>
       </div>
-      <p class="msg__text">${linkifyMentions(esc(message.text))}</p>
+      ${bodyHtml}
       ${mentions}
     </div>`;
   return article;
@@ -367,16 +391,27 @@ function renderRoster() {
       const queuedBadge = queued
         ? `<span class="pending pending--quiet" title="有点名还没送达，等它下次长轮询或读板">待唤醒 ${queued}</span>`
         : '';
-      // 投递计数：超时未回比"历史上有回过"更能说明这个成员现在到底会不会回应
-      const dc = agent.deliveryCounts || {};
-      const expiredBadge = dc.expired
-        ? `<span class="pending pending--flag" title="有 ${dc.expired} 条点名已判超时/被叫停（该成员当前可能只挂心跳、不会回应）">超时未回 ${dc.expired}</span>`
-        : '';
-      const repliedBadge = dc.replied
-        ? `<span class="pending pending--quiet" title="累计已实质回应 ${dc.replied} 条点名">已回应 ${dc.replied}</span>`
-        : '';
       // 接入验收：服务端按「心跳 / 唤醒通道 / 点名闭环」三项证据判定，不看自述
       const acc = agent.acceptance;
+      // 回应形态：manual = 需要人类去唤起它的对话（黑板不会记它超时，只显示「待人工唤起」）
+      const manual = agent.respondMode === 'manual';
+      const win = (acc && acc.loopWindowHours) || 24;
+      const modeBadge = manual
+        ? '<span class="pending pending--quiet" title="该成员声明需要人类唤起它的对话才能产生回复：被 @ 后不会自动回答，黑板不会因此记它超时">需人工唤起</span>'
+        : '';
+      const pendingBadge = pending
+        ? manual
+          ? `<span class="pending pending--quiet" title="被点名，等待人类去唤起它的对话">待人工唤起 ${pending}</span>`
+          : `<span class="pending" title="被点名但尚无实质回复">待回应 ${pending}</span>`
+        : '';
+      // 投递计数：只统计最近窗口内的（旧账不该永久给成员挂牌子）
+      const dc = agent.deliveryCounts || {};
+      const expiredBadge = dc.expired
+        ? `<span class="pending pending--flag" title="最近 ${win} 小时内有 ${dc.expired} 条点名重试用尽仍无实质回复（该成员当前可能只挂心跳、不会回应）">超时未回 ${dc.expired}</span>`
+        : '';
+      const repliedBadge = dc.replied
+        ? `<span class="pending pending--quiet" title="最近 ${win} 小时内实质回应 ${dc.replied} 条点名">已回应 ${dc.replied}</span>`
+        : '';
       const accBadge = !acc
         ? ''
         : acc.status === 'verified'
@@ -395,7 +430,8 @@ function renderRoster() {
         </span>
         <span class="member__badges">
           ${accBadge}
-          ${pending ? `<span class="pending" title="被点名但尚无实质回复">待回应 ${pending}</span>` : ''}
+          ${modeBadge}
+          ${pendingBadge}
           ${queuedBadge}
           ${expiredBadge}
           ${repliedBadge}
@@ -999,6 +1035,21 @@ function bind() {
   });
 
   el.composer.addEventListener('submit', sendMessage);
+
+  // AI 长回复的折叠/展开：结论在前，点开看全文
+  el.stream.addEventListener('click', (event) => {
+    const button = event.target.closest('.msg__expand');
+    if (!button) return;
+    const wrap = button.closest('[data-collapsible]');
+    if (!wrap) return;
+    const full = wrap.querySelector('.msg__full');
+    const summary = wrap.querySelector('.msg__summary');
+    const opening = full.hidden;
+    full.hidden = !opening;
+    summary.hidden = opening;
+    button.textContent = opening ? '收起' : '展开全文';
+    button.setAttribute('aria-expanded', String(opening));
+  });
 
   // 窄窗：侧栏整体折叠成抽屉（宽窗下这些样式不生效，等同于一直显示）
   const shellEl = document.querySelector('.shell');

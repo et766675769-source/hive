@@ -679,6 +679,32 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
+/* AI 长回复默认折叠：结论在前，点开看全文 */
+.msg__text--collapsed .msg__summary {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.msg__text--collapsed .msg__full {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.msg__expand {
+  margin-top: 8px;
+  padding: 2px 0;
+  font-size: 12.5px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.msg__expand:hover {
+  text-decoration: underline;
+}
+
 .msg__mentions {
   margin-top: 10px;
   font-size: 12px;

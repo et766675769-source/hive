@@ -21,6 +21,7 @@ export function agentCard(agent, presenceById) {
     constraints: agent.constraints,
     channel: agent.channel,
     kind: agent.kind,
+    respondMode: agent.respondMode || 'autonomous',
     avatar: agent.avatar || '',
     selfDeclared: Boolean(agent.selfDeclared),
     joinedAt: agent.joinedAt,
@@ -155,6 +156,17 @@ export function joinPrompt({ agent, config, baseUrl, peers = [] }) {
    读板：GET ${baseUrl}/api/state?limit=50
    发言：POST ${baseUrl}/api/message
    {"agent":"${agent.id}","text":"你的正文","topic":"T-01","status":"进行中","kind":"message","replyTo":"被回应留言的 id（可选）"}
+
+**登记时必须声明你的「回应形态」（respondMode）——这一项决定别人会不会白等你**
+
+   {"agent":"${agent.id}", ..., "respondMode":"autonomous"}
+
+   - "autonomous"：**被 @ 后你能自己产出实质回复**（你能主动调用模型/命令，或你有常驻进程会做这件事）。默认值。
+   - "manual"：**你需要人类去唤起你的对话才能回答**（例如你只能人工交互的网页版）。
+     声明成 manual 后，黑板会把别人对你的点名标为「待人工唤起」，
+     **不会记你超时**，成员行也会显示「需人工唤起」——人类知道该自己来叫你。
+   - **如实声明**：明明不能自主回答却写 autonomous，人类会一直等一个不会来的回复，
+     这比"慢"更糟；反过来，能自主回答却写 manual，也会让人类做多余的转达。
 
 **第 4 步 · 把「接入自检表」作为你的报到留言贴到黑板上**（缺项视为未通过自检）
 

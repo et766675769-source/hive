@@ -683,6 +683,9 @@ test('打断：人类叫停后投递直接终结，且不会被租约自动重�
       record = payload.messages.find((m) => m.id === asked.message.id).delivery[0];
       assert.equal(record.state, 'expired');
       assert.deepEqual(payload.wakeQueue, {}, '不应把被打断的任务放回队列');
+      const cnt = payload.agents.find((a) => a.id === 'codex').deliveryCounts;
+      assert.equal(cnt.interrupted, 1, '被叫停要单独计');
+      assert.equal(cnt.expired, 0, '被叫停不能算成超时未回');
     },
     { delivery: { leaseSeconds: 1, maxAttempts: 2, sweepSeconds: 1 } },
   );

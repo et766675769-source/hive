@@ -100,6 +100,7 @@ export class DeliveryLedger {
     if (entry.attempts != null) record.attempts = entry.attempts;
     else if (entry.state === 'delivered') record.attempts += 1;
     if (entry.renewals != null) record.renewals = entry.renewals;
+    if (entry.endedBy !== undefined) record.endedBy = entry.endedBy;
     if (entry.ackDeadlineAt !== undefined) record.ackDeadlineAt = entry.ackDeadlineAt;
     if (entry.deadlineAt !== undefined) record.deadlineAt = entry.deadlineAt;
     record.updatedAt = entry.at || this.now();
@@ -115,10 +116,10 @@ export class DeliveryLedger {
     return record;
   }
 
-  #set(messageId, agent, state, { channel, note, deadlineAt, attempts, seq, topic, renewals, ackDeadlineAt } = {}) {
+  #set(messageId, agent, state, { channel, note, deadlineAt, attempts, seq, topic, renewals, ackDeadlineAt, endedBy } = {}) {
     if (!DELIVERY_STATES.includes(state)) throw new Error(`未知投递状态：${state}`);
     const at = this.now();
-    return this.#apply({ messageId, agent, state, channel, note, deadlineAt, attempts, seq, topic, renewals, ackDeadlineAt, at });
+    return this.#apply({ messageId, agent, state, channel, note, deadlineAt, attempts, seq, topic, renewals, ackDeadlineAt, endedBy, at });
   }
 
   /** 为一条带点名的留言建立投递记录（幂等：已存在就返回原记录）。 */
@@ -200,6 +201,8 @@ export class DeliveryLedger {
     return this.#set(message.replyTo, message.agent, 'expired', {
       note: '已被人类打断，按终结处理（不再重投）',
       deadlineAt: null,
+      // 和"超时未回"分开记：这是人类主动叫停，不是成员没回应
+      endedBy: 'interrupted',
     });
   }
 
@@ -228,6 +231,7 @@ export class DeliveryLedger {
     return this.#set(messageId, agent, 'expired', {
       note: '服务重启恢复时超出重投上限，已登记为未自动重投（可手动重发点名）',
       deadlineAt: null,
+      endedBy: 'deferred',
     });
   }
 
@@ -249,20 +253,37 @@ export class DeliveryLedger {
   }
 
   /**
-   * 某成员的投递计数：open = 还没了结的，expired = 已被判超时/打断的。
-   * 界面上用它说明"这个成员现在到底会不会回应"——比一句历史上的"已验收"真实。
+   * 某成员的投递计数。
+   *   open        还没了结的（在投递/处理中/排队）
+   *   expired     **超时未回**（重试用尽）
+   *   interrupted 人类主动叫停（不算成员失职，单独计）
+   *   replied     已实质回应
+   *
+   * @param {string} agent
+   * @param {{ windowMs?: number }} options
+   *   windowMs > 0 时只统计窗口内的终结记录：旧账不该永久给成员挂牌子
+   *   （成员后来恢复正常了，徽标也该跟着恢复）。
    */
-  countsFor(agent) {
+  countsFor(agent, { windowMs = 0 } = {}) {
     let open = 0;
     let expired = 0;
+    let interrupted = 0;
     let replied = 0;
+    const now = this.now();
     for (const record of this.records.values()) {
       if (record.agent !== agent) continue;
-      if (record.state === 'replied') replied += 1;
-      else if (record.state === 'expired') expired += 1;
-      else open += 1;
+      const fresh = windowMs <= 0 || now - (record.updatedAt || 0) <= windowMs;
+      if (record.state === 'replied') {
+        if (fresh) replied += 1;
+      } else if (record.state === 'expired') {
+        if (!fresh) continue;
+        if (record.endedBy === 'interrupted') interrupted += 1;
+        else expired += 1;
+      } else {
+        open += 1;
+      }
     }
-    return { open, expired, replied };
+    return { open, expired, interrupted, replied };
   }
 
   #view(record) {
@@ -305,13 +326,25 @@ export class DeliveryLedger {
    *   永远不判超时，用户看到的就是"永远没反应"。
    * @returns {{ expired: object[], reclaimed: object[], renewed: number }}
    */
-  sweep({ renewFor, maxRenewals = this.maxRenewals } = {}) {
+  sweep({ renewFor, holdFor, maxRenewals = this.maxRenewals } = {}) {
     const now = this.now();
     const expired = [];
     const reclaimed = [];
     let renewed = 0;
+    let held = 0;
     for (const record of [...this.records.values()]) {
       if (TERMINAL.has(record.state) || record.state === 'expired') continue;
+
+      // 声明「需人工唤起」的成员：点名不该判它超时，而是挂起等人类去唤起它的对话。
+      // 这类成员（只能人工交互的网页版）本就不自主回答，记它超时是冤枉的。
+      if (record.deadlineAt && now >= record.deadlineAt && typeof holdFor === 'function' && holdFor(this.#view(record))) {
+        this.#set(record.messageId, record.agent, record.state, {
+          note: '等待人工唤起（该成员声明需要人类唤起它的对话）',
+          deadlineAt: now + 24 * 3600 * 1000,
+        });
+        held += 1;
+        continue;
+      }
 
       // 兜底：已送达但成员连"处理中"都没回 → 判定信封丢了（例如投给了已断开的连接）
       if (record.state === 'delivered' && record.ackDeadlineAt && now >= record.ackDeadlineAt) {
@@ -323,6 +356,7 @@ export class DeliveryLedger {
             note: `已送达 ${this.ackTimeoutSeconds} 秒仍未确认收到，判定丢失并重投`,
             deadlineAt: null,
             ackDeadlineAt: null,
+            endedBy: 'timeout',
           });
           reclaimed.push(view);
         } else {
@@ -330,6 +364,7 @@ export class DeliveryLedger {
             attempts: record.attempts,
             note: '多次送达均未被确认，已登记为未送达',
             deadlineAt: null,
+            endedBy: 'timeout',
             ackDeadlineAt: null,
           });
         }
@@ -356,6 +391,7 @@ export class DeliveryLedger {
           attempts: record.attempts,
           note: `租约到期（${this.leaseSeconds}s）未收到实质回复，已回收重投`,
           deadlineAt: null,
+          endedBy: 'timeout',
         });
         reclaimed.push(view);
       } else {
@@ -363,10 +399,11 @@ export class DeliveryLedger {
           attempts: record.attempts,
           note: `租约到期且已达重试上限（${this.maxAttempts} 次）`,
           deadlineAt: null,
+          endedBy: 'timeout',
         });
       }
     }
-    return { expired, reclaimed };
+    return { expired, reclaimed, renewed, held };
   }
 
   /**

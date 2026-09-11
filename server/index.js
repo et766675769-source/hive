@@ -224,7 +224,14 @@ export function createBoardServer(overrides = {}) {
       if (!claim) return false;
       return Number(claim[1]) === record.seq;
     };
-    const { expired, reclaimed } = delivery.sweep({ renewFor });
+    const { expired, reclaimed } = delivery.sweep({
+      renewFor,
+      // 声明「需人工唤起」的成员：挂起等待人类，而不是判它超时
+      holdFor: (record) => {
+        const agent = registry.get(record.agent);
+        return Boolean(agent && agent.respondMode === 'manual');
+      },
+    });
     for (const record of reclaimed) {
       const message = store.list({ limit: store.historyInMemory }).find((item) => item.id === record.messageId);
       if (!message) continue;
@@ -374,7 +381,7 @@ export function createBoardServer(overrides = {}) {
         ...agentCard(agent, presenceMap),
         pending: pendingByAgent[agent.id] || 0,
         openDeliveries: delivery.openForAgent(agent.id).length,
-        deliveryCounts: delivery.countsFor(agent.id),
+        deliveryCounts: delivery.countsFor(agent.id, { windowMs: config.acceptance.loopWindowHours * 3600 * 1000 }),
         acceptance: acceptanceFor(agent, presenceMap.get(agent.id), mentionReplies[agent.id]),
       })),
       pending,
@@ -624,6 +631,8 @@ export function createBoardServer(overrides = {}) {
           skills: payload.skills,
           constraints: payload.constraints,
           channel: payload.channel,
+          // 回应形态：autonomous（被 @ 能自己回）/ manual（需人工唤起它的对话）
+          respondMode: payload.respondMode,
           avatar: payload.avatar,
           // 唤醒方式：成员可以声明自己的回调地址；本机唤醒命令只能由运维在配置里写
           callback: payload.callback,
