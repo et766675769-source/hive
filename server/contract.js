@@ -1,4 +1,4 @@
-﻿// Message Board · 契约状态（点名 → 回执 → 结果）
+// Message Board · 契约状态（点名 → 回执 → 结果）
 //
 // 这个项目真正的要求不是「成员在线」，而是**契约被履行**：
 //   被点名后必须先回应「任务开始」，完成后再回应结果。
@@ -22,10 +22,11 @@ export const CONTRACT = {
   NOT_FETCHED: 'not-fetched', // 超时没人取件
   NO_ACK: 'no-ack', // 超时没有「开始」回执
   OVERDUE: 'overdue', // 开始了但没在预算内交付
+  UNFULFILLED: 'unfulfilled', // 重试用尽仍无实质回复（账本已判 expired）
 };
 
 /** 需要报警/接管的契约违约状态。 */
-export const BREACH_STATES = [CONTRACT.NOT_FETCHED, CONTRACT.NO_ACK, CONTRACT.OVERDUE];
+export const BREACH_STATES = [CONTRACT.NOT_FETCHED, CONTRACT.NO_ACK, CONTRACT.OVERDUE, CONTRACT.UNFULFILLED];
 
 const LABELS = {
   [CONTRACT.IDLE]: '无待办',
@@ -36,6 +37,7 @@ const LABELS = {
   [CONTRACT.NOT_FETCHED]: '没人取件',
   [CONTRACT.NO_ACK]: '没回执（未开始）',
   [CONTRACT.OVERDUE]: '开始了没交付',
+  [CONTRACT.UNFULFILLED]: '作废未回应',
 };
 
 /** 让「等了几分钟」这种话在面板上不至于变成一屏数字。 */
@@ -60,13 +62,16 @@ export function contractOf(views = [], options = {}) {
     deliveryBudgetSeconds = 900,
   } = options;
 
+  // 作废（重试用尽仍无实质回复）是**最硬的违约**：账本已经不指望它了，可点名从来没被答复。
+  // 人类主动叫停（endedBy=interrupted）不算成员失职，调用方必须先把这类排除掉。
+  const expired = (views || []).filter((view) => view && view.state === 'expired');
   const open = (views || []).filter((view) => view && view.state !== 'replied' && view.state !== 'expired');
-  if (!open.length) {
+  if (!open.length && !expired.length) {
     return { state: CONTRACT.IDLE, label: LABELS[CONTRACT.IDLE], severity: 'info', waitingSeconds: null, seq: null, detail: '没有未完成的点名。' };
   }
 
   // 等人回复不是故障：manual 成员的等待由人类决定，不该被记成违约
-  if (respondMode === 'manual') {
+  if (respondMode === 'manual' && !expired.length) {
     const oldest = oldestOf(open, nowMs);
     return {
       state: CONTRACT.MANUAL,
@@ -79,7 +84,8 @@ export function contractOf(views = [], options = {}) {
   }
 
   // 取最"卡"的一条来代表这个成员：违约优先，其次最早开始的
-  const ranked = open.map((view) => ({ view, ...describe(view, { nowMs, ackTimeoutSeconds, deliveryBudgetSeconds }) }))
+  const ranked = [...expired, ...open]
+    .map((view) => ({ view, ...describe(view, { nowMs, ackTimeoutSeconds, deliveryBudgetSeconds }) }))
     .sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || b.waitingSeconds - a.waitingSeconds);
   const top = ranked[0];
   return {
@@ -88,7 +94,7 @@ export function contractOf(views = [], options = {}) {
     severity: top.severity,
     waitingSeconds: top.waitingSeconds,
     seq: top.view.seq ?? null,
-    open: open.length,
+    open: open.length + expired.length,
     detail: top.detail,
   };
 }
@@ -115,7 +121,15 @@ function describe(view, { nowMs, ackTimeoutSeconds, deliveryBudgetSeconds }) {
   const waitingSeconds = waitedSeconds(view, nowMs);
   const seq = view.seq ?? '?';
   const waited = humanSeconds(waitingSeconds);
-  if (view.state === 'queued') {
+  if (view.state === 'expired') {
+    return {
+      state: CONTRACT.UNFULFILLED,
+      label: LABELS[CONTRACT.UNFULFILLED],
+      severity: 'alert',
+      waitingSeconds,
+      detail: `点名 #${seq} 已作废：送达后重试用尽仍没有实质回复（最后一次动作在 ${waited}前）。点名从来没有被答复，需要重新派给一个能交付的通道。`,
+    };
+  }  if (view.state === 'queued') {
     return waitingSeconds >= ackTimeoutSeconds
       ? {
           state: CONTRACT.NOT_FETCHED,

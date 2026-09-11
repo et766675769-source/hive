@@ -16,6 +16,9 @@ import { isAcknowledgementOnly, parseMentions, localIso, stripBom } from '../ser
 
 const dataRoot = process.env.MB_TEST_DATA_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'message-board-test-'));
 fs.mkdirSync(dataRoot, { recursive: true });
+// 测试里的哨兵不要把日志写进真实黑板的 data/logs：否则临时成员会出现在线上 sentinel.log 里，
+// 排查线上问题时会被带偏（实测踩过一次）。
+process.env.MB_SENTINEL_LOG_DIR = path.join(dataRoot, 'logs');
 
 async function withBoard(run, overrides = {}) {
   const dataDir = fs.mkdtempSync(path.join(dataRoot, 'board-'));
@@ -615,6 +618,19 @@ test('契约：四种进行中状态各有判据，违约只有三种', async ()
   // 已回执、超出交付预算 → 开始了没交付
   assert.equal(contractOf([view('working', 700)], options).state, CONTRACT.OVERDUE);
 
+  // 作废（重试用尽）是最硬的违约：账本已经不指望它了，点名却从来没被答复。
+  // 这条如果不算违约，一个"回执一句就消失"的成员会在重试用尽后显示成"无待办"（实测踩过 #155）。
+  const expired = contractOf([view('expired', 30, { endedBy: null })], options);
+  assert.equal(expired.state, CONTRACT.UNFULFILLED);
+  assert.equal(expired.severity, 'alert');
+  assert.match(expired.detail, /作废/);
+  // 人类主动叫停不算成员失职：这类由调用方先排除，contractOf 拿到的是干净的输入
+  assert.deepEqual(
+    contractOf([view('queued', 10)], options).state,
+    CONTRACT.QUEUED,
+    '被叫停的投递不该由契约判定成违约（在上游过滤）',
+  );
+
   // 多条里挑最"卡"的那条：违约优先于正常
   const mixed = contractOf([view('working', 30), view('queued', 200)], options);
   assert.equal(mixed.state, CONTRACT.NOT_FETCHED);
@@ -651,6 +667,42 @@ test('契约：服务端把「卡在哪一步」写进成员卡与待回应列�
     },
     { delivery: { ackTimeoutSeconds: 1 } },
   );
+});
+
+test('契约：作废的投递仍算违约，人类主动叫停不算', async () => {
+  const { classifyBoard } = await import('../tools/sentinel.mjs');
+  const { contractOf, CONTRACT } = await import('../server/contract.js');
+  const nowMs = Date.now();
+
+  // 一个"回执一句然后消失"的成员：投递被判作废（重试用尽）
+  const member = {
+    id: 'ghost',
+    state: 'online',
+    declared: 'online',
+    respondMode: 'autonomous',
+    engine: 'codex-cli',
+    openDeliveries: 0,
+    deliveryCounts: { expired: 1, replied: 0 },
+    contract: contractOf(
+      [{ seq: 155, state: 'expired', updatedAt: nowMs - 60000, endedBy: null }],
+      { nowMs, ackTimeoutSeconds: 45, deliveryBudgetSeconds: 600 },
+    ),
+    acceptance: { checks: { heartbeat: true, channel: true, loop: false }, loopWindowHours: 24 },
+  };
+  const pending = [{ agent: 'ghost', seq: 155, at: new Date(nowMs - 900000).toISOString() }];
+
+  const { findings } = classifyBoard({ agents: [member], pending }, { nowMs, silentMinutes: 15 });
+  const breach = findings.find((finding) => finding.code === 'UNFULFILLED');
+  assert.ok(breach, `作废必须报出来（实际：${findings.map((f) => f.code).join(', ')}）`);
+  assert.equal(breach.severity, 'alert', '作废是 alert：它足够硬，应该能触发接管');
+  assert.match(breach.title, /作废未回应/);
+
+  // 人类主动叫停的那一条不该进契约（服务端在上游按 endedBy 过滤），也就不会有 UNFULFILLED
+  const interrupted = contractOf(
+    [{ seq: 156, state: 'replied', updatedAt: nowMs - 1000 }],
+    { nowMs, ackTimeoutSeconds: 45, deliveryBudgetSeconds: 600 },
+  );
+  assert.equal(interrupted.state, CONTRACT.IDLE);
 });
 
 /* ── 闭合接入 ───────────────────────────────────────────── */

@@ -79,6 +79,9 @@ export function loadConfig(overrides = {}) {
     // 契约的交付预算：成员回了「处理中」之后，多久还没交付结果就算"开始了没交付"。
     // 必须大于引擎自己的生成超时（agent-runner 默认 420 秒），否则会误伤正常的长任务。
     deliveryBudgetSeconds: Number(overrideDelivery.deliveryBudgetSeconds || rawDelivery.deliveryBudgetSeconds || 600),
+    // 作废（重试用尽仍无实质回复）在面板上保留多久：太短会让"昨天没回"永远红着，
+    // 太长又会让人以为它还在干活。一小时是"还值得去接手"的窗口。
+    expiredWindowSeconds: Number(overrideDelivery.expiredWindowSeconds || rawDelivery.expiredWindowSeconds || 3600),
     // 启动恢复：把历史上"被点名但没有实质回复"的留言重新放回投递队列
     backfillOnStart: (overrideDelivery.backfillOnStart ?? rawDelivery.backfillOnStart) !== false,
     backfillLimit: Number(overrideDelivery.backfillLimit || rawDelivery.backfillLimit || 3),

@@ -87,7 +87,9 @@ const QUIET = args.includes('--quiet');
 const FAIL_ON_ALERT = args.includes('--fail-on-alert');
 
 const STATUS_FILE = flag('status-file') || env('STATUS_FILE') || path.join(ROOT, 'data', 'sentinel-status.json');
-const LOG_DIR = flag('log-dir') || path.join(ROOT, 'data', 'logs');
+// 日志目录可覆盖：测试与演示要写自己的日志，否则会把真实黑板的巡检日志搅在一起
+// （实测踩过：测试里的临时成员 silent 出现在线上 sentinel.log 里，排查时很误导）。
+const LOG_DIR = flag('log-dir') || env('LOG_DIR') || process.env.MB_SENTINEL_LOG_DIR || path.join(ROOT, 'data', 'logs');
 const MEMBERS_FILE = flag('members-file') || env('MEMBERS_FILE') || path.join(ROOT, 'desktop', 'watchdog-members.json');
 // 托管通道的归属锁目录（每个成员一个子目录，与 agent-runner 的 --runtime 对应）
 const RUNTIME_ROOT = flag('runtime-root') || env('RUNTIME_ROOT') || path.join(ROOT, 'data', 'runner');
@@ -162,7 +164,9 @@ export function classifyMember(member, { nowMs, silentMinutes, pending = [] }) {
           ? 'NO_ACK'
           : contract.state === CONTRACT.OVERDUE
             ? 'OVERDUE'
-            : 'CONTRACT_BREACH';
+            : contract.state === CONTRACT.UNFULFILLED
+              ? 'UNFULFILLED'
+              : 'CONTRACT_BREACH';
     findings.push({
       code,
       severity: 'alert',
@@ -241,7 +245,9 @@ export function classifyMember(member, { nowMs, silentMinutes, pending = [] }) {
   }
 
   const expired = Number(member.deliveryCounts && member.deliveryCounts.expired) || 0;
-  if (expired > 0) {
+  // 契约已经就这条作废报过违约，就别再用计数说一遍：同一个病灶说两遍，
+  // 看板的人会以为是两个问题（实测：同一秒里 #157 与 #158 各发了一条）。
+  if (expired > 0 && !contractSpoke) {
     findings.push({
       code: 'DELIVERIES_EXPIRED',
       severity: 'warn',
@@ -293,7 +299,7 @@ export function planTakeovers(
   for (const finding of findings) {
     // 契约违约是最硬的证据：点名确实没被履行，不是"看起来像沉默"
     if (finding.severity !== 'alert') continue;
-    if (!['NOT_FETCHED', 'NO_ACK', 'OVERDUE', 'CONTRACT_BREACH', 'SILENT_WITH_PENDING'].includes(finding.code)) continue;
+    if (!['NOT_FETCHED', 'NO_ACK', 'OVERDUE', 'UNFULFILLED', 'CONTRACT_BREACH', 'SILENT_WITH_PENDING'].includes(finding.code)) continue;
     const entry = byId.get(finding.member);
     if (!entry) continue;
 

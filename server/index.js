@@ -378,21 +378,25 @@ export function createBoardServer(overrides = {}) {
     for (const item of pending) pendingByAgent[item.agent] = (pendingByAgent[item.agent] || 0) + 1;
     const mentionReplies = store.mentionReplies({ windowMs: config.acceptance.loopWindowHours * 3600 * 1000 });
     const presenceMap = new Map(presence.snapshot().map((item) => [item.id, item]));
-    // 契约状态：不是"在不在线"，而是"点名有没有被履行"（回执 + 交付）。
+    // 契约状态：不是"在不在线"，而是"点名有没有被履行"（取件 + 回执 + 交付）。
     // 这是面板的主信息；心跳派生的在线状态降级为参考信息。
+    // 注意取的是 unfulfilledForAgent（含最近被判作废的投递）：只看未完成的投递，
+    // 会让"回执一句然后消失"的成员在重试用尽后显示成"无待办"（实测踩过 #155）。
     const openByAgent = delivery.open({ ignore: hiddenAgentIds() });
     const contractOptions = {
       nowMs: Date.now(),
       ackTimeoutSeconds: config.delivery.ackTimeoutSeconds,
       deliveryBudgetSeconds: config.delivery.deliveryBudgetSeconds,
+      expiredWindowMs: config.delivery.expiredWindowSeconds * 1000,
     };
     return {
       members: registry.visible().map((agent) => {
         const open = openByAgent.get(agent.id) || [];
+        const views = delivery.unfulfilledForAgent(agent.id, { windowMs: contractOptions.expiredWindowMs });
         return {
           ...agentCard(agent, presenceMap),
           pending: pendingByAgent[agent.id] || 0,
-          contract: contractOf(open, { ...contractOptions, respondMode: agent.respondMode || 'autonomous' }),
+          contract: contractOf(views, { ...contractOptions, respondMode: agent.respondMode || 'autonomous' }),
           openDeliveries: open.length,
           deliveryCounts: delivery.countsFor(agent.id, { windowMs: config.acceptance.loopWindowHours * 3600 * 1000 }),
           acceptance: acceptanceFor(agent, presenceMap.get(agent.id), mentionReplies[agent.id]),

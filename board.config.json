@@ -22,6 +22,7 @@
     "maxRenewals": 5,
     "ackTimeoutSeconds": 45,
     "deliveryBudgetSeconds": 600,
+    "expiredWindowSeconds": 3600,
     "backfillOnStart": true,
     "backfillLimit": 3
   },

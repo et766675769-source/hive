@@ -306,7 +306,33 @@ export class DeliveryLedger {
       ackDeadlineAt: record.ackDeadlineAt || null,
       ackOverdue: Boolean(record.ackDeadlineAt && this.now() > record.ackDeadlineAt),
       overdue: Boolean(record.deadlineAt && this.now() > record.deadlineAt),
+      // 终结原因：interrupted = 人类主动叫停（不算成员失职），其他都算没履行契约
+      endedBy: record.endedBy || null,
+      attempts: record.attempts,
     };
+  }
+
+  /**
+   * 该成员**没有履行**的投递：还没了结的（queued/delivered/working）
+   * ＋ 最近被判"重试用尽"的（expired）。
+   *
+   * 为什么过期也要算进来：过期是**终态**，如果只统计未了的投递，
+   * 一个"回执一句然后消失"的成员在重试用尽后会显示成"无待办"——
+   * 点名明明还挂着没人答，面板却说它没事（实测踩过，就在 #155）。
+   * 人类主动打断（endedBy=interrupted）不算失职，必须排除。
+   */
+  unfulfilledForAgent(agent, { windowMs = 3600 * 1000 } = {}) {
+    const since = this.now() - windowMs;
+    return this.order
+      .map((key) => this.records.get(key))
+      .filter((record) => {
+        if (!record || record.agent !== agent) return false;
+        if (record.state === 'replied') return false;
+        if (record.state === 'expired') return record.endedBy !== 'interrupted' && (record.updatedAt || 0) >= since;
+        return true;
+      })
+      .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+      .map((record) => this.#view(record));
   }
 
   /** 名册/哨兵一次要问全部成员：按成员分组返回未完成投递。 */
