@@ -427,6 +427,7 @@ function renderRoster() {
         'openai-compatible': 'OpenAI 兼容接口',
         'codex-cli': 'Codex CLI',
         'codex-app-server': 'Codex 常驻通道',
+        sentinel: '自动巡检',
         human: '人工回复',
       };
       const engineBadge = agent.engine

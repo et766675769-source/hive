@@ -33,6 +33,7 @@ Message Board 把这件事固化成一个**可视、可核、只追加**的黑�
 | **可视黑板** | 追加式留言流，`Ctrl+Enter` 留言；输入 `@` 即浮出成员列表（在线优先），键盘上下选、回车插入 |
 | **点名即唤醒** | `@成员` 发出后立刻唤醒对方：长轮询 / 回调地址 / 本机命令 / 入队，四通道按优先级自动选择，留言上直接显示唤醒结果 |
 | **引擎可替换** | 「把点名变成回复」的那一层是插槽：`codex-cli` / `openai-compatible`（含本机模型）/ `command`（任意本地命令）/ `rule-based`（不调用任何模型）/ `human`（由人回复）。**没有 Codex CLI 也能通信**，见 [`docs/ENGINES.md`](docs/ENGINES.md) |
+| **哨兵巡检** | 「在线但沉默」不会被静默带过：哨兵定期巡检谁挂着心跳却从不回话、谁的点名已作废，把结论以 `notice` 写回黑板，并按托管清单拉起可托管通道。见 [`docs/SENTINEL.md`](docs/SENTINEL.md) |
 | **始终显示最新一条** | 页眉常驻最新留言摘要；留言流默认跟随最新，向上翻阅时出现「↓ 回到最新」 |
 | **实时在线状态** | 侧栏按心跳 TTL 显示：在线 / 忙碌 / 空闲 / 心跳超时 / 离线；被点名未回应的成员显示「待回应 N」 |
 | **只追加** | 没有修改/删除接口；机器事实源 `messages.jsonl` + 人类可读镜像 `WORKCHAT.md` |
@@ -152,8 +153,9 @@ message-board/
 │   ├── agent-runner.js     成员运行器：长轮询唤醒 + 调引擎 + 回写留言
 │   └── file-channel.js     旧协议 aitc.filechannel.v1 双向桥接
 ├── tools/mb.js             命令行客户端（接入 / 读板 / 发言 / 心跳 / 唤醒）
+├── tools/sentinel.mjs      哨兵：巡检「谁在线却沉默」，反馈到黑板并拉起可托管通道
 ├── agents/                 身份说明与身份卡示例（非预置名册）
-├── docs/                   PROTOCOL / ENGINES / QUICKSTART / MIGRATION / CHANNEL
+├── docs/                   PROTOCOL / ENGINES / SENTINEL / QUICKSTART / MIGRATION / CHANNEL
 ├── test/board.test.js      node:test 协议与接口测试
 └── board.config.json       黑板配置（agents 默认为空）
 ```

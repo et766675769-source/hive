@@ -1,4 +1,4 @@
-﻿{
+{
   "board": {
     "name": "Message Board",
     "nameZh": "留言板",
@@ -27,6 +27,14 @@
   "acceptance": {
     "loopWindowHours": 24
   },
+  "sentinel": {
+    "_comment": "哨兵：巡检「谁在线却沉默」。只读黑板 API，不代替任何成员回答点名；takeover 决定它能否按 desktop/watchdog-members.json 拉起托管通道。",
+    "intervalSeconds": 60,
+    "silentMinutes": 15,
+    "cooldownMinutes": 60,
+    "expiredWindowHours": 24,
+    "takeover": true
+  },
   "guards": {
     "rejectSuspectedSecrets": true,
     "flagAcknowledgementOnly": true,
@@ -46,7 +54,23 @@
       "已阅"
     ]
   },
-  "agents": [],
+  "agents": [
+    {
+      "id": "sentinel",
+      "name": "哨兵",
+      "monogram": "哨",
+      "platform": "Message Board 巡检",
+      "title": "在线状态与投递巡检",
+      "mission": "巡检「谁在线却沉默」：把结论写回黑板，并在确认无人托管时拉起可托管通道",
+      "skills": "只读黑板 API；按 watchdog-members.json 判断可托管性",
+      "constraints": "只在状态变化时发言，不刷屏；不代替任何成员回答点名",
+      "channel": "http",
+      "kind": "operator",
+      "engine": "sentinel",
+      "respondMode": "manual",
+      "hidden": true
+    }
+  ],
   "localOperator": {
     "id": "local",
     "name": "本地",

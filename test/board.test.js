@@ -364,6 +364,187 @@ test('引擎：接入时声明引擎，名册如实显示；不声明则不冒�
   });
 });
 
+/* ── 哨兵：巡检「谁在线却沉默」────────────────────────────── */
+
+test('哨兵：判定「在线但沉默」要有证据（点名超时 + 没有正在进行的生成）', async () => {
+  const { classifyBoard, planTakeovers } = await import('../tools/sentinel.mjs');
+  const nowMs = Date.parse('2026-09-12T00:00:00+08:00');
+  const member = {
+    id: 'workbuddy',
+    state: 'online',
+    declared: 'online',
+    engine: '',
+    respondMode: 'autonomous',
+    openDeliveries: 0,
+    deliveryCounts: { expired: 3, replied: 1 },
+    acceptance: { checks: { heartbeat: true, channel: true, loop: false }, loopWindowHours: 24 },
+  };
+  const pending = [
+    { agent: 'workbuddy', seq: 114, at: '2026-09-11T22:20:48+08:00' },
+    { agent: 'workbuddy', seq: 116, at: '2026-09-11T22:31:00+08:00' },
+  ];
+
+  const { findings, totals } = classifyBoard({ agents: [member], pending }, { nowMs, silentMinutes: 15 });
+  const codes = findings.map((finding) => finding.code).sort();
+  assert.deepEqual(codes, ['DELIVERIES_EXPIRED', 'LISTENING_BUT_NEVER_REPLIED', 'NO_ENGINE', 'SILENT_WITH_PENDING']);
+  const silent = findings.find((finding) => finding.code === 'SILENT_WITH_PENDING');
+  assert.equal(silent.severity, 'alert');
+  assert.equal(silent.ageMinutes, 99, '最老的那条点名已等 99 分钟');
+  assert.deepEqual(silent.seqs, [114, 116]);
+  assert.equal(totals.alert, 1);
+
+  // 关键分寸：正在生成（自报 busy）不该判成沉默，否则会打断真在干活的人
+  const busy = classifyBoard({ agents: [{ ...member, declared: 'busy' }], pending }, { nowMs, silentMinutes: 15 });
+  assert.equal(busy.findings.some((finding) => finding.code === 'SILENT_WITH_PENDING'), false);
+  // 反过来：有未完成投递但没人自报在处理 = 恰恰是"没人来取"，必须报出来
+  const queued = classifyBoard(
+    { agents: [{ ...member, openDeliveries: 2, state: 'online' }], pending },
+    { nowMs, silentMinutes: 15 },
+  );
+  const queuedFinding = queued.findings.find((finding) => finding.code === 'SILENT_WITH_PENDING');
+  assert.ok(queuedFinding, '排队中没人取件也必须判成沉默');
+  assert.match(queuedFinding.detail, /没有人来取/);
+
+  // 阈值以内不算沉默
+  const fresh = classifyBoard(
+    { agents: [member], pending: [{ agent: 'workbuddy', seq: 190, at: '2026-09-11T23:55:00+08:00' }] },
+    { nowMs, silentMinutes: 15 },
+  );
+  assert.equal(fresh.findings.some((finding) => finding.code === 'SILENT_WITH_PENDING'), false);
+
+  // manual 成员等人是它的声明形态，不是故障
+  const manual = classifyBoard(
+    { agents: [{ ...member, respondMode: 'manual', deliveryCounts: { expired: 0 } }], pending },
+    { nowMs, silentMinutes: 15 },
+  );
+  assert.equal(manual.findings.some((finding) => finding.code === 'SILENT_WITH_PENDING'), false);
+  assert.ok(manual.findings.some((finding) => finding.code === 'MANUAL_WAITING'));
+
+  // 接管计划：有托管配置才谈接管，且受冷却约束
+  const members = [{ id: 'workbuddy', start: ['node', 'x.js'] }];
+  const plan = planTakeovers(findings, members, { status: {}, nowMs, cooldownMinutes: 60 });
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].ok, true);
+  const cooling = planTakeovers(findings, members, {
+    status: { takeovers: { workbuddy: new Date(nowMs - 5 * 60000).toISOString() } },
+    nowMs,
+    cooldownMinutes: 60,
+  });
+  assert.equal(cooling[0].ok, false);
+  assert.match(cooling[0].reason, /冷却/);
+  assert.equal(planTakeovers(findings, [], { nowMs }).length, 0, '没有托管配置就不接管');
+});
+
+test('哨兵：一轮巡检把「在线但沉默」写回黑板，且不刷屏、不关掉别人的点名', async () => {
+  const { runRound } = await import('../tools/sentinel.mjs');
+  const statusFile = path.join(dataRoot, `sentinel-${Date.now()}.json`);
+  await withBoard(async ({ join, base, post, state }) => {
+    // 一个"在线但沉默"的成员：登记了引擎，长轮询也挂着，但从来没人回话
+    await join({ agent: 'silent', name: '沉默成员', engine: 'rule-based' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await post('/api/message', { agent: 'local', kind: 'message', topic: null, text: '@silent 请回答一个具体问题' });
+
+    // 阈值设成 1 分钟、时间往后推 5 分钟：等价于"这条点名已经等了很久"
+    const roundOptions = {
+      nowMs: Date.now() + 5 * 60000,
+      board: base,
+      statusFile,
+      silentMinutes: 1,
+      cooldownMinutes: 60,
+      takeover: false, // 测试里不真的拉进程
+    };
+    const first = await runRound(roundOptions);
+    const silentFinding = first.findings.find((finding) => finding.code === 'SILENT_WITH_PENDING');
+    assert.ok(silentFinding, '应判出「在线但沉默」');
+    assert.equal(silentFinding.member, 'silent');
+    assert.equal(silentFinding.severity, 'alert');
+    assert.ok(
+      first.acted.some((item) => item.code === 'SILENT_WITH_PENDING' && item.seq),
+      'alert 级结论会发言，并且真的落到黑板上',
+    );
+
+    const body = await state('?limit=50');
+    const notices = body.messages.filter((message) => message.agent === 'sentinel');
+    assert.equal(notices.length, first.acted.length, '每条结论一条 notice，不打折也不重复');
+    assert.equal(notices[0].kind, 'notice');
+    assert.equal(notices[0].agentName, '哨兵', '发言者姓名可读');
+    assert.equal(notices[0].client.sentinel, true, '发言带哨兵标记，便于过滤');
+
+    // 关键分寸：哨兵的 notice 不能把别人的点名"关掉"
+    assert.ok(body.pending.some((item) => item.agent === 'silent'), '点名仍是待回应');
+
+    // 同一小时内再巡检一轮：不重复发言（幂等键按小时分桶）
+    const second = await runRound({ ...roundOptions, status: first.status });
+    assert.equal(second.acted.length, 0, '状态没变化就不该再刷一条');
+    const after = await state('?limit=50');
+    assert.equal(after.messages.filter((message) => message.agent === 'sentinel').length, notices.length);
+
+    fs.rmSync(statusFile, { force: true });
+  });
+});
+
+test('哨兵：身份是隐藏的 operator（不占名册、不能被 @，但发言看得见名字）', async () => {
+  await withBoard(async ({ base, post, state }) => {
+    const body = await state('?limit=10');
+    // 名册仍然"接入即登记"：哨兵是运维设施，不该占用成员位
+    assert.equal(body.agents.some((agent) => agent.id === 'sentinel'), false, '哨兵不出现在名册里');
+
+    const posted = await (
+      await post('/api/message', {
+        agent: 'sentinel',
+        kind: 'notice',
+        topic: '哨兵巡检',
+        text: '【哨兵】巡检示例：本条用来确认它发言时姓名可读。',
+      })
+    ).json();
+    assert.equal(posted.ok, true);
+    const after = await state('?limit=10');
+    const message = after.messages.find((item) => item.seq === posted.message.seq);
+    assert.equal(message.agent, 'sentinel');
+    assert.equal(message.agentName, '哨兵', '预置身份提供姓名，面板上不会只剩一个裸 id');
+
+    // 它是 operator：不会出现在 @ 点名候选里（前端按 kind 过滤），所以点名它不会制造假待回应
+    const config = await (await fetch(`${base}/api/config`)).json();
+    assert.equal(config.members.some((agent) => agent.id === 'sentinel'), false);
+  });
+});
+
+test('哨兵：托管清单带 BOM 也能读，读不出来必须说出来（不能静默地没有配置）', async () => {
+  const { readManagedMembers } = await import('../tools/sentinel.mjs');
+  const dir = fs.mkdtempSync(path.join(dataRoot, 'sentinel-members-'));
+  const good = {
+    members: [{ id: 'a', start: ['node', 'x.js'] }, { id: 'b', start: ['node', 'y.js'] }, { id: 'off', enabled: false, start: ['node', 'z.js'] }],
+  };
+  const body = JSON.stringify(good, null, 2);
+
+  const plain = path.join(dir, 'plain.json');
+  fs.writeFileSync(plain, body, 'utf8');
+  assert.deepEqual(readManagedMembers(plain, () => {}).map((item) => item.id), ['a', 'b']);
+
+  // Windows 上记事本与 PowerShell 的 Out-File 都会写 BOM：读不出来就等于"没有托管配置"，
+  // 而哨兵此前的表现是静默跳过接管——最难查的那种故障。
+  const bom = path.join(dir, 'bom.json');
+  fs.writeFileSync(bom, `\uFEFF${body}`, 'utf8');
+  assert.deepEqual(readManagedMembers(bom, () => {}).map((item) => item.id), ['a', 'b'], '带 BOM 的清单必须照样能读');
+
+  const warnings = [];
+  const broken = path.join(dir, 'broken.json');
+  fs.writeFileSync(broken, '{ "members": [ ', 'utf8');
+  assert.deepEqual(readManagedMembers(broken, (message) => warnings.push(message)), []);
+  assert.match(warnings.join('\n'), /不是合法 JSON/, '解析失败要明说，不能假装没有托管配置');
+
+  const empty = path.join(dir, 'empty.json');
+  fs.writeFileSync(empty, '{ "members": [] }', 'utf8');
+  warnings.length = 0;
+  assert.deepEqual(readManagedMembers(empty, (message) => warnings.push(message)), []);
+  assert.match(warnings.join('\n'), /空/);
+
+  warnings.length = 0;
+  assert.deepEqual(readManagedMembers(path.join(dir, 'missing.json'), (message) => warnings.push(message)), []);
+  assert.match(warnings.join('\n'), /不存在/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {

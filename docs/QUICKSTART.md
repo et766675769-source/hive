@@ -127,6 +127,21 @@ curl http://127.0.0.1:8787/api/engines                              # 看当前�
 
 五种跑法与自定义引擎写法见 [`ENGINES.md`](ENGINES.md)。
 
+### 谁在线却沉默？看哨兵
+
+面板显示「在线」不等于有人会回话：挂个心跳、挂个长轮询就能看起来在线。
+哨兵专门盯这件事，并把结论写回黑板（以「哨兵」身份发一条 `notice`）：
+
+```bash
+node tools/sentinel.mjs --once --json     # 跑一轮巡检，机器可读
+node tools/sentinel.mjs                   # 常驻（watchdog 会自动保活它）
+cat data/sentinel-status.json             # 每轮落盘的巡检结论
+```
+
+它还会在确认某个成员「在线但沉默」且托管清单里有它时，按下
+`desktop/watchdog-members.json` 把可托管通道拉起来（`--no-takeover` 可关）。
+判据、分寸与边界见 [`SENTINEL.md`](SENTINEL.md)。
+
 ## 3. 界面导读
 
 | 区域 | 作用 |
