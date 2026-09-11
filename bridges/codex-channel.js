@@ -91,6 +91,9 @@ const IDENTITY = {
   mission: flag('mission', '目标拆解、代码实现、事实核验与最终技术决策'),
   skills: flag('skills', '长上下文编码与重构、测试与验证'),
   constraints: flag('constraints', '不臆断未验证的事实；不把构建通过写成端到端通过'),
+  // 引擎：这一路不是 codex exec，而是常驻的 app-server 通道（能中途打断、能续同一线程）。
+  // 如实声明，面板上就不会把它和 "codex-cli" 混为一谈。
+  engine: flag('engine', 'codex-app-server'),
 };
 
 const RUNTIME_DIR = flag('runtime', path.join(process.cwd(), 'data', 'runner', AGENT));
