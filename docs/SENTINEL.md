@@ -20,12 +20,24 @@
 | `delivered`（超回执截止） | **没回执 = 没开始** | `no-ack` | alert |
 | `working`（未超交付预算） | 已回执，正在处理 | 正在处理 #N | info |
 | `working`（超交付预算） | **开始了没交付** | `overdue` | alert |
+| `expired`（重试用尽，非人为叫停） | **作废未回应：点名从来没被答复** | `unfulfilled` | alert |
 | `manual` 成员的等待 | 等人类唤起 | 需人工唤起 | info（不是故障） |
 | 没有未完成投递 | 无待办 | `idle` | info |
 
 两个截止时间都在 `board.config.json` 的 `delivery` 段：`ackTimeoutSeconds`（默认 45 秒，回执截止）、
 `deliveryBudgetSeconds`（默认 600 秒，交付预算——**必须大于引擎自己的生成超时**，
-`agent-runner` 默认 420 秒，否则会误伤正常的长任务）。
+`agent-runner` 默认 420 秒，否则会误伤正常的长任务）、
+`expiredWindowSeconds`（默认 3600 秒：作废在面板上保留多久。太短会让"昨天没回"永远红着，
+太长又会让人以为它还在干活）。
+
+**作废（`expired`）为什么也算违约**：它是终态。如果只看"未完成的投递"，
+一个"回执一句然后消失"的成员在重试用尽后会显示成「无待办」——
+点名明明还挂着没人答，面板却说它没事（实测踩过，就在 `#155`）。
+人类主动打断（`endedBy: "interrupted"`）不算失职，服务端在上游就把它排除掉了。
+
+**阈值是"达到即违约"（`>=`），不是"超过"**：等满 `ackTimeoutSeconds` 就判 `not-fetched` / `no-ack`，
+等满 `deliveryBudgetSeconds` 就判 `overdue`。判据用的是"在**当前状态**里等了多久"
+（账本每次状态变更都写 `updatedAt`，它就是锚点），而不是"留言发布了多久"。
 
 **"正在干活"只认成员自报的 `declared: "busy"`。** 不能用「有未完成投递」当依据——
 排队中的投递恰好是"没人来取"的表现，把它当成在干活，哨兵就会对最该报警的情况保持沉默（实测踩过）。
