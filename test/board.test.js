@@ -296,6 +296,74 @@ test('提示词：已登记成员拿到自己已填的身份', async () => {
   });
 });
 
+/* ── 引擎解耦（核心不认识厂商）──────────────────────────── */
+
+test('引擎：核心自述可用引擎，且不依赖其中任何一个', async () => {
+  await withBoard(async ({ base }) => {
+    const body = await (await fetch(`${base}/api/engines`)).json();
+    assert.equal(body.ok, true);
+    const ids = body.engines.map((engine) => engine.id);
+    for (const expected of ['rule-based', 'command', 'openai-compatible', 'human']) {
+      assert.ok(ids.includes(expected), `缺少引擎 ${expected}`);
+    }
+    // 每个引擎都要能被解释清楚：核心只认识接口，不认识厂商
+    for (const engine of body.engines) {
+      assert.equal(typeof engine.label, 'string');
+      assert.equal(typeof engine.summary, 'string');
+      assert.ok(['local', 'cli', 'http', 'human'].includes(engine.kind), `未知类别 ${engine.kind}`);
+    }
+    assert.match(body.note, /不依赖任何引擎/);
+  });
+});
+
+test('引擎：引擎注册表本身可解析、可运行、可外挂', async () => {
+  const { listEngines, resolveEngine, register, runEngine } = await import('../engines/registry.mjs');
+  assert.ok(listEngines().length >= 4);
+
+  // 别名解析：历史叫法 deepseek-api 仍然指向 OpenAI 兼容那一路
+  assert.equal(resolveEngine('deepseek-api').meta.id, 'openai-compatible');
+  assert.equal(resolveEngine('codex').meta.id, 'codex-cli');
+  assert.throws(() => resolveEngine('不存在的引擎'), /未知引擎/);
+
+  // human 引擎必须在没有模型的情况下也"可用"，只是不自动回复
+  await assert.rejects(runEngine('human', '随便', {}), (error) => error.code === 'MANUAL');
+
+  // rule-based 不需要任何外部依赖，纯本地即可产出合规回复
+  const reply = await runEngine('rule-based', '有人点名 #42 请回复', {});
+  assert.match(reply.text, /结论：/);
+  assert.match(reply.text, /#42/);
+
+  // 外挂引擎：核心代码零改动即可接入第三方实现
+  register({
+    meta: { id: 'in-test', label: '测试引擎', kind: 'local', summary: '仅用于测试' },
+    async run(prompt) {
+      return { text: `来自测试引擎：${prompt}` };
+    },
+  });
+  const external = await runEngine('in-test', '你好', {});
+  assert.equal(external.text, '来自测试引擎：你好');
+});
+
+test('引擎：接入时声明引擎，名册如实显示；不声明则不冒充', async () => {
+  await withBoard(async ({ join, base }) => {
+    await join({ agent: 'plain', name: '纯命令成员', engine: 'command' });
+    await join({ agent: 'probe', name: '链路自检', engine: 'rule-based' });
+    await join({ agent: 'mystery', name: '未声明成员' });
+
+    const body = await (await fetch(`${base}/api/config`)).json();
+    const byId = Object.fromEntries(body.members.map((member) => [member.id, member]));
+    assert.equal(byId.plain.engine, 'command');
+    assert.equal(byId.probe.engine, 'rule-based');
+    assert.equal(byId.mystery.engine, '', '没声明就留空，核心不替成员猜');
+
+    // 接入提示词要告诉新成员"引擎是什么、有哪些可选"，并明确"没有 Codex CLI 也能通信"
+    const prompt = await (await fetch(`${base}/api/prompt?agent=newbie`)).text();
+    assert.match(prompt, /engine/);
+    assert.match(prompt, /openai-compatible/);
+    assert.match(prompt, /没有 Codex CLI 也能通信/);
+  });
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {

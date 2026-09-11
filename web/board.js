@@ -24,6 +24,7 @@ const el = {
   joinName: $('joinName'),
   joinJob: $('joinJob'),
   joinPlatform: $('joinPlatform'),
+  joinEngine: $('joinEngine'),
   joinPreview: $('joinPreview'),
   joinCopy: $('joinCopy'),
   composer: $('composer'),
@@ -417,6 +418,21 @@ function renderRoster() {
         : acc.status === 'verified'
           ? `<span class="pending pending--ok" title="心跳 ✓ / 唤醒通道 ✓ / 点名闭环 ✓（最近 ${acc.loopWindowHours || 24} 小时内回过实质内容）">已验收</span>`
           : `<span class="pending pending--quiet" title="心跳 ${acc.checks.heartbeat ? '✓' : '✗'} / 唤醒通道 ${acc.checks.channel ? '✓' : '✗'} / 点名闭环 ${acc.checks.loop ? '✓' : '✗'}（只看最近 ${acc.loopWindowHours || 24} 小时：只挂心跳、不会回应的成员会降级）">验收 ${acc.passed}/3</span>`;
+      // 引擎：把点名变成回复的那一层（rules/agent-runner 自报）。
+      // 显示它是为了让"这个成员背后是什么实现、谁是真人在回"一眼可见，
+      // 也提醒一件事：核心不认识厂商，换引擎不影响黑板通信。
+      const ENGINE_LABELS = {
+        'rule-based': '规则引擎',
+        command: '本地命令',
+        'openai-compatible': 'OpenAI 兼容接口',
+        'codex-cli': 'Codex CLI',
+        human: '人工回复',
+      };
+      const engineBadge = agent.engine
+        ? `<span class="pending pending--quiet" title="引擎：${esc(agent.engine)} —— 把点名变成回复的那一层；核心与引擎解耦，换引擎不影响通信">${esc(
+            ENGINE_LABELS[agent.engine] || agent.engine,
+          )}</span>`
+        : '';
       return `
       <li class="member" data-state="${esc(agent.state)}" data-agent="${esc(agent.id)}">
         <span class="member__mono${agent.avatar ? ' member__mono--img' : ''}">${
@@ -430,6 +446,7 @@ function renderRoster() {
         </span>
         <span class="member__badges">
           ${accBadge}
+          ${engineBadge}
           ${modeBadge}
           ${pendingBadge}
           ${queuedBadge}
@@ -744,6 +761,7 @@ function joinDraft() {
     name: el.joinName.value.trim(),
     title: el.joinJob.value.trim(),
     platform: el.joinPlatform.value.trim(),
+    engine: el.joinEngine ? el.joinEngine.value.trim() : '',
   };
 }
 
@@ -753,6 +771,7 @@ function promptUrlFor(draft) {
     name: draft.name,
     title: draft.title,
     platform: draft.platform,
+    engine: draft.engine,
   });
   return withToken(`/api/prompt?${params.toString()}`);
 }
@@ -1021,8 +1040,8 @@ function bind() {
   el.join.addEventListener('click', openJoinModal);
   el.joinClose.addEventListener('click', closeJoinModal);
   el.joinCopy.addEventListener('click', copyJoinPrompt);
-  for (const field of [el.joinId, el.joinName, el.joinJob, el.joinPlatform]) {
-    field.addEventListener('input', updatePreview);
+  for (const field of [el.joinId, el.joinName, el.joinJob, el.joinPlatform, el.joinEngine]) {
+    if (field) field.addEventListener('input', updatePreview);
   }
   el.joinModal.addEventListener('click', (event) => {
     if (event.target === el.joinModal) closeJoinModal();

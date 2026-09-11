@@ -133,6 +133,17 @@
             <span class="field__label">平台</span>
             <input class="input" id="joinPlatform" placeholder="例如 Codex CLI" />
           </label>
+          <label class="field">
+            <span class="field__label">引擎（把点名变成回复的那一层）</span>
+            <select class="input" id="joinEngine">
+              <option value="">未指定（由对方自己声明）</option>
+              <option value="codex-cli">codex-cli · 本机 Codex CLI</option>
+              <option value="openai-compatible">openai-compatible · 任意 OpenAI 兼容接口（含本机模型）</option>
+              <option value="command">command · 任意本地命令（提示词进 stdin，答复出 stdout）</option>
+              <option value="rule-based">rule-based · 不调用任何模型（链路自检）</option>
+              <option value="human">human · 由人自己回复</option>
+            </select>
+          </label>
         </div>
 
         <pre class="join__preview" id="joinPreview">填入成员 id 后，这里会显示将要复制的接入提示词。</pre>

@@ -6,6 +6,7 @@
 // 这里生成的就是「接入」按钮复制的那段文本。
 
 import { SCHEMA, STATUSES } from './protocol.js';
+import { listEngines } from '../engines/registry.mjs';
 
 /** 给界面用的成员卡（不含提示词）。 */
 export function agentCard(agent, presenceById) {
@@ -21,6 +22,9 @@ export function agentCard(agent, presenceById) {
     constraints: agent.constraints,
     channel: agent.channel,
     kind: agent.kind,
+    // 引擎：把点名变成回复的那一层（codex-cli / openai-compatible / command / rule-based / human…）
+    // 显示它是为了让"谁在用真人在回、谁背后是什么实现"在面板上一眼可见，也与核心解耦无关。
+    engine: agent.engine || '',
     respondMode: agent.respondMode || 'autonomous',
     avatar: agent.avatar || '',
     selfDeclared: Boolean(agent.selfDeclared),
@@ -39,7 +43,7 @@ export function agentCard(agent, presenceById) {
 }
 
 /** 界面表单里填的（可能是空的）身份草稿。 */
-export function draftAgent({ id, name, title, platform } = {}) {
+export function draftAgent({ id, name, title, platform, engine } = {}) {
   const safeId = String(id || '').trim().toLowerCase();
   const safeName = String(name || '').trim() || safeId || '新成员';
   return {
@@ -47,6 +51,7 @@ export function draftAgent({ id, name, title, platform } = {}) {
     name: safeName,
     monogram: (safeName.match(/[A-Za-z0-9]/)?.[0] || safeName.charAt(0) || '?').toUpperCase(),
     platform: String(platform || '').trim() || '未填写（请按实际改成 Codex CLI / Cursor / 网页版对话…）',
+    engine: String(engine || '').trim().toLowerCase(),
     title: String(title || '').trim() || '未填写（例如：项目主 Agent / 执行与自动化 / 桌面协作）',
     mission: '未填写（写清你对什么结果负责）',
     skills: '未填写（你能独立完成什么，尽量具体到可验证的动作）',
@@ -104,7 +109,11 @@ export function joinPrompt({ agent, config, baseUrl, peers = [] }) {
     mission: agent.mission,
     skills: agent.skills,
     constraints: agent.constraints,
+    engine: agent.engine || 'human',
   });
+  const engineText = listEngines()
+    .map((engine) => `   - \`${engine.id}\`（${engine.label}）：${engine.summary}`)
+    .join('\n');
   const peerText = peers.length
     ? peers.map((item) => `${item.name}（@${item.id}，${item.title || '成员'}）`).join('；')
     : '（目前还没有其他成员，你是第一个接入的）';
@@ -126,6 +135,21 @@ export function joinPrompt({ agent, config, baseUrl, peers = [] }) {
 
 **如果上面有「未填写」或与你不符，请先按你的实际情况改好，再执行登记。**
 黑板不预置成员名册：你自述什么，侧栏就显示什么。
+
+### 你的「引擎」（engine）—— 黑板核心不认识厂商，只认识引擎接口
+
+黑板核心 = 服务端 + 协议 + 投递账本 + 唤醒通道；它只认识「点名」和「回复」，
+不知道你背后是 Codex、DeepSeek 还是一个人。把点名变成回复的那一层叫**引擎**，登记时如实声明：
+
+   {"agent":"${agent.id}", …, "engine":"<下面之一>"}
+
+   可用引擎：
+${engineText}
+
+   其中 \`human\` 表示"由人自己回复"：点名会一直保持待回应，不记为超时。
+   **没有 Codex CLI 也能通信**——换成 \`openai-compatible\`（本机 Ollama 也行）、\`command\`（任意本地命令）
+   或 \`rule-based\`（不调用任何模型）都能跑通同一条链路。第三方引擎可用
+   \`bridges/agent-runner.js --engine-file <你的.mjs>\` 外挂，核心代码零改动。
 
 ## 二、接入四步（第 4 步别跳过，否则视为没接上）
 

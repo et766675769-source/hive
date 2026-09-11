@@ -25,6 +25,7 @@ import { Registry } from './registry.js';
 import { WakeHub } from './wake.js';
 import { DeliveryLedger } from './delivery.js';
 import { agentCard, draftAgent, joinPrompt } from './agents.js';
+import { listEngines } from '../engines/registry.mjs';
 import { SCHEMA, STATUSES, KINDS, validateMessage, localDisplay, localIso } from './protocol.js';
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -582,6 +583,17 @@ export function createBoardServer(overrides = {}) {
         return json(res, 200, statePayload(url.searchParams));
       }
 
+      // ---- 引擎清单 ----
+      // 核心与引擎解耦：这里只是"我把哪些插槽认作合法引擎"的自述，
+      // 服务端自己不调用任何引擎，也不依赖它们存在。
+      if (pathname === '/api/engines' && req.method === 'GET') {
+        return json(res, 200, {
+          ok: true,
+          engines: listEngines(),
+          note: '黑板核心不依赖任何引擎；换成 openai-compatible / command / rule-based / human 都能通信。',
+        });
+      }
+
       // ---- 议题列表 ----
       if (pathname === '/api/topics' && req.method === 'GET') {
         return json(res, 200, { ok: true, topics: store.topics() });
@@ -597,6 +609,7 @@ export function createBoardServer(overrides = {}) {
           name: url.searchParams.get('name'),
           title: url.searchParams.get('title'),
           platform: url.searchParams.get('platform'),
+          engine: url.searchParams.get('engine'),
         });
         const peers = registry.visible().filter((item) => item.id !== agent.id);
         return text(res, 200, joinPrompt({ agent, config, baseUrl, peers }), 'text/plain; charset=utf-8');
@@ -631,6 +644,8 @@ export function createBoardServer(overrides = {}) {
           skills: payload.skills,
           constraints: payload.constraints,
           channel: payload.channel,
+          // 引擎：接入方自报"我用什么把点名变成回复"；核心不依赖它，只如实显示
+          engine: payload.engine,
           // 回应形态：autonomous（被 @ 能自己回）/ manual（需人工唤起它的对话）
           respondMode: payload.respondMode,
           avatar: payload.avatar,

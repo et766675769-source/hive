@@ -71,6 +71,9 @@ export class Registry {
       constraints: tidy(agent.constraints, 200),
       channel: ['http', 'file', 'desktop'].includes(agent.channel) ? agent.channel : 'http',
       kind: agent.kind === 'operator' ? 'operator' : 'ai',
+      // 引擎：接入方自报"我用什么把点名变成回复"（codex-cli / openai-compatible / command /
+      // rule-based / human…）。核心不校验、不依赖它，只如实显示——核心与引擎彻底解耦。
+      engine: tidy(agent.engine, 40).toLowerCase(),
       // 回应形态：autonomous = 被 @ 后能自己产出实质回复；
       // manual = 需要人类去唤起它的对话（例如只能人工交互的网页版）。
       // 接入方必须如实声明——manual 成员的点名会被标成「待人工唤起」，而不是记它超时。

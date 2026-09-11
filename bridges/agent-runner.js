@@ -4,15 +4,22 @@
 // 把「被点名」变成「真的回应」：常驻监听黑板，一被 @ 就唤起背后的 agent，
 // 把它的答复作为该成员的留言写回黑板（带 replyTo）。
 //
-// 支持的 provider：
-//   codex-cli     本机 Codex CLI：codex exec -o <文件> "<提示>"（不依赖 stdout 管道）
-//   deepseek-api  调用 DeepSeek Chat Completions（密钥取自环境变量或 dsh 凭证）
+// 支持的引擎（engine）—— 黑板核心不认识厂商，只认识引擎接口：
+//   openai-compatible  任意 OpenAI 兼容 /chat/completions（DeepSeek/OpenAI/本机 Ollama…）
+//   command            任意本地命令：提示词进 stdin，答复出 stdout（Codex CLI 等）
+//   codex-cli          本机 Codex CLI：codex exec -o <文件>（不依赖 stdout 管道）
+//   rule-based         不调用任何模型的本地规则引擎（链路自检与排障基准）
+//   human              引擎就是人：点名保持待回应，等人自己回复
+// --engine-file <路径> 可外挂第三方引擎，核心代码零改动。
 //
 // 用法：
-//   node bridges/agent-runner.js --agent codex --provider codex-cli \
+//   node bridges/agent-runner.js --agent codex --engine codex-cli \
 //        --name Codex --title "项目主 Agent" --workdir "D:\some\repo" --sandbox read-only
 //
-//   node bridges/agent-runner.js --agent deepseek --provider deepseek-api --model deepseek-chat
+//   node bridges/agent-runner.js --agent deepseek --engine openai-compatible --model deepseek-chat
+//   node bridges/agent-runner.js --agent local --engine openai-compatible \
+//        --engine-base-url http://127.0.0.1:11434/v1 --engine-model qwen2.5:7b
+//   node bridges/agent-runner.js --agent probe --engine rule-based      # 不需要任何 AI
 //
 // 安全与纪律：
 //   - 只回应「点名自己」的留言；自己发的留言、以及没有点自己的留言都不回应；
@@ -21,9 +28,9 @@
 //   - 回复同样是普通留言：立刻被写入黑板，遵守只追加与状态措辞纪律。
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { register, resolveEngine, runEngine, listEngines, checkEngine } from '../engines/registry.mjs';
 
 const args = process.argv.slice(2);
 function flag(name, fallback = null) {
@@ -38,7 +45,22 @@ function flag(name, fallback = null) {
 const BOARD = (flag('board') || process.env.MB_BOARD || 'http://127.0.0.1:8787').replace(/\/+$/, '');
 const TOKEN = flag('token') || process.env.MB_TOKEN || '';
 const AGENT = String(flag('agent') || '').toLowerCase();
-const PROVIDER = flag('provider', 'deepseek-api');
+// 引擎（engine）＝把点名变成回复的那一层。核心不认识任何厂商，只认识引擎接口。
+// --provider 是历史叫法，等价的别名，保留兼容。
+const PROVIDER = flag('engine') || flag('provider', 'deepseek-api');
+const ENGINE_CMD = flag('engine-cmd') || process.env.MB_ENGINE_CMD || '';
+const ENGINE_BASE_URL = flag('engine-base-url') || process.env.MB_ENGINE_BASE_URL || '';
+const ENGINE_KEY = flag('engine-key') || process.env.MB_ENGINE_KEY || '';
+const ENGINE_MODEL = flag('engine-model') || process.env.MB_ENGINE_MODEL || '';
+const ENGINE_FILES = [flag('engine-file') || process.env.MB_ENGINE_FILE || ''].filter(Boolean);
+// 引擎类别（local/cli/http/human）：human 表示"由人回复"，行为与自动引擎不同
+const ENGINE_KIND = (() => {
+  try {
+    return resolveEngine(PROVIDER).meta.kind;
+  } catch {
+    return ''; // 未知名引擎交由 main() 报错，这里不抛
+  }
+})();
 const WAIT_SECONDS = Math.max(5, Math.min(Number(flag('wait', 25)), 60));
 const MAX_TURNS = Number(flag('max-turns', 5));
 const TIMEOUT_MS = Number(flag('timeout', 420)) * 1000;
@@ -48,14 +70,19 @@ const QUIET = args.includes('--quiet');
 const ACK = !args.includes('--no-ack');
 // 默认开启：启动时补做最近一条未回应的点名（服务重启会清空内存队列，靠它兜底）
 const CATCH_UP = !args.includes('--no-catch-up');
-// codex-cli：把这次会话开在一个独立终端窗口里，人能看见"新对话正在跑"
+// codex-cli：把这次会话开在一个独立终端窗口里，人能看见"新对话正在跑"（引擎自己决定是否支持）
 const VISIBLE = args.includes('--visible');
 
-const SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
+/* ── 议题 → 会话 id：支持续接的引擎（meta.resumable）会在同一议题上续接同一次对话 ── */
 
-/* ── 议题 → Codex 会话：同一议题的后续点名续接同一次对话 ── */
+const RESUMABLE = (() => {
+  try {
+    return Boolean(resolveEngine(PROVIDER).meta.resumable);
+  } catch {
+    return false;
+  }
+})();
 
-// 注意：RUNTIME_DIR 在下面才定义，这里必须惰性求值，否则模块加载即崩
 function sessionsFile() {
   return path.join(RUNTIME_DIR, 'sessions.json');
 }
@@ -82,33 +109,6 @@ function sessionKeyFor(envelope) {
   return envelope.topic || '__default__';
 }
 
-/** 取最近一次 Codex 会话 id（rollout 文件名里带 uuid），用于回报可 resume 的会话。 */
-function findLatestSessionId(sinceMs) {
-  try {
-    let newest = null;
-    const walk = (dir, depth = 0) => {
-      if (depth > 4) return;
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          walk(full, depth + 1);
-        } else if (entry.name.endsWith('.jsonl')) {
-          const stat = fs.statSync(full);
-          if (stat.mtimeMs >= sinceMs - 2000 && (!newest || stat.mtimeMs > newest.mtimeMs)) {
-            newest = { mtimeMs: stat.mtimeMs, name: entry.name };
-          }
-        }
-      }
-    };
-    if (fs.existsSync(SESSIONS_DIR)) walk(SESSIONS_DIR);
-    if (!newest) return '';
-    const match = newest.name.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
-    return match ? match[1] : '';
-  } catch {
-    return '';
-  }
-}
-
 if (!AGENT) {
   console.error('缺少 --agent <id>，例如 --agent codex');
   process.exit(1);
@@ -118,10 +118,12 @@ const IDENTITY = {
   id: AGENT,
   name: flag('name', AGENT),
   title: flag('title', '成员'),
-  platform: flag('platform', PROVIDER === 'codex-cli' ? 'Codex CLI' : 'DeepSeek API'),
+  platform: flag('platform', PROVIDER === 'codex-cli' ? 'Codex CLI' : PROVIDER),
   mission: flag('mission', '按黑板上的点名为同伴提供可核验的答复'),
   skills: flag('skills', ''),
   constraints: flag('constraints', '不臆断未验证的事实；不把构建通过写成端到端通过'),
+  // 引擎随登记一起上报：面板上谁用什么引擎、谁是真人在回，一眼可见
+  engine: PROVIDER,
 };
 
 const RUNTIME_DIR = flag('runtime', path.join(process.cwd(), 'data', 'runner', AGENT));
@@ -150,7 +152,31 @@ async function call(apiPath, options) {
   return body;
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** 心跳/状态自报：失败不影响主流程（服务重启期间属于正常现象）。 */
+async function heartbeat(state, note) {
+  try {
+    await call('/api/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({ agent: AGENT, state, note, source: 'runner' }),
+    });
+  } catch (error) {
+    log(`心跳上报失败（${state}）：${error.message}`);
+  }
+}
+
 /* ── 提示词 ─────────────────────────────────────────────── */
+
+// 当前正在生成的那一轮的取消句柄：控制指令（打断）通过它中止生成。
+let activeAbort = null;
+
+let busyReason = ''; // 生成期间向服务端自报的状态说明（续租用）
+
+/** 生成期间的自报状态：既让面板显示「正在处理 #N」，也是续租的依据。 */
+function busyNote(envelope) {
+  return envelope ? `正在处理 #${envelope.seq}` : '正在处理点名';
+}
 
 function buildPrompt(envelope, recent) {
   const others = recent
@@ -179,167 +205,28 @@ ${others ? `黑板最近的留言：\n${others}\n` : ''}
 请直接用中文写一条留言作为回复，先结论，再依据，最后下一步，控制在 400 字以内。`;
 }
 
-/* ── provider: codex-cli ────────────────────────────────── */
+/* ── 引擎：Codex CLI 与 HTTP 两路都由 engines/ 承担，运行器只负责注册与调度 ── */
 
-function q(value) {
-  return `"${String(value).replace(/"/g, '""')}"`;
+
+/** 引擎上下文：核心只提供事实（工作目录、沙箱、超时、身份），不替引擎做决定。 */
+function engineContext(extra = {}) {
+  return {
+    agent: AGENT,
+    identity: IDENTITY,
+    workdir: WORKDIR,
+    sandbox: SANDBOX,
+    timeoutMs: TIMEOUT_MS,
+    model: ENGINE_MODEL || MODEL,
+    runtimeDir: RUNTIME_DIR,
+    visible: VISIBLE,
+    command: ENGINE_CMD,
+    baseUrl: ENGINE_BASE_URL,
+    apiKey: ENGINE_KEY,
+    env: process.env,
+    log,
+    ...extra,
+  };
 }
-
-function runCodex(prompt, { sessionId = '' } = {}) {
-  return new Promise((resolve, reject) => {
-    fs.mkdirSync(RUNTIME_DIR, { recursive: true });
-    const stamp = Date.now();
-    const promptFile = path.join(RUNTIME_DIR, `prompt-${stamp}.txt`);
-    const outFile = path.join(RUNTIME_DIR, `last-${stamp}.txt`);
-    fs.writeFileSync(promptFile, prompt, 'utf8');
-
-    // 提示词从文件重定向进 stdin（命令行保持很短，且不依赖 stdout 管道）；
-    // 回复由 codex 的 -o 写到文件，读文件即可，全程不开命名管道。
-    // disk-full-read-access：让 Codex 能读盘上其它目录（例如 obsidian 仓库），写仍然受会话沙箱限制。
-    // 给了 sessionId 就走 exec resume —— 同一个议题的后续点名会在同一场对话里继续。
-    const head = ['codex', 'exec'];
-    const tail = [
-      '--skip-git-repo-check',
-      '-c',
-      'sandbox_permissions=["disk-full-read-access"]',
-    ];
-    if (sessionId) {
-      head.push('resume');
-      tail.push('-o', q(outFile), sessionId, '-', '<', q(promptFile));
-      log(`续接 Codex 会话 ${sessionId}（同一议题继续同一次对话）`);
-    } else {
-      tail.push('-C', q(WORKDIR), '-s', SANDBOX, '-o', q(outFile), '-', '<', q(promptFile));
-    }
-    const command = [...head, ...tail].join(' ');
-    log(`调用 codex exec（sandbox=${SANDBOX}, cwd=${WORKDIR}${VISIBLE ? ', 独立窗口' : ''}）`);
-
-    const startedAt = Date.now();
-    let child;
-    if (VISIBLE) {
-      // 独立终端窗口里跑：你能看到「新对话正在执行」，会话结束后窗口保留几秒
-      const batch = path.join(RUNTIME_DIR, `run-${stamp}.cmd`);
-      fs.writeFileSync(
-        batch,
-        `@echo off\r\ntitle Message Board - ${IDENTITY.name}\r\n${command}\r\necho.\r\necho ---- codex exit %errorlevel% ----\r\nping -n 9 127.0.0.1 >nul\r\n`,
-        'ascii',
-      );
-      child = spawn('cmd.exe', ['/c', 'start', '/wait', '', batch], {
-        cwd: WORKDIR,
-        stdio: ['ignore', 'ignore', 'ignore'],
-      });
-    } else {
-      child = spawn(command, {
-        cwd: WORKDIR,
-        shell: true,
-        stdio: ['ignore', 'ignore', 'ignore'],
-        windowsHide: true,
-      });
-    }
-
-    // 完成判定以「-o 输出文件写稳」为准，而不是进程退出：
-    // 可见窗口模式下的 start/wait 包装、或 codex 结束后仍在收尾，都可能让进程迟迟不退。
-    let settled = false;
-    let lastSeen = '';
-    const settle = (error, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      clearInterval(poller);
-      try {
-        child.kill();
-      } catch {
-        /* 忽略 */
-      }
-      if (error) reject(error);
-      else resolve(value);
-    };
-
-    const readOut = () => {
-      try {
-        if (!fs.existsSync(outFile)) return '';
-        return fs.readFileSync(outFile, 'utf8').trim();
-      } catch {
-        return '';
-      }
-    };
-    const done = (text) => {
-      const sessionId = findLatestSessionId(startedAt);
-      if (sessionId) log(`本次会话 id：${sessionId}  （可在终端执行 codex resume ${sessionId} 进入）`);
-      settle(null, { text: text || '（codex 返回了空回复）', sessionId });
-    };
-
-    const poller = setInterval(() => {
-      const text = readOut();
-      if (!text) return;
-      if (text === lastSeen) done(text); // 连续两次读到同样内容 = 已写完
-      else lastSeen = text;
-    }, 1500);
-    if (typeof poller.unref === 'function') poller.unref();
-
-    const timer = setTimeout(() => {
-      const text = readOut();
-      if (text) {
-        log('进程未退出，但已读到完整回复，按成功处理');
-        done(text);
-        return;
-      }
-      settle(new Error(`codex exec 超时（${TIMEOUT_MS / 1000}s），且没有产生输出文件`));
-    }, TIMEOUT_MS);
-
-    child.on('error', (error) => settle(error));
-    child.on('exit', () => {
-      const text = readOut();
-      if (text) done(text);
-      else settle(new Error('codex exec 已退出，但没有产生 -o 输出文件'));
-    });
-  });
-}
-
-/* ── provider: deepseek-api ─────────────────────────────── */
-
-function readDeepSeekKey() {
-  if (process.env.DEEPSEEK_API_KEY) return process.env.DEEPSEEK_API_KEY.trim();
-  const candidates = [
-    path.join(process.env.APPDATA || '', 'dsh-desktop-home', '.credentials.yaml'),
-    path.join(os.homedir(), '.dsh', '.credentials.yaml'),
-  ];
-  for (const file of candidates) {
-    try {
-      const match = fs.readFileSync(file, 'utf8').match(/^\s*DEEPSEEK_API_KEY\s*:\s*(\S+)\s*$/m);
-      if (match) return match[1].trim().replace(/^["']|["']$/g, '');
-    } catch {
-      /* 继续找下一个 */
-    }
-  }
-  return '';
-}
-
-async function runDeepSeek(prompt) {
-  const key = readDeepSeekKey();
-  if (!key) throw new Error('找不到 DEEPSEEK_API_KEY（环境变量或 dsh 凭证文件）');
-  const response = await fetch(process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: `你是黑板成员 ${IDENTITY.name}（id: ${AGENT}），${IDENTITY.title}。直接给出可核验的答复。` },
-        { role: 'user', content: prompt },
-      ],
-      max_tokens: 900,
-      temperature: 0.3,
-      stream: false,
-    }),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw new Error(`DeepSeek API ${response.status}：${(await response.text()).slice(0, 200)}`);
-  }
-  const body = await response.json();
-  return (body?.choices?.[0]?.message?.content || '').trim() || '（模型返回了空回复）';
-}
-
-const PROVIDERS = { 'codex-cli': runCodex, 'deepseek-api': runDeepSeek };
 
 /* ── 主循环 ─────────────────────────────────────────────── */
 
@@ -362,14 +249,15 @@ async function handleWake(envelope) {
   const state = await call('/api/state?limit=12');
   const prompt = buildPrompt(envelope, state.messages || []);
 
-  // 同一议题续接同一次 Codex 对话：这样人类在黑板上的后续指令就是"接着同一场对话推进"
+  // 同一议题续接同一次对话（仅当引擎声明支持）：人类在黑板上的后续指令就是"接着同一场对话推进"
   const key = sessionKeyFor(envelope);
   const sessions = readSessions();
-  const knownSession = PROVIDER === 'codex-cli' ? sessions[key] || '' : '';
+  const knownSession = RESUMABLE ? sessions[key] || '' : '';
 
   // 立刻回一条「处理中」通知：让点名的人看到反应，而不是干等 1–2 分钟。
   // 注意 kind=notice：服务端不会把它当成实质回应，「待回应」仍在。
-  if (ACK) {
+  // human 引擎例外：没有"正在生成"这回事，发「处理中」反而误导，不如让它老实显示待回应。
+  if (ACK && ENGINE_KIND !== 'human') {
     try {
       await call('/api/message', {
         method: 'POST',
@@ -389,38 +277,173 @@ async function handleWake(envelope) {
     }
   }
 
-  const result = await (PROVIDERS[PROVIDER] || runDeepSeek)(prompt, { sessionId: knownSession });
-  const answer = typeof result === 'string' ? result : result.text;
-  const sessionId = typeof result === 'string' ? '' : result.sessionId || '';
-  if (sessionId) {
-    sessions[key] = sessionId;
-    writeSessions(sessions);
-  }
-  const text = sessionId
-    ? `${answer}\n\n（本次 Codex 会话：${sessionId}${knownSession ? '（续接同一议题的既有对话）' : ''} —— 终端执行 codex resume ${sessionId} 可进入同一次对话）`
-    : answer;
+  // 生成期间自报 state=busy：面板显示「正在处理 #N」，同时这是服务端给交付续租的依据。
+  // 不报 busy 的话，一次超过 180 秒的生成会被误判成「超时未回」。
+  const controller = new AbortController();
+  activeAbort = controller;
+  busyReason = busyNote(envelope);
+  const ticker = setInterval(() => {
+    void heartbeat('busy', busyReason);
+  }, 30000);
+  if (typeof ticker.unref === 'function') ticker.unref();
+  await heartbeat('busy', busyReason);
 
-  const posted = await postMessage(
+  try {
+    const result = await runEngine(
+      PROVIDER,
+      prompt,
+      engineContext({ sessionId: knownSession, signal: controller.signal }),
+    );
+    const answer = result.text;
+    const sessionId = result.sessionId || '';
+    if (sessionId) {
+      sessions[key] = sessionId;
+      writeSessions(sessions);
+    }
+    const text = sessionId
+      ? `${answer}\n\n（本次 Codex 会话：${sessionId}${knownSession ? '（续接同一议题的既有对话）' : ''} —— 终端执行 codex resume ${sessionId} 可进入同一次对话）`
+      : answer;
+
+    const posted = await postMessage(
+      {
+        agent: AGENT,
+        text,
+        kind: 'reply',
+        topic: envelope.topic || null,
+        status: '进行中',
+        replyTo: envelope.messageId,
+        idempotencyKey: `${PROVIDER}:${envelope.messageId}:reply`,
+        client: { runner: PROVIDER, session: sessionId || null },
+      },
+      { label: '回复写回' },
+    );
+    log(`已回复 #${posted.message.seq}（回应 #${envelope.seq}）`);
+    for (const warning of posted.warnings || []) log(`提示：${warning}`);
+    return posted.message;
+  } finally {
+    clearInterval(ticker);
+    if (activeAbort === controller) activeAbort = null;
+    busyReason = '';
+    await heartbeat('online', `运行器在线（${PROVIDER}）`);
+  }
+}
+
+/* ── 控制指令与单轮处理 ─────────────────────────────────── */
+
+/** 控制指令回执：打断是真的会中止当前生成，所以要先执行再回执。 */
+async function handleControl(wake) {
+  log(`收到控制指令：${wake.action}${wake.reason ? `（${wake.reason}）` : ''}`);
+  const interrupted = wake.action === 'interrupt' && activeAbort;
+  if (interrupted) {
+    try {
+      activeAbort.abort();
+      log('已按控制指令中断当前生成');
+    } catch {
+      /* 忽略 */
+    }
+  }
+  await postMessage(
     {
       agent: AGENT,
-      text,
-      kind: 'reply',
-      topic: envelope.topic || null,
+      kind: 'notice',
       status: '进行中',
-      replyTo: envelope.messageId,
-      idempotencyKey: `${PROVIDER}:${envelope.messageId}:reply`,
-      client: { runner: PROVIDER, session: sessionId || null },
+      topic: null,
+      idempotencyKey: `${PROVIDER}:control:${wake.at}`,
+      text:
+        wake.action === 'interrupt'
+          ? interrupted
+            ? '收到打断指令：已中止本轮生成（本条为回执，不是结论）。'
+            : '收到打断指令：当前没有正在进行的生成，已记录（本条为回执）。'
+          : `收到控制指令 ${wake.action}（本条为回执）。`,
+      client: { runner: PROVIDER, control: wake.action },
     },
-    { label: '回复写回' },
-  );
-  log(`已回复 #${posted.message.seq}（回应 #${envelope.seq}）`);
-  for (const warning of posted.warnings || []) log(`提示：${warning}`);
-  return posted.message;
+    { label: '控制回执' },
+  ).catch(() => {});
+}
+
+/**
+ * 跑一轮点名：生成期间仍然保持监听，所以打断指令能真的到达。
+ * 生成期间新到的点名进 queued，由主循环接着处理 —— 不会被吞掉。
+ */
+async function runTurn(wake, queued) {
+  const task = handleWake(wake).catch(async (error) => {
+    // human 引擎：不生成、也不报错——点名保持"待回应"，等人来回复
+    if (error.code === 'MANUAL' || String(error.message).startsWith('manual')) {
+      log(`#${wake.seq} 交给人工处理（引擎 ${PROVIDER} 不自动回复），黑板上仍显示待回应`);
+      return;
+    }
+    log(`处理失败：${error.message}`);
+    const aborted = String(error.message).startsWith('aborted');
+    try {
+      await postMessage(
+        {
+          agent: AGENT,
+          text: aborted
+            ? `【${IDENTITY.name} 运行器】本轮生成已被打断指令中止，未产出结论。被中止的点名仍算未完成，需要重新点名或让我重做。`
+            : `【${IDENTITY.name} 运行器】生成回复失败：${error.message}。本条为失败回执，不代表已完成。`,
+          kind: 'notice',
+          replyTo: wake.messageId,
+          topic: wake.topic || null,
+          status: aborted ? '已中止' : '阻塞',
+        },
+        { label: aborted ? '打断回执' : '失败回执' },
+      );
+    } catch (postError) {
+      log(`回执也发不出去（服务可能不可用）：${postError.message}`);
+    }
+  });
+
+  let done = false;
+  void task.then(() => {
+    done = true;
+  });
+
+  // 关键：生成（可能 30–180 秒）期间继续长轮询，否则 control 信封要等到本轮结束才被读到，
+  // 打断就永远打不断。这里只处理控制指令，新点名排队。
+  while (!done) {
+    let polled;
+    try {
+      polled = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=3`);
+    } catch {
+      await sleep(2000);
+      continue;
+    }
+    const next = polled.wake;
+    if (!next) continue;
+    if (next.type === 'control') await handleControl(next);
+    else if (next.from !== AGENT) {
+      log(`生成期间又收到点名 #${next.seq}，排到本轮之后处理`);
+      queued.push(next);
+    }
+  }
+  await task;
+  return queued;
 }
 
 async function main() {
+  // 加载外部引擎文件（可选）：第三方引擎不需要改核心
+  for (const file of ENGINE_FILES) {
+    try {
+      const mod = await import(pathToFileURL(path.resolve(file)).href);
+      const engine = mod.default || mod.engine || mod;
+      const id = register(engine);
+      log(`已从 ${file} 加载引擎「${id}」`);
+    } catch (error) {
+      log(`引擎文件加载失败（忽略）：${file} —— ${error.message}`);
+    }
+  }
+
+  // 引擎先解析再登记：引擎写错就直接报清楚，不要变成一个"上线了但从不回话"的成员
+  const engine = resolveEngine(PROVIDER);
+  const health = await checkEngine(engine.meta.id, engineContext());
+  log(`引擎：${engine.meta.id}（${engine.meta.label}）—— 自检 ${health.ok ? '通过' : '未通过'}：${health.detail}`);
+  if (!health.ok) {
+    log(`可用引擎：${listEngines().map((item) => item.id).join(', ')}`);
+    log('继续启动，但提醒：自检未通过时点名可能没有回复。');
+  }
+
   const joined = await call('/api/join', { method: 'POST', body: JSON.stringify(IDENTITY) });
-  log(`已登记为「${joined.agent.name}」；provider=${PROVIDER}`);
+  log(`已登记为「${joined.agent.name}」；引擎=${engine.meta.id}`);
 
   // 兜底：服务重启会清空内存里的唤醒队列，启动时补做最近一条未回应的点名
   if (CATCH_UP) {
@@ -451,44 +474,33 @@ async function main() {
   }
 
   let turns = 0;
+  const queued = []; // 生成期间新到的点名：本轮结束后接着处理，绝不丢
+
   for (;;) {
     try {
-      await call('/api/heartbeat', {
-        method: 'POST',
-        body: JSON.stringify({ agent: AGENT, state: 'online', note: `运行器在线（${PROVIDER}）` }),
-      });
+      await heartbeat('online', `运行器在线（${PROVIDER}）`);
       const result = await call(`/api/inbox?agent=${encodeURIComponent(AGENT)}&wait=${WAIT_SECONDS}`);
-      if (result.wake && result.wake.from !== AGENT) {
+      // 先区分信封类型：control（打断等控制指令）**不是**点名，
+      // 它没有 seq/正文；当成点名会让模型看到一堆 undefined（实测踩过）。
+      if (result.wake && result.wake.type === 'control') {
+        await handleControl(result.wake);
+      } else if (result.wake && result.wake.from !== AGENT) {
         log(`被 @${result.wake.from} 点名（#${result.wake.seq}），唤起 ${PROVIDER}…`);
-        try {
-          await handleWake(result.wake);
-        } catch (error) {
-          log(`处理失败：${error.message}`);
-          try {
-            await postMessage(
-              {
-                agent: AGENT,
-                text: `【${IDENTITY.name} 运行器】生成回复失败：${error.message}。本条为失败回执，不代表已完成。`,
-                kind: 'notice',
-                replyTo: result.wake.messageId,
-                topic: result.wake.topic || null,
-                status: '阻塞',
-              },
-              { label: '失败回执' },
-            );
-          } catch (postError) {
-            log(`失败回执也发不出去（服务可能不可用）：${postError.message}`);
-          }
-        }
+        await runTurn(result.wake, queued);
         turns += 1;
         if (ONCE || (MAX_TURNS > 0 && turns >= MAX_TURNS)) {
           log(`已达到 ${ONCE ? '--once' : `--max-turns ${MAX_TURNS}`} 限制，退出。`);
           return;
         }
+      } else if (queued.length) {
+        const next = queued.shift();
+        log(`处理生成期间积压的点名 #${next.seq}`);
+        await runTurn(next, queued);
+        turns += 1;
       }
     } catch (error) {
       log(`监听异常：${error.message}`);
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await sleep(3000);
     }
   }
 }

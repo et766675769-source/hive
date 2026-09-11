@@ -27,6 +27,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { runEngine, resolveEngine, checkEngine } from '../engines/registry.mjs';
 
 const args = process.argv.slice(2);
 function flag(name, fallback = null) {
@@ -61,15 +62,27 @@ function resolveReplyCommand() {
 }
 
 const REPLY_CMD = resolveReplyCommand();
+// --engine 优先：引擎是可替换插槽，命令只是"其中一种引擎"的老写法
+const ENGINE = String(flag('engine') || process.env.MB_ENGINE || '').trim().toLowerCase();
 const WAIT_IDLE = Math.max(5, Math.min(Number(flag('wait', 25)), 60));
 const WAIT_BUSY = 5;
 const REPLY_TIMEOUT_MS = Math.max(30, Number(flag('timeout', 420))) * 1000;
 const ONCE = args.includes('--once');
 const QUIET = args.includes('--quiet');
 
-if (!AGENT || !REPLY_CMD) {
-  console.error('用法：node agents/member-loop.mjs --agent <id> --reply-cmd "<命令>"');
+if (!AGENT || (!REPLY_CMD && !ENGINE)) {
+  console.error('用法：node agents/member-loop.mjs --agent <id> --engine <引擎 id>');
+  console.error('  或：node agents/member-loop.mjs --agent <id> --reply-cmd "<命令>"');
+  console.error('  可用引擎：rule-based / command / openai-compatible / codex-cli / human');
   process.exit(2);
+}
+if (ENGINE) {
+  try {
+    resolveEngine(ENGINE);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(2);
+  }
 }
 
 const RUNTIME_DIR = flag('runtime', path.join(process.cwd(), 'data', 'runner', AGENT));
@@ -179,7 +192,37 @@ function readJournal() {
   }
 }
 
-/* ── 把"思考"交给外部命令 ───────────────────────────────── */
+/* ── 把"思考"交给引擎（engine）或外部命令 ─────────────────── */
+
+/**
+ * 引擎优先，命令兜底：
+ *   --engine <id>  用 engines/registry.mjs 里的引擎（rule-based / command /
+ *                  openai-compatible / codex-cli / human），跨平台且能自检；
+ *   --reply-cmd    直接给一条命令（老用法，仍然完全支持）。
+ * 两条路都遵守同一个约定：提示词进、答复出，成员身份与写入黑板由本循环负责。
+ */
+function replyPrompt(envelope, recent) {
+  const others = recent
+    .filter((message) => message.seq !== envelope.seq)
+    .map((message) => `#${message.seq} [${message.agent}]${message.topic ? ` (${message.topic})` : ''} ${String(message.text).replace(/\s+/g, ' ').slice(0, 300)}`)
+    .join('\n');
+  return `你是本地协作黑板「Message Board」上的成员：${IDENTITY.name}（id: ${AGENT}）。
+职位：${IDENTITY.title}。使命：${IDENTITY.mission}。
+
+黑板纪律（必须遵守）：
+1. 只追加，不改写历史；回复要带结论、依据、下一步。
+2. 区分事实与推断：事实给可复核证据，推断必须写明「推断」；不夸大状态（构建通过 ≠ 端到端通过）。
+3. 不写密钥、令牌、Cookie。
+4. 除非确实需要对方行动，否则不要在回复里 @ 别人。
+5. 回复会被原样贴到黑板上，不要写「好的」「收到」这类空话，也不要复述本提示。
+
+${others ? `黑板最近的留言：\n${others}\n` : ''}
+现在有人点名你（#${envelope.seq}，来自 @${envelope.from}${envelope.topic ? `，议题 ${envelope.topic}` : ''}）：
+
+"""${String(envelope.text).slice(0, 1200)}"""
+
+请直接用中文写一条留言作为回复，先结论，再依据，最后下一步，控制在 400 字以内。`;
+}
 
 function runReplyCommand(envelope, recent) {
   return new Promise((resolve, reject) => {
@@ -216,6 +259,19 @@ function runReplyCommand(envelope, recent) {
   });
 }
 
+/** 统一入口：有 --engine 就走引擎，否则走 --reply-cmd。 */
+async function think(envelope, recent) {
+  if (!ENGINE) return runReplyCommand(envelope, recent);
+  const result = await runEngine(ENGINE, replyPrompt(envelope, recent), {
+    agent: AGENT,
+    identity: IDENTITY,
+    timeoutMs: REPLY_TIMEOUT_MS,
+    runtimeDir: RUNTIME_DIR,
+    log,
+  });
+  return result.text;
+}
+
 /* ── 处理一条点名 ───────────────────────────────────────── */
 
 async function handleMention(envelope) {
@@ -225,7 +281,7 @@ async function handleMention(envelope) {
 
   try {
     const state = await call('/api/state?limit=20');
-    const text = await runReplyCommand(envelope, (state.messages || []).slice(-10));
+    const text = await think(envelope, (state.messages || []).slice(-10));
     const posted = await postReply(envelope, text, 'reply', { seq: envelope.seq });
     log(`已回复 #${posted.message.seq}`);
   } catch (error) {

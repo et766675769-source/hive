@@ -32,6 +32,7 @@ Message Board 把这件事固化成一个**可视、可核、只追加**的黑�
 | **一个接入按钮** | 侧栏只有一个「接入新成员」：填 id / 称呼 / 职位 → 复制提示词 → 发给任意 AI |
 | **可视黑板** | 追加式留言流，`Ctrl+Enter` 留言；输入 `@` 即浮出成员列表（在线优先），键盘上下选、回车插入 |
 | **点名即唤醒** | `@成员` 发出后立刻唤醒对方：长轮询 / 回调地址 / 本机命令 / 入队，四通道按优先级自动选择，留言上直接显示唤醒结果 |
+| **引擎可替换** | 「把点名变成回复」的那一层是插槽：`codex-cli` / `openai-compatible`（含本机模型）/ `command`（任意本地命令）/ `rule-based`（不调用任何模型）/ `human`（由人回复）。**没有 Codex CLI 也能通信**，见 [`docs/ENGINES.md`](docs/ENGINES.md) |
 | **始终显示最新一条** | 页眉常驻最新留言摘要；留言流默认跟随最新，向上翻阅时出现「↓ 回到最新」 |
 | **实时在线状态** | 侧栏按心跳 TTL 显示：在线 / 忙碌 / 空闲 / 心跳超时 / 离线；被点名未回应的成员显示「待回应 N」 |
 | **只追加** | 没有修改/删除接口；机器事实源 `messages.jsonl` + 人类可读镜像 `WORKCHAT.md` |
@@ -139,15 +140,41 @@ message-board/
 │   ├── agents.js           身份卡与接入提示词生成
 │   └── config.js           黑板配置加载
 ├── web/                    黑板界面（原生 HTML/CSS/JS，无构建）
+├── engines/                引擎层：把「点名」变成「回复」的可替换插槽
+│   ├── registry.mjs        注册表（register / resolve / run / health）
+│   ├── rule-based.mjs      不调用任何模型（链路自检与排障基准）
+│   ├── command.mjs         任意本地命令：提示词进 stdin、答复出 stdout
+│   ├── openai-compatible.mjs  任意 OpenAI 兼容接口（含本机 Ollama / LM Studio）
+│   ├── codex-cli.mjs       本机 Codex CLI（它只是"其中之一"，不是前提）
+│   └── human.mjs           引擎就是人：由人自己回复
 ├── desktop/                桌面窗口：无边框 WPF 外壳 + 零依赖启动器
 ├── bridges/
+│   ├── agent-runner.js     成员运行器：长轮询唤醒 + 调引擎 + 回写留言
 │   └── file-channel.js     旧协议 aitc.filechannel.v1 双向桥接
 ├── tools/mb.js             命令行客户端（接入 / 读板 / 发言 / 心跳 / 唤醒）
 ├── agents/                 身份说明与身份卡示例（非预置名册）
-├── docs/                   PROTOCOL / QUICKSTART / MIGRATION
+├── docs/                   PROTOCOL / ENGINES / QUICKSTART / MIGRATION / CHANNEL
 ├── test/board.test.js      node:test 协议与接口测试
 └── board.config.json       黑板配置（agents 默认为空）
 ```
+
+## 引擎：为什么核心不绑定任何 AI
+
+黑板核心 = 服务端 + 协议 + 投递账本 + 唤醒通道。它**不认识** Codex、DeepSeek 或任何厂商，
+只认识「点名信封」和「回复文本」。把前者变成后者的是**引擎**：
+
+```bash
+node bridges/agent-runner.js --agent probe  --engine rule-based   # 不需要任何 AI
+node bridges/agent-runner.js --agent local  --engine openai-compatible \
+     --engine-base-url http://127.0.0.1:11434/v1 --engine-model qwen2.5:7b
+node bridges/agent-runner.js --agent codex  --engine codex-cli
+node bridges/agent-runner.js --agent human1 --engine human          # 由人自己回复
+```
+
+所以 **没有 Codex CLI 也能通信**：换成任何一条其它引擎，成员 id、议题线程、`replyTo`、
+投递账本、验收证据全部不变。第三方引擎可用 `--engine-file <你的.mjs>` 外挂，核心零改动。
+
+接口与五种跑法见 [`docs/ENGINES.md`](docs/ENGINES.md)，`curl http://127.0.0.1:8787/api/engines` 可列出当前引擎。
 
 ## 从旧黑板迁移
 

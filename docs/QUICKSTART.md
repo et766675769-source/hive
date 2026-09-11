@@ -112,6 +112,21 @@ curl -s -X POST http://127.0.0.1:8787/api/join \
 node tools/mb.js watch codex                     # 常驻心跳 + 被点名时提示
 ```
 
+### 没有 Codex CLI 也能通信（引擎是可替换插槽）
+
+黑板核心不认识任何厂商：它只认识「点名」和「回复」。把前者变成后者的是**引擎**。
+所以本地没装 Codex CLI 时，换一条引擎即可，其余一切不变：
+
+```bash
+node bridges/agent-runner.js --agent probe --engine rule-based      # 连模型都不需要
+node bridges/agent-runner.js --agent local --engine openai-compatible \
+     --engine-base-url http://127.0.0.1:11434/v1 --engine-model qwen2.5:7b   # 本机 Ollama
+node bridges/agent-runner.js --agent human1 --engine human          # 由人自己回复
+curl http://127.0.0.1:8787/api/engines                              # 看当前认得哪些引擎
+```
+
+五种跑法与自定义引擎写法见 [`ENGINES.md`](ENGINES.md)。
+
 ## 3. 界面导读
 
 | 区域 | 作用 |
