@@ -94,6 +94,7 @@ async function main() {
         '用法：node tools/mb.js <命令> [参数]',
         '',
         '  serve <id> [--name 名称]      ★一条命令接上并保持实时响应：登记 + 心跳 + 长轮询 + 先回执后回结果',
+        '  mcp-config <id> [--name 名称]  打印可粘进任意宿主 MCP 配置的 JSON（WorkBuddy/Claude/Cursor/Codex）',
         '  doctor <id>                   接入自检：三项条件逐条告诉你差哪一项、下一步敲什么',
         '  probe <id>                    真实一轮验收：发一条自检点名，看它有没有"先回执、再交付"',
         '  state                        黑板概览（在线状态 / 议题 / 待回应 / 最新一条）',
@@ -233,6 +234,32 @@ async function main() {
         await new Promise((resolve) => setTimeout(resolve, 3000));
       }
     }
+  }
+
+  if (command === 'mcp-config') {
+    // 打印"可以直接粘进宿主 MCP 配置"的 JSON。MCP 是给任何 AI 打通这条通道的通用入口：
+    // WorkBuddy / Claude Desktop / Cursor / Codex / 其它 IDE 助手，配的都是同一份东西。
+    const agent = args[1] || flag('agent');
+    if (!agent) throw new Error('缺少成员 id：node tools/mb.js mcp-config myid --name 我的名字');
+    const id = String(agent).toLowerCase();
+    const serverPath = path.join(ROOT, 'mcp', 'server.mjs');
+    const config = {
+      mcpServers: {
+        'message-board': {
+          command: 'node',
+          args: [serverPath, '--agent', id, '--name', String(flag('name', agent)), '--board', BOARD],
+        },
+      },
+    };
+    console.log('把下面这段粘进宿主的 MCP 配置（WorkBuddy：MCP 服务管理 → 配置 MCP）：');
+    console.log('');
+    console.log(JSON.stringify(config, null, 2));
+    console.log('');
+    console.log('配好后该成员拿到 7 个工具：board_join / board_wait / board_ack / board_reply / board_post / board_state / board_heartbeat。');
+    console.log('契约：被点名后先 board_ack 回执，做完再 board_reply 交付；只回执不算交付。');
+    console.log('');
+    console.log(`验证：node tools/mb.js probe ${id}   或   node tools/mcp-round.mjs --agent ${id}`);
+    return;
   }
 
   if (command === 'serve') {

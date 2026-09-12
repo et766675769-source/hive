@@ -1194,6 +1194,119 @@ test('投递：成员已有交付过的实名客户端时，匿名客户端一�
   });
 });
 
+test('MCP：任何支持 MCP 的 agent 都能接入，并走完"取件→回执→交付"', async () => {
+  // 这是"接所有 agent"的通用入口：把黑板做成一排 MCP 工具，
+  // agent 在自己的循环里调用即可，不依赖任何厂商的私有接口。
+  const { spawn } = await import('node:child_process');
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+  await withBoard(async ({ base, post, state }) => {
+    const child = spawn(process.execPath, ['mcp/server.mjs', '--agent', 'rookie', '--name', '新人', '--board', base], {
+      cwd: repoRoot,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let output = '';
+    let stderr = '';
+    const waiters = new Map();
+    let seq = 0;
+    child.stdout.on('data', (chunk) => {
+      output += chunk.toString('utf8');
+      let index = output.indexOf('\n');
+      while (index !== -1) {
+        const line = output.slice(0, index).trim();
+        output = output.slice(index + 1);
+        if (line) {
+          try {
+            const message = JSON.parse(line);
+            if (message.id && waiters.has(message.id)) {
+              waiters.get(message.id)(message);
+              waiters.delete(message.id);
+            }
+          } catch {
+            /* 忽略非 JSON */
+          }
+        }
+        index = output.indexOf('\n');
+      }
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+    });
+
+    const rpc = (method, params) =>
+      new Promise((resolve, reject) => {
+        const id = ++seq;
+        waiters.set(id, resolve);
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+        setTimeout(() => {
+          if (waiters.has(id)) {
+            waiters.delete(id);
+            reject(new Error(`MCP 调用超时：${method}\n${stderr.slice(0, 300)}`));
+          }
+        }, 15000);
+      });
+    const callTool = async (name, toolArgs) => {
+      const result = await rpc('tools/call', { name, arguments: toolArgs });
+      const text = result.result?.content?.[0]?.text || '';
+      if (result.result?.isError) throw new Error(text);
+      return text;
+    };
+
+    try {
+      const init = await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test' } });
+      assert.equal(init.result.serverInfo.name, 'message-board-rookie');
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
+
+      // 契约必须写在工具说明里，agent 才看得到要"先回执再交付"
+      const list = await rpc('tools/list', {});
+      const names = list.result.tools.map((tool) => tool.name);
+      for (const expected of ['board_join', 'board_wait', 'board_ack', 'board_reply', 'board_state']) {
+        assert.ok(names.includes(expected), `缺少工具 ${expected}`);
+      }
+      assert.match(list.result.tools.find((tool) => tool.name === 'board_ack').description, /契约第一半/);
+      assert.match(list.result.tools.find((tool) => tool.name === 'board_reply').description, /契约第二半/);
+
+      const joined = await callTool('board_join', { title: 'MCP 成员', engine: 'mcp' });
+      assert.match(joined, /已登记为「新人」/);
+
+      const mention = await (await post('/api/message', { agent: 'local', kind: 'message', text: '@rookie 请确认收到并交付。' })).json();
+      const envelope = await callTool('board_wait', { wait_seconds: 5 });
+      assert.match(envelope, new RegExp(`#${mention.message.seq}`), `应拿到点名信封：${envelope.slice(0, 120)}`);
+      assert.match(envelope, /board_ack/);
+
+      const acked = await callTool('board_ack', { reply_to: mention.message.id });
+      assert.match(acked, /回执已写回黑板/);
+      const delivered = await callTool('board_reply', {
+        reply_to: mention.message.id,
+        text: '结论：MCP 通道可用（先回执后交付）。\n依据：本次调用走 stdio 的 tools/call。\n下一步：保持 board_wait 循环。',
+      });
+      assert.match(delivered, /交付已写回黑板/);
+
+      await waitFor(async () => {
+        const body = await state('?limit=50');
+        return (
+          body.messages.find(
+            (message) => message.agent === 'rookie' && message.kind === 'reply' && message.replyTo === mention.message.id,
+          ) || null
+        );
+      }, { timeoutMs: 10000 });
+
+      const body = await state('?limit=50');
+      const ack = body.messages.find(
+        (message) => message.agent === 'rookie' && message.kind === 'notice' && message.replyTo === mention.message.id,
+      );
+      const reply = body.messages.find(
+        (message) => message.agent === 'rookie' && message.kind === 'reply' && message.replyTo === mention.message.id,
+      );
+      assert.ok(ack && reply, '回执与交付都要在板上');
+      assert.ok(ack.seq < reply.seq, '回执先于交付');
+      assert.equal(body.agents.find((agent) => agent.id === 'rookie').acceptance.checks.loop, true, '交付后点名闭环点亮');
+    } finally {
+      child.kill();
+    }
+  });
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {
