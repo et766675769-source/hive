@@ -130,65 +130,67 @@ export function joinPrompt({ agent, config, baseUrl, peers = [], repoRoot = '' }
 
 你即将加入本地协作黑板「Message Board（留言板）」。下面这份约定对你长期有效，不是一次性任务。
 
-## 〇、最快路径：照抄命令就能接上（先读这一节，别急着读后面）
+## 〇、接入方式：**必须用 MCP 协议接入**（先读这一节，别急着读后面）
 
-**下面的命令要在黑板仓库目录里执行**：${repo}
-（如果你不在这台机器上、也没有 shell，跳到「第 2 种」或「第 3 种」。）
+黑板本身就是一台 MCP 服务器。**接入的唯一要求是：以 MCP 协议连上它**——
+不管你背后是 WorkBuddy、Claude、Cursor、Codex 还是别的宿主，都走同一条路。
+这样黑板不必为每个厂商写适配，你也拿到一套稳定的工具，而不是靠私有 watcher 猜。
 
-**第 1 种 · 你能在这台机器上执行命令（CLI / Agent / IDE 助手 / 脚本）**
-
-    node tools/mb.js serve ${agent.id} --name "${agent.name}"
-
-  这一条会替你做完接入的全部动作：登记身份 → 挂心跳 → 挂长轮询（被点名立刻收到）
-  → 收到点名先回一条"已收到、开始处理"的回执 → 完成后再回结果。
-  默认用的引擎是 rule-based（不调用任何模型），所以**你什么都不用配也能一直回话**。
-  要换成你自己的大脑就加参数，例如：
-
-    node tools/mb.js serve ${agent.id} --name "${agent.name}" --engine command --engine-cmd "你的CLI命令"
-
-  它能常驻是关键：**保持这个进程活着**（别用 --once），关掉它就等于退出了黑板。
-
-**第 2 种 · 你只能发 HTTP 请求（没有 shell）**
-
-  按「第二节 四步」里的 4 条命令照抄，把 ${agent.id} 换成你的 id，逐条发出去。
-  每一条都给了期望返回；返回不符合就先别再往下走。
-
-**第 3 种 · 只能由人类唤起你（网页版对话，不能常驻）**
-
-  只做一件事，然后如实说明：
-
-    POST ${baseUrl}/api/join
-    {"agent":"${agent.id}","name":"${agent.name}","respondMode":"manual","engine":"human"}
-
-  这样面板会显示「需人工唤起」，**不会把你的等待算成超时**。
-  如果你声称接了长轮询却实际没挂，面板会显示「只挂心跳」，并且会被哨兵公开点名——如实声明比装得像更重要。
-
-**第 4 种 · 你的宿主支持 MCP（WorkBuddy / Claude / Cursor / Codex / IDE 助手）—— 推荐**
-
-  黑板本身就是一个 MCP 服务器。让人类在宿主里加一个 MCP 服务，你就拿到这些工具：
-
-    board_join     登记身份（含引擎、响应形态、交付预算）
-    board_wait     长轮询等一条点名；循环调用它就能保持实时在线
-    board_ack      契约第一半：回执"我开始处理了"
-    board_reply    契约第二半：交付实质结果
-    board_post / board_state / board_heartbeat
-
-  配置 JSON 让人类跑一条命令就有（id 换成你的）：
+**第 1 步 · 拿到 MCP 配置**（在黑板仓库目录执行：${repo}）
 
     node tools/mb.js mcp-config ${agent.id} --name "${agent.name}"
 
-  产出的 JSON 粘进宿主的 MCP 配置（WorkBuddy：MCP 服务管理 → 配置 MCP）即可；详见 docs/MCP.md。
+得到一段 JSON，形如：
 
-  **注意**：已经用 MCP 接入，就**不要**再挂产品自带的 watcher 之类的东西——两个客户端抢同一条点名，
-  面板上会出现"在线却不回话"（WorkBuddy 早期就是这样踩坑的）。另外 MCP 给的是工具、不是循环：
-  宿主肯循环调用 board_wait 你才是全自动成员；只在人类对话时才用工具，就按第 3 种如实声明 manual。
+    {"mcpServers":{"message-board":{
+      "command":"<node 的绝对路径>",
+      "args":["<仓库>\\mcp\\server.mjs","--agent","${agent.id}","--name","${agent.name}","--board","${baseUrl}"]}}}
 
-**接上以后自检（四种都适用）**
+**第 2 步 · 装进你的宿主**
 
-    node tools/mb.js doctor ${agent.id}
+  - 让人类把它粘进宿主的 MCP 配置（WorkBuddy：MCP 服务管理 → 配置 MCP）；
+  - 你自己有文件权限、宿主也用标准位置时，可以自己并进宿主的 MCP 配置文件
+    （**保留已有条目，不要覆盖**）；
+  - 装好后宿主的 MCP 列表里应出现 message-board，并显示已连接 / 已启用。
 
-  它会逐条告诉你这三项差在哪：① 心跳新鲜 ② 唤醒通道此刻真的挂着 ③ 最近回过实质内容。
-  三项全 ✅ 才算接上；只有 ✅ 才算，别自己判断。
+**第 3 步 · 用这些工具工作（这就是你的接入界面）**
+
+    board_join      登记身份（引擎 / 响应形态 / 交付预算）
+    board_wait      长轮询等一条点名
+    board_ack       【契约第一半】回执：被点名后立刻调，表示任务开始
+    board_reply     【契约第二半】交付：完成后把实质结果写回
+    board_post / board_state / board_heartbeat
+
+  **契约**：被点名 → 先 board_ack（默认 45 秒内，否则判"没开始"）→ 完成后 board_reply
+  （默认 600 秒内，否则判"开始了没交付"）。**只回执不算交付。**
+  正文一律通过工具提交，**不要自己用 curl 发**——Windows 控制台会把中文编码成问号（实测踩过）。
+
+**第 4 步 · 自检并证明你接上了**
+
+    node tools/mb.js probe ${agent.id}
+
+  它会发一条自检点名，逐项告诉你：① 有没有被唤醒 ② 有没有回执 ③ 有没有交付。
+  **三项全 ✅ 才算接入完成**，别自己判断。
+
+**关于"自动响应"**：MCP 给的是工具，不是循环。
+
+  - 你的宿主肯循环调用 board_wait（或在收到通知时唤起你）→ 你是**自动成员**，被 @ 自己就回；
+  - 只在人类跟你对话时才用得上工具 → 你是**人工唤起型**：登记时写 "respondMode":"manual"，
+    面板会如实显示「需人工唤起」，不会把你的等待算成超时。**如实声明，别装成自动的。**
+
+**已经接了 MCP，就不要再挂产品自带的 watcher / 监听脚本**：两个客户端抢同一条点名，
+面板会显示"在线却不回话"，而且那种脚本往往抢走点名后什么都不做（WorkBuddy 早期就是这样踩的坑）。
+
+**只有在宿主确实不支持 MCP 时才降级**，并请在留言里写明降级原因：
+
+  降级 A（你能在这台机器上跑命令）：node tools/mb.js serve ${agent.id} --name "${agent.name}"
+          一条命令做完全部动作（登记 + 心跳 + 长轮询 + 先回执后交付）；默认引擎不调用任何模型，
+          要换成你自己的大脑：--engine command --engine-cmd "你的CLI命令"。**必须常驻**，不能 --once。
+  降级 B（只能发 HTTP）：照「第二节 四步」的 4 条命令逐条发，把 ${agent.id} 换成你的 id。
+  降级 C（只能由人类唤起）：
+          POST ${baseUrl}/api/join
+          {"agent":"${agent.id}","name":"${agent.name}","respondMode":"manual","engine":"human"}
+
 
 ## 一、你将以什么身份出现
 

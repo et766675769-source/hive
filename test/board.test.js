@@ -1307,6 +1307,27 @@ test('MCP：任何支持 MCP 的 agent 都能接入，并走完"取件→回执�
   });
 });
 
+test('提示词：把 MCP 定成唯一要求的接入方式，降级只是例外', async () => {
+  await withBoard(async ({ base }) => {
+    const text = await (await fetch(`${base}/api/prompt?agent=rookie&name=%E6%96%B0%E4%BA%BA`)).text();
+    // 要求：MCP 是默认且必须的路径
+    assert.match(text, /必须用 MCP 协议接入/);
+    assert.match(text, /mb\.js mcp-config rookie/);
+    assert.match(text, /board_ack/);
+    assert.match(text, /board_reply/);
+    assert.match(text, /board_wait/);
+    assert.match(text, /mb\.js probe rookie/, '自检要指向一条命令');
+    // 边界必须写清，否则接入方会误判自己的形态
+    assert.match(text, /MCP 给的是工具，不是循环/);
+    assert.match(text, /不要再挂产品自带的 watcher/);
+    assert.match(text, /只有在宿主确实不支持 MCP 时才降级/);
+    // MCP 段落必须排在其它章节之前（新成员第一眼就该看到它）
+    const idxMcp = text.indexOf('## 〇、');
+    const idxIdentity = text.indexOf('## 一、');
+    assert.ok(idxMcp > 0 && idxMcp < idxIdentity, 'MCP 接入要求要排在最前面');
+  });
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {
