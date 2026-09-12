@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { spawn } from 'node:child_process';
 
 import { loadConfig } from './config.js';
 import { Store } from './store.js';
@@ -174,6 +175,60 @@ export function createBoardServer(overrides = {}) {
   // 流式草稿：成员正在写、还没最终交付的"逐字进度"。它**不是留言**（不进 JSONL、不算只追加），
   // 只是把"这 1 分钟里它在写什么"实时投给面板的临时视图。成员最终贴出 reply 时草稿即清除。
   const drafts = new Map();
+
+  // 内置助手：由服务端自己拥有与管理（不交给 watchdog）。
+  // 一个没用过 AI 的人打开应用就该看到一个会回应的成员；填一次 Key 后它就换成真 AI。
+  const ASSISTANT = { id: 'assistant', name: '助手' };
+  const assistantSettingsFile = () => path.join(config.dataDir, 'assistant.json');
+  let assistantChild = null;
+
+  function readAssistantSettings() {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(assistantSettingsFile(), 'utf8'));
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function assistantEngineArgs(settings) {
+    const key = String(settings.apiKey || '').trim();
+    if (!key) return ['--engine', 'rule-based'];
+    const model = String(settings.model || 'deepseek-chat').trim();
+    const base = String(settings.baseUrl || process.env.DEEPSEEK_BASE_URL || '').trim();
+    return ['--engine', 'openai-compatible', '--engine-key', key, '--engine-model', model, ...(base ? ['--engine-base-url', base] : [])];
+  }
+
+  function startAssistant() {
+    if (assistantChild) {
+      try {
+        assistantChild.kill();
+      } catch {
+        /* 忽略 */
+      }
+      assistantChild = null;
+    }
+    const settings = readAssistantSettings();
+    const args = [
+      'tools/mb.js',
+      'serve',
+      ASSISTANT.id,
+      '--name',
+      ASSISTANT.name,
+      '--title',
+      '内置助手',
+      '--board',
+      `http://127.0.0.1:${config.board.port}`,
+      ...assistantEngineArgs(settings),
+    ];
+    try {
+      assistantChild = spawn(process.execPath, args, { cwd: config.root, stdio: 'ignore', detached: true, windowsHide: true });
+      assistantChild.unref();
+      audit(`assistant: 启动（引擎 ${settings.apiKey ? 'openai-compatible' : 'rule-based'}）`);
+    } catch (error) {
+      audit(`assistant: 启动失败：${error.message}`);
+    }
+  }
 
   // 审计日志：每次写留言的**结果**（成功/被拒/疑似密钥/空话）都记一行。
   // "成员说回了但面板没有"这类问题，看这里就知道是"没发"还是"发了被拒"。
@@ -337,6 +392,8 @@ export function createBoardServer(overrides = {}) {
   // 对账放在补投之后：先按留言事实把"其实已经答了"的投递纠正为 replied，
   // 免得它们又被当成未回应的活重新投一遍。
   const reconciled = reconcileDeliveries();
+  // 内置助手：服务端自己拉起（一个没用过 AI 的人打开应用就能 @ 助手）
+  startAssistant();
 
   let presenceSignature = '';
   presence.onChange((snapshot) => {
@@ -658,6 +715,48 @@ export function createBoardServer(overrides = {}) {
       // ---- 议题列表 ----
       if (pathname === '/api/topics' && req.method === 'GET') {
         return json(res, 200, { ok: true, topics: store.topics() });
+      }
+
+      // ---- 内置助手设置：填一次 Key，助手从规则应答换成真 AI ----
+      if (pathname === '/api/assistant/setup' && req.method === 'GET') {
+        const settings = readAssistantSettings();
+        const key = String(settings.apiKey || '').trim();
+        return json(res, 200, {
+          ok: true,
+          assistant: ASSISTANT.id,
+          engine: key ? 'openai-compatible' : 'rule-based',
+          model: settings.model || 'deepseek-chat',
+          hasKey: Boolean(key),
+          maskedKey: key ? `${key.slice(0, 6)}…${key.slice(-4)}` : '',
+        });
+      }
+      if (pathname === '/api/assistant/setup' && req.method === 'POST') {
+        const payload = await readJson(req, res);
+        if (!payload) return undefined;
+        const apiKey = String(payload.apiKey || '').trim();
+        const model = String(payload.model || 'deepseek-chat').trim().slice(0, 80);
+        const baseUrl = String(payload.baseUrl || '').trim().slice(0, 200);
+        try {
+          fs.mkdirSync(path.dirname(assistantSettingsFile()), { recursive: true });
+          fs.writeFileSync(
+            assistantSettingsFile(),
+            JSON.stringify({ apiKey, model, baseUrl, updatedAt: new Date().toISOString() }, null, 2),
+            'utf8',
+          );
+        } catch (error) {
+          return json(res, 500, { ok: false, code: 'WRITE_FAILED', error: `设置保存失败：${error.message}` });
+        }
+        startAssistant();
+        audit(`assistant: 设置已更新（引擎 ${apiKey ? 'openai-compatible' : 'rule-based'}，model=${model}）`);
+        return json(res, 200, {
+          ok: true,
+          assistant: ASSISTANT.id,
+          engine: apiKey ? 'openai-compatible' : 'rule-based',
+          model,
+          hint: apiKey
+            ? '助手已切换为真 AI（openai-compatible）。等它重新上线后 @助手 试试。'
+            : '已清除 Key，助手回到本地规则应答。',
+        });
       }
 
       // ---- 接入提示词（纯文本，便于一键复制）----

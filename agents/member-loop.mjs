@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { runEngine, resolveEngine, checkEngine } from '../engines/registry.mjs';
+import { acquireLock } from '../tools/channel-lock.mjs';
 
 const args = process.argv.slice(2);
 function flag(name, fallback = null) {
@@ -115,10 +116,11 @@ async function call(apiPath, options = {}) {
   return body;
 }
 
+let lockHandle = null;
 const heartbeat = (state, note) =>
   call('/api/heartbeat', { method: 'POST', body: JSON.stringify({ agent: AGENT, state, note }) }).catch((error) => {
     log(`心跳失败：${error.message}`);
-  });
+  }).finally(() => lockHandle?.beat?.());
 
 /** 回复写回黑板：带幂等键，重试不会刷出重复留言。 */
 async function postReply(envelope, text, kind = 'reply', client = {}) {
@@ -357,6 +359,27 @@ const IDENTITY = {
 /* ── 主循环 ─────────────────────────────────────────────── */
 
 async function main() {
+  // 归属锁：一个成员只能有一个托管通道。没有它，`serve` 会被反复拉起几十个副本
+  // （实测：watchdog + 服务端各拉一次、又没有锁去重，116 个进程爆炸）。
+  const lock = acquireLock(RUNTIME_DIR, { agent: AGENT });
+  if (lock.held) {
+    log(`同一成员已有托管通道在跑（${lock.reason}）；本进程退出。`);
+    return;
+  }
+  lockHandle = lock;
+  const releaseLock = () => lock.release?.();
+  process.on('exit', releaseLock);
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    try {
+      process.on(signal, () => {
+        releaseLock();
+        process.exit(0);
+      });
+    } catch {
+      /* 忽略 */
+    }
+  }
+
   const identity = IDENTITY;
   await call('/api/join', { method: 'POST', body: JSON.stringify(identity) });
   log(ENGINE ? `已登记；引擎=${ENGINE}` : `已登记；思考命令：${REPLY_CMD}`);
