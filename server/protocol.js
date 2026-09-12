@@ -17,17 +17,29 @@ export const KINDS = ['message', 'reply', 'decision', 'evidence', 'handoff', 'no
 export const PRESENCE_STATES = ['online', 'busy', 'idle'];
 
 const MENTION_RE = /@([A-Za-z0-9][A-Za-z0-9_-]{0,31})/g;
+// 宽松版：连中文名字也能点（比如 @助手）。上限 40 个非空白、非标点字符。
+const MENTION_RE_LOOSE = /@([^\s@，。；：、,，!！?？]{1,40})/g;
 
 /**
  * 解析正文中的 @提及，只保留名册内存在的成员 id。
  * 名册外的 @xxx 会被忽略（但正文原样保留）。
  */
-export function parseMentions(text, agentIds) {
-  const known = new Set(agentIds.map((id) => String(id).toLowerCase()));
+export function parseMentions(text, agentIds, namesById = null) {
+  const known = new Set((agentIds || []).map((id) => String(id).toLowerCase()));
+  // 名字 → id：让 @中文名 也能命中（普通人看到的是名字，不是 id）
+  const nameToId = new Map();
+  if (namesById) {
+    for (const [id, value] of namesById.entries()) {
+      const name = typeof value === 'string' ? value : value && value.name;
+      const trimmed = String(name || '').trim();
+      if (trimmed) nameToId.set(trimmed.toLowerCase(), String(id).toLowerCase());
+    }
+  }
   const found = new Set();
-  for (const match of String(text || '').matchAll(MENTION_RE)) {
-    const id = match[1].toLowerCase();
-    if (known.has(id)) found.add(id);
+  for (const match of String(text || '').matchAll(MENTION_RE_LOOSE)) {
+    const token = match[1].trim().toLowerCase();
+    if (known.has(token)) found.add(token);
+    else if (nameToId.has(token)) found.add(nameToId.get(token));
   }
   return [...found];
 }
@@ -128,7 +140,7 @@ export function validateMessage(payload, { agentsById, guards }) {
     return { ok: false, code: 'BAD_KIND', error: `kind 必须是 ${KINDS.join(' / ')} 之一。` };
   }
 
-  const mentions = parseMentions(text, [...agentsById.keys()]).filter((id) => id !== agentId);
+  const mentions = parseMentions(text, [...agentsById.keys()], agentsById).filter((id) => id !== agentId);
 
   const flags = [];
   if (guards.flagAcknowledgementOnly && isAcknowledgementOnly(text, guards.acknowledgementTokens)) {

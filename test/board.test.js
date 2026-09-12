@@ -1328,6 +1328,19 @@ test('提示词：把 MCP 定成唯一要求的接入方式，降级只是例外
   });
 });
 
+test('纯函数：@中文名 也能命中成员（普通人看到的是名字，不是 id）', async () => {
+  const { parseMentions } = await import('../server/protocol.js');
+  const agents = new Map([
+    ['assistant', { name: '助手' }],
+    ['codex', { name: 'Codex' }],
+  ]);
+  const ids = [...agents.keys()];
+  assert.deepEqual(parseMentions('@助手 你好', ids, agents), ['assistant'], '中文名要点到 id');
+  assert.deepEqual(parseMentions('@assistant 你好', ids, agents), ['assistant'], 'id 仍然有效');
+  assert.deepEqual(parseMentions('请 @codex 看看 @助手 说的', ids, agents), ['codex', 'assistant'], '混合点名（按出现顺序）');
+  assert.deepEqual(parseMentions('你好，没有点名', ids, agents), []);
+});
+
 /* ── 闭合接入 ───────────────────────────────────────────── */
 
 test('关闭自助接入时，未登记成员被拒绝', async () => {

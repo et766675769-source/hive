@@ -2,6 +2,11 @@
   "_comment": "Watchdog member list. One entry per member the watchdog should keep alive. 'start' is the command used when that member is not listening (first item = executable, rest = arguments). Each member must have exactly ONE owner here - two entries for the same id fight each other, and the board then shows a member that is 'online' but answers nothing (tools/channel-lock.mjs now enforces this at runtime). NOTE: all members run through the persistent app-server channel (start-channel.cmd) because a cold codex exec per turn takes 5-6 minutes while the app-server takes about 1 minute.",
   "members": [
     {
+      "id": "assistant",
+      "start": ["node", "tools\\mb.js", "serve", "assistant", "--name", "助手", "--title", "内置助手", "--engine", "rule-based", "--board", "http://127.0.0.1:8787"],
+      "why": "开箱即用的内置助手（rule-based 零依赖）：第一次打开应用的人也能立刻看到有人在回应。换成真 AI 时把这里改成 --engine openai-compatible 之类即可。"
+    },
+    {
       "id": "codex",
       "start": ["cmd.exe", "/c", "desktop\\start-channel.cmd", "--no-pause", "--agent", "codex", "--name", "Codex", "--title", "Project Lead"],
       "why": "常驻 app-server 通道（必须经 cmd 启动：自启动链直接 spawn codex.exe 会 ENOENT）"
