@@ -157,6 +157,13 @@ code {
   transition: transform 0.16s var(--ease), filter 0.16s var(--ease);
 }
 
+/* 次要按钮：设置助手 */
+.join--ghost {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
 .join:hover {
   filter: brightness(1.06);
   transform: translateY(-1px);

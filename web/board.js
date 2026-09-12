@@ -27,6 +27,14 @@ const el = {
   joinEngine: $('joinEngine'),
   joinPreview: $('joinPreview'),
   joinCopy: $('joinCopy'),
+  settingsButton: $('settingsButton'),
+  settingsModal: $('settingsModal'),
+  settingsClose: $('settingsClose'),
+  settingsSave: $('settingsSave'),
+  settingsKey: $('settingsKey'),
+  settingsModel: $('settingsModel'),
+  settingsBaseUrl: $('settingsBaseUrl'),
+  settingsSub: $('settingsSub'),
   composer: $('composer'),
   composerText: $('composerText'),
   mentionList: $('mentionList'),
@@ -836,6 +844,50 @@ function closeJoinModal() {
   el.joinModal.hidden = true;
 }
 
+/* ── 设置助手：填 Key → 一键换真 AI ──────────────────────── */
+
+async function openSettingsModal() {
+  el.settingsModal.hidden = false;
+  el.settingsSave.disabled = true;
+  try {
+    const current = await api('/api/assistant/setup');
+    el.settingsModel.value = current.model || 'deepseek-chat';
+    el.settingsBaseUrl.value = '';
+    el.settingsKey.value = '';
+    el.settingsKey.placeholder = current.hasKey ? `已保存 ${current.maskedKey}（留空则清除）` : 'sk-…';
+    el.settingsSub.textContent = current.hasKey
+      ? `助手当前用的是真 AI（引擎 ${current.engine}）。留空 Key 并保存可换回规则应答。`
+      : '内置助手现在用本地规则应答。填一个 API Key，它就能真正回答你的问题。';
+  } catch (error) {
+    el.settingsSub.textContent = `读取当前设置失败：${error.message}`;
+  }
+  el.settingsSave.disabled = false;
+  el.settingsKey.focus();
+}
+
+function closeSettingsModal() {
+  el.settingsModal.hidden = true;
+}
+
+async function saveAssistantSettings() {
+  el.settingsSave.disabled = true;
+  try {
+    const body = {
+      apiKey: el.settingsKey.value.trim(),
+      model: el.settingsModel.value.trim() || 'deepseek-chat',
+      baseUrl: el.settingsBaseUrl.value.trim(),
+    };
+    const result = await api('/api/assistant/setup', { method: 'POST', body: JSON.stringify(body) });
+    toast(result.hint || '已保存');
+    closeSettingsModal();
+    refresh();
+  } catch (error) {
+    toast(`保存失败：${error.message}`);
+  } finally {
+    el.settingsSave.disabled = false;
+  }
+}
+
 async function copyJoinPrompt() {
   const draft = joinDraft();
   if (!AGENT_ID_RE.test(draft.id)) {
@@ -1066,14 +1118,21 @@ function bind() {
   el.join.addEventListener('click', openJoinModal);
   el.joinClose.addEventListener('click', closeJoinModal);
   el.joinCopy.addEventListener('click', copyJoinPrompt);
+  el.settingsButton.addEventListener('click', openSettingsModal);
+  el.settingsClose.addEventListener('click', closeSettingsModal);
+  el.settingsSave.addEventListener('click', saveAssistantSettings);
   for (const field of [el.joinId, el.joinName, el.joinJob, el.joinPlatform, el.joinEngine]) {
     if (field) field.addEventListener('input', updatePreview);
   }
   el.joinModal.addEventListener('click', (event) => {
     if (event.target === el.joinModal) closeJoinModal();
   });
+  el.settingsModal.addEventListener('click', (event) => {
+    if (event.target === el.settingsModal) closeSettingsModal();
+  });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !el.joinModal.hidden) closeJoinModal();
+    if (event.key === 'Escape' && !el.settingsModal.hidden) closeSettingsModal();
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && document.activeElement === el.composerText) {
       el.composer.dispatchEvent(new Event('submit', { cancelable: true }));
     }

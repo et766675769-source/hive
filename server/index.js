@@ -29,6 +29,7 @@ import { agentCard, draftAgent, joinPrompt } from './agents.js';
 import { listEngines } from '../engines/registry.mjs';
 import { contractOf } from './contract.js';
 import { SCHEMA, STATUSES, KINDS, validateMessage, localDisplay, localIso } from './protocol.js';
+import { readLock, pidAlive } from '../tools/channel-lock.mjs';
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MIME = {
@@ -179,7 +180,7 @@ export function createBoardServer(overrides = {}) {
   // 内置助手：由服务端自己拥有与管理（不交给 watchdog）。
   // 一个没用过 AI 的人打开应用就该看到一个会回应的成员；填一次 Key 后它就换成真 AI。
   const ASSISTANT = { id: 'assistant', name: '助手' };
-  const assistantSettingsFile = () => path.join(config.dataDir, 'assistant.json');
+  const assistantSettingsFile = () => path.join(config.board.dataDir, 'assistant.json');
   let assistantChild = null;
 
   function readAssistantSettings() {
@@ -199,6 +200,21 @@ export function createBoardServer(overrides = {}) {
     return ['--engine', 'openai-compatible', '--engine-key', key, '--engine-model', model, ...(base ? ['--engine-base-url', base] : [])];
   }
 
+  // 上一任服务端被重启/崩溃时，它的助手是 detached 子进程，会留下"孤儿"继续占着归属锁，
+  // 导致本服务端新拉起的助手拿不到锁、静默退出（用户填了 Key 也不生效）。这里按锁文件把孤儿清掉。
+  function killAssistantHolder() {
+    const runtimeDir = path.join(config.board.dataDir, 'runner', ASSISTANT.id);
+    const lock = readLock(runtimeDir);
+    if (lock && lock.pid && pidAlive(lock.pid)) {
+      try {
+        process.kill(Number(lock.pid), 'SIGTERM');
+        audit(`assistant: 清理遗留进程 ${lock.pid}（旧服务端的孤儿助手）`);
+      } catch {
+        /* 可能刚退出，忽略 */
+      }
+    }
+  }
+
   function startAssistant() {
     if (assistantChild) {
       try {
@@ -208,6 +224,7 @@ export function createBoardServer(overrides = {}) {
       }
       assistantChild = null;
     }
+    killAssistantHolder();
     const settings = readAssistantSettings();
     const args = [
       'tools/mb.js',
