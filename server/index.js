@@ -196,9 +196,7 @@ function pickAvatar(existing) {
   const seed = existing?.avatar?.seed || Math.floor(Math.random() * 1e9);
   const current = existing?.avatar;
   const library = avatarLibrary();
-  // 库改成「完整头像」之后，老的 hair（脸+发型两层）引用已经对不上了，得重挑一张完整头像
-  const staleHair = library.kind !== 'composed' && Boolean(current?.hair);
-  if (!staleHair && (current?.file || current?.hair)) return { ...current, seed };
+  if (isAvatarFresh(current, library)) return { ...current, seed };
 
   if (library.kind === 'complete' || library.kind === 'flat') {
     const picked = pickFromLibrary(library);
@@ -212,8 +210,24 @@ function pickAvatar(existing) {
 }
 
 /**
- * 启动时的一次性迁移：库已经是「完整头像」形态，但员工还存着老的 hair 引用时，
- * 直接给他们换成完整头像并落盘（否则面板上会一直画两层合成的老图）。
+ * 员工身上存的头像引用，在**当前**这个库里还算不算数。
+ * 库里换了一批新头像（改名、换编号、从两层变完整头像）之后老引用就失效了，
+ * 失效就重挑，不然面板上会一直画一张 404 的旧图。
+ */
+function isAvatarFresh(avatar, library) {
+  if (!avatar) return false;
+  if (library.kind === 'complete' || library.kind === 'flat') {
+    return Boolean(avatar.file) && library.files.includes(avatar.file);
+  }
+  if (library.kind === 'composed') {
+    return Boolean(avatar.hair) && library.hairs.includes(avatar.hair);
+  }
+  return Boolean(avatar.file || avatar.hair);
+}
+
+/**
+ * 启动时的一次性迁移：把员工身上"在当前库里已经失效"的头像引用换掉并落盘。
+ * 两种情况都会赶上：库从「脸+发型两层」换成「完整头像」；库整体换了一批新头像。
  */
 function migrateAvatarStyle() {
   const library = avatarLibrary();
@@ -221,11 +235,11 @@ function migrateAvatarStyle() {
   const org = store.readOrg();
   let migrated = 0;
   const employees = org.employees.map((employee) => {
-    if (!employee.avatar?.hair) return employee;
+    if (isAvatarFresh(employee.avatar, library)) return employee;
     const picked = pickFromLibrary(library);
     if (!picked) return employee;
     migrated++;
-    return { ...employee, avatar: { seed: employee.avatar.seed || Math.floor(Math.random() * 1e9), file: picked } };
+    return { ...employee, avatar: { seed: employee.avatar?.seed || Math.floor(Math.random() * 1e9), file: picked } };
   });
   if (migrated) store.writeOrg({ ...org, employees });
   return migrated;
