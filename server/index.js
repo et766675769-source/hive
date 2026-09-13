@@ -683,8 +683,9 @@ const server = http.createServer(async (req, res) => {
         at: new Date().toISOString(),
         mode,
         threadId,
-        from: 'local',
-        fromName: '你',
+        // as = 脚本/测试留言用的署名：给了就用它，别再冒充"你"
+        from: payload.as ? 'system' : 'local',
+        fromName: payload.as ? String(payload.as).slice(0, 16) : '你',
         kind: 'message',
         status: 'done',
         replyTo: null,
