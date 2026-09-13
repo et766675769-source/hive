@@ -1,20 +1,33 @@
 /**
- * 修正思路：优先挪「发型层」——它是被裁歪的那一层，挪正之后每款发型的发帘
- * 都落在眼睛上方同一位置、开口中轴都对着画布中线；发型挪不动（已经贴着画布边）
- * 的余量再交给「脸层」补，两层都保证不出画布。
+ * 头像库对齐修正（零依赖，只用 node:zlib）
+ *
+ * 库里 100 个发型是从 AI 图集里按格子裁出来的，每张图里"头"的位置都不一样；
+ * 脸只有一张，直接按库的约定（左上角对齐）叠加，就会出现"发帘压住眼睛""脸歪在发型一边"。
+ *
+ * 目标几何不是拍脑袋定的：量了旧预览图 preview/hair-catalog.png（那一套是能接受的）里的
+ * 14 个格子，得到几条稳定规律 ——
+ *   · 发帘下沿在眼睛上沿上方 19px（中位，范围 3~34）
+ *   · 发块质心比眼睛中心偏右 10px（中位，范围 7~15）
+ *   · 眼睛从来没被发帘盖住过（0%）
+ * 每张新发型图都往这上面靠：优先挪发型层（它是被裁歪的那层），挪不动（已经贴画布边）
+ * 的余量交给脸层补，两层都保证不出画布。
  */
 
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 
-/* ── 脸层基准（由 face/base-face-reference.png 实测得到，256 画布坐标）── */
+/* ── 基准值（由 face/base-face-reference.png + 旧预览图实测，256 画布坐标）── */
 
-const FACE_EYE_TOP = 114;      // 眼睛上沿
-const FRINGE_GAP = 14;         // 发帘下沿离眼睛上沿留多少
-const BASE = 256;              // 库里约定的画布边长
-const BAND = [80, 190];        // 只看头部中带，避免把两侧发丝外面的空隙当成开口
-const CLAMP_FACE_X = 24;       // 脸层兜底水平平移上限
+const EYE_TOP = 114;        // 眼睛上沿
+const EYE_CX = 121.5;       // 两只眼睛的中心
+const CHIN = 205;           // 找发帘只在这个高度以上找，免得把垂到下巴以下的发梢算进来
+const TARGET_GAP = 19;      // 发帘下沿离眼睛上沿的目标距离（旧库中位数）
+const TARGET_DX = 10;       // 发块质心相对眼睛中心的目标偏移（旧库就是偏右一点）
+const BAND_HALF = 25;       // 找发帘时只看眼睛左右各 25px 的竖带
+const BASE = 256;           // 库里约定的画布边长
+const CLAMP_FACE_X = 24;    // 脸层兜底水平平移上限
 const CLAMP_FACE_Y = [-60, 50]; // 脸层兜底垂直平移上限（往下 50px 时下巴正好到画布底）
+const ALLOW_CLIP = 30;      // 允许发型顶部被画布切掉多少：宁可削一点发顶，也别把整张脸压到圆盘底部
 
 /** 取 PNG 的 alpha 通道（支持 8 位灰度/真彩/灰度+alpha/真彩+alpha/调色板）。 */
 function decodeAlpha(buffer) {
@@ -100,76 +113,17 @@ function decodeAlpha(buffer) {
 }
 
 /**
- * 找"头部开口"：只看中间那条竖带，取最长的连续不透明段（发帘），
- * 它之后第一段连续透明区域就是脸露出来的地方。
+ * 量两张"基准数值"，跟旧预览图同一个算法：
+ *   fringe —— 眼睛所在竖带里、下巴以上的最低头发像素（= 发帘下沿）
+ *   cx     —— 发型不透明像素的质心横坐标（= 发块重心）
  */
-function headWindow(image) {
+function measureHair(image) {
   const { width, height, alpha } = image;
   const scale = width / BASE;
-  const x0 = Math.round(BAND[0] * scale);
-  const x1 = Math.round(BAND[1] * scale);
-  const spans = x1 - x0 + 1;
-  if (spans <= 4) return null;
 
-  const frac = [];
-  const centroid = [];
-  for (let y = 0; y < height; y++) {
-    let transparent = 0;
-    let sum = 0;
-    const row = y * width;
-    for (let x = x0; x <= x1; x++) {
-      if (alpha[row + x] <= 16) {
-        transparent++;
-        sum += x;
-      }
-    }
-    frac.push(transparent / spans);
-    centroid.push(transparent ? sum / transparent : width / 2);
-  }
-
-  let start = -1;
-  let bestStart = -1;
-  let bestLength = 0;
-  for (let y = 0; y <= height; y++) {
-    const opaque = y < height && frac[y] <= 0.4;
-    if (opaque) {
-      if (start < 0) start = y;
-    } else if (start >= 0) {
-      if (y - start > bestLength) {
-        bestLength = y - start;
-        bestStart = start;
-      }
-      start = -1;
-    }
-  }
-  if (bestStart < 0 || bestLength < 20 * scale) return null;
-
-  let top = -1;
-  let bottom = -1;
-  for (let y = bestStart + bestLength; y < height; y++) {
-    if (frac[y] >= 0.6) {
-      if (top < 0) top = y;
-      bottom = y;
-    } else if (top >= 0 && frac[y] < 0.4) break;
-  }
-  if (top < 0) return null;
-
-  let sum = 0;
+  let cx = 0;
+  let cy = 0;
   let count = 0;
-  for (let y = top; y <= bottom; y++) {
-    if (frac[y] >= 0.6) {
-      sum += centroid[y];
-      count++;
-    }
-  }
-  return { top: top / scale, centerX: (count ? sum / count : width / 2) / scale };
-}
-
-const cache = new Map();
-
-/** 发型图里不透明像素的包围盒（画布坐标），用来限制修正量。 */
-function opaqueBox(image) {
-  const { width, height, alpha } = image;
   let minX = width;
   let maxX = -1;
   let minY = height;
@@ -178,6 +132,9 @@ function opaqueBox(image) {
     const row = y * width;
     for (let x = 0; x < width; x++) {
       if (alpha[row + x] > 16) {
+        cx += x;
+        cy += y;
+        count++;
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
         if (y < minY) minY = y;
@@ -185,13 +142,43 @@ function opaqueBox(image) {
       }
     }
   }
-  return maxX < 0 ? null : { minX, maxX, minY, maxY };
+  if (!count) return null;
+
+  const bandHalf = BAND_HALF * scale;
+  const center = EYE_CX * scale;
+  const chin = Math.min(height - 1, CHIN * scale);
+  const from = Math.max(0, Math.round(center - bandHalf));
+  const to = Math.min(width - 1, Math.round(center + bandHalf));
+  let fringe = -1;
+  for (let y = 0; y <= chin; y++) {
+    const row = y * width;
+    for (let x = from; x <= to; x++) {
+      if (alpha[row + x] > 16) {
+        fringe = y;
+        break;
+      }
+    }
+  }
+
+  return {
+    scale,
+    cx: cx / count / scale,
+    cy: cy / count / scale,
+    fringe: fringe < 0 ? null : fringe / scale,
+    minX: minX / scale,
+    maxX: maxX / scale,
+    minY: minY / scale,
+    maxY: maxY / scale,
+    width: width / scale,
+    height: height / scale,
+  };
 }
 
+const cache = new Map();
 /**
  * 算出一张发型图的修正量（单位是 256 画布坐标）：
  *   hair —— 发型层平移；face —— 发型挪不动时脸层补的余量。
- * 返回 null 表示这张图找不到开口，按库里「左上角对齐、直接叠加」的原始约定画。
+ * 返回 null 表示这张图没有可用像素，按库里「左上角对齐、直接叠加」的原始约定画。
  */
 export function faceAlign(file) {
   if (!file) return null;
@@ -207,23 +194,22 @@ export function faceAlign(file) {
   let result = null;
   try {
     const image = decodeAlpha(fs.readFileSync(file));
-    const window = image ? headWindow(image) : null;
-    const box = image && window ? opaqueBox(image) : null;
-    if (window && box) {
-      const scale = image.width / BASE;
+    const hair = image ? measureHair(image) : null;
+    if (hair) {
       // 需要的"相对位移"：脸相对发型要往右下挪多少
-      const relX = window.centerX - BASE / 2;
-      const relY = window.top - (FACE_EYE_TOP - FRINGE_GAP);
-      // 优先挪发型（反向），但发型不能出画布，挪不动的部分交给脸
-      const hairDx = Math.max(-box.minX / scale, Math.min((image.width - 1 - box.maxX) / scale, -relX));
-      const hairDy = Math.max(-box.minY / scale, Math.min((image.height - 1 - box.maxY) / scale, -relY));
+      const relX = hair.cx - (EYE_CX + TARGET_DX);
+      const relY = (hair.fringe === null ? EYE_TOP - TARGET_GAP : hair.fringe) - (EYE_TOP - TARGET_GAP);
+      // 优先挪发型（反向）：横向不能出画布；纵向允许削掉一点发顶
+      //（这样就不用把"脸"往下推太多，免得整张脸沉到圆盘底部）
+      const hairDx = Math.max(-hair.minX, Math.min(hair.width - 1 - hair.maxX, -relX));
+      const hairDy = Math.max(-(hair.minY + ALLOW_CLIP), Math.min(hair.height - 1 - hair.maxY, -relY));
       result = {
         hair: { dx: Math.round(hairDx), dy: Math.round(hairDy) },
         face: {
           dx: Math.max(-CLAMP_FACE_X, Math.min(CLAMP_FACE_X, Math.round(relX + hairDx))),
           dy: Math.max(CLAMP_FACE_Y[0], Math.min(CLAMP_FACE_Y[1], Math.round(relY + hairDy))),
         },
-        fringe: Math.round(window.top),
+        fringe: hair.fringe === null ? null : Math.round(hair.fringe),
       };
     }
   } catch {
