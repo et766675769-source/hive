@@ -746,19 +746,18 @@ public partial class MainWindow : Window
             var hairImage = LoadAvatarImage($"{BaseUrl}/api/avatar/hair/{Uri.EscapeDataString(hair)}");
             if (face is not null && hairImage is not null)
             {
-                var visual = new DrawingVisual();
-                using (var dc = visual.RenderOpen())
+                // 图片按原始比例铺满正方形，再由六边形裁剪。
+                // 不能用 Path + VisualBrush —— 那会把图拉伸到六边形较窄的边界上（横向压扁约 13%）。
+                var stack = new Grid { Width = size, Height = size };
+                stack.Children.Add(new Image { Source = face, Width = size, Height = size, Stretch = Stretch.Uniform });
+                stack.Children.Add(new Image { Source = hairImage, Width = size, Height = size, Stretch = Stretch.Uniform });
+                return new Border
                 {
-                    dc.DrawImage(face, new Rect(0, 0, size, size));
-                    dc.DrawImage(hairImage, new Rect(0, 0, size, size));
-                }
-                return new System.Windows.Shapes.Path
-                {
-                    Data = RoundedHexagonGeometry(size),
-                    Fill = new VisualBrush(visual),
                     Width = size,
                     Height = size,
+                    Clip = RoundedHexagonGeometry(size),
                     VerticalAlignment = VerticalAlignment.Center,
+                    Child = stack,
                 };
             }
         }
@@ -768,13 +767,19 @@ public partial class MainWindow : Window
             var image = LoadAvatarImage($"{BaseUrl}/api/avatar/{Uri.EscapeDataString(file)}");
             if (image is not null)
             {
-                return new System.Windows.Shapes.Path
+                return new Border
                 {
-                    Data = RoundedHexagonGeometry(size),
-                    Fill = new ImageBrush(image) { Stretch = Stretch.UniformToFill },
                     Width = size,
                     Height = size,
+                    Clip = RoundedHexagonGeometry(size),
                     VerticalAlignment = VerticalAlignment.Center,
+                    Child = new Image
+                    {
+                        Source = image,
+                        Width = size,
+                        Height = size,
+                        Stretch = Stretch.Uniform,
+                    },
                 };
             }
         }
