@@ -276,7 +276,7 @@ public partial class MainWindow : Window
         foreach (var person in people)
         {
             var content = new StackPanel { Orientation = Orientation.Horizontal };
-            content.Children.Add(Avatar(person.Name, person.AvatarSeed, person.AvatarFile, person.AvatarHair, 24));
+            content.Children.Add(Avatar(person.Name, person.AvatarSeed, person.AvatarFile, person.AvatarHair, 30));
             content.Children.Add(new TextBlock
             {
                 Text = person.Name,
@@ -719,7 +719,7 @@ public partial class MainWindow : Window
         var active = _mode == "employee" && _threadId == employee.Id;
 
         var panel = new StackPanel { Orientation = Orientation.Horizontal };
-        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, employee.AvatarFile, employee.AvatarHair, 32));
+        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, employee.AvatarFile, employee.AvatarHair, 40));
         // 名字稍大、职位跟在后面且颜色更淡
         panel.Children.Add(new TextBlock
         {
@@ -882,33 +882,36 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 把头像图统一包装成"有框的六边形"：
-    ///   底层  底色（黑白线条头像在深色底上会糊住，需要一块底把它衬出来）
-    ///   中间  头像图层（按原始比例铺满，再由外层六边形裁掉四角）
-    ///   顶层  六边形描边，勾出轮廓
-    /// 顺序很重要：先按原比例摆正、最后才裁剪，比例不会被带偏。
+    /// 把头像图统一包装成"六边形头像"：
+    ///   底层  纯白六边形实底（不是线框；黑白线条头像需要一块白底才立得出来）
+    ///   中间  头像图层，按六边形的实际宽度适配并居中——六边形比正方形窄 13.4%，
+    ///         所以图片要跟着缩到同样宽，既不会被裁掉两侧，也不会被拉伸变形
+    /// 顺序：先按原比例摆正、最后才裁剪，比例不会被带偏。
     /// </summary>
     private static UIElement WrapAvatar(IEnumerable<ImageSource> layers, double size)
     {
+        var width = size * 0.866;   // 六边形的实际宽度（正六边形宽:高 = √3:2）
         var stack = new Grid { Width = size, Height = size };
-        stack.Children.Add(new Border { Background = Themed("Surface") });
+
+        stack.Children.Add(new System.Windows.Shapes.Path
+        {
+            Data = RoundedHexagonGeometry(size),
+            Fill = Brushes.White,
+            Stretch = Stretch.None,
+        });
+
         foreach (var source in layers)
         {
             stack.Children.Add(new Image
             {
                 Source = source,
-                Width = size,
-                Height = size,
+                Width = width,
+                Height = width,
                 Stretch = Stretch.Uniform,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
             });
         }
-        stack.Children.Add(new System.Windows.Shapes.Path
-        {
-            Data = RoundedHexagonGeometry(size),
-            Stroke = Themed("LineStrong"),
-            StrokeThickness = 2,
-            Stretch = Stretch.None,
-        });
 
         return new Border
         {
