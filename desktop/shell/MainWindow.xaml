@@ -138,9 +138,10 @@
         <DockPanel>
           <Button x:Name="SendButton" DockPanel.Dock="Right" Style="{StaticResource Primary}"
                   Content="发送" Click="OnSend" Margin="10,0,0,0" />
-          <!-- 发送方式：点一下就切换，立刻生效 -->
-          <Button x:Name="SendModeButton" DockPanel.Dock="Right" Content="Enter 发送"
-                  Click="OnToggleSendMode" Margin="10,0,0,0" Foreground="#6B7280" />
+          <!-- 发送方式：点这个小箭头才弹出选项，平时不占地方 -->
+          <Button x:Name="SendModeArrow" DockPanel.Dock="Right" Content="▾"
+                  Click="OnShowSendModeMenu" Margin="8,0,0,0" Width="36" FontSize="11"
+                  Foreground="#6B7280" ToolTip="选择发送方式（Enter / Alt+Enter）" />
           <TextBox x:Name="InputBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="44" MaxHeight="140"
                    VerticalScrollBarVisibility="Auto" PreviewKeyDown="OnInputKeyDown" />
         </DockPanel>

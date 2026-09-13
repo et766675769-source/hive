@@ -67,7 +67,6 @@ public partial class MainWindow : Window
         Closing += OnClosing;
         InputBox.TextChanged += OnInputChanged;
         LoadPrefs();
-        UpdateSendModeButton();
     }
 
     /* ── 发送方式：Enter 还是 Alt+Enter，点了立刻生效 ─────── */
@@ -100,20 +99,41 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnToggleSendMode(object sender, RoutedEventArgs e)
+    /// <summary>点发送按钮后面的小箭头：弹出可以选的发送方式，当前那个打勾。</summary>
+    private void OnShowSendModeMenu(object sender, RoutedEventArgs e)
     {
-        _altEnterToSend = !_altEnterToSend;
-        UpdateSendModeButton();
-        SavePrefs();
-        InputBox.Focus();
+        var menu = new ContextMenu();
+
+        var enter = new MenuItem
+        {
+            Header = "Enter 发送（Shift+Enter 换行）",
+            IsCheckable = true,
+            IsChecked = !_altEnterToSend,
+        };
+        enter.Click += (_, _) => SetSendMode(false);
+
+        var altEnter = new MenuItem
+        {
+            Header = "Alt+Enter 发送（Enter 换行）",
+            IsCheckable = true,
+            IsChecked = _altEnterToSend,
+        };
+        altEnter.Click += (_, _) => SetSendMode(true);
+
+        menu.Items.Add(enter);
+        menu.Items.Add(altEnter);
+        menu.PlacementTarget = SendModeArrow;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsOpen = true;
     }
 
-    private void UpdateSendModeButton()
+    /// <summary>切换发送方式：立刻生效，并记住。</summary>
+    private void SetSendMode(bool altEnterToSend)
     {
-        SendModeButton.Content = _altEnterToSend ? "Alt+Enter 发送" : "Enter 发送";
-        SendModeButton.ToolTip = _altEnterToSend
-            ? "当前：Alt+Enter 发送，Enter 换行。点一下改成 Enter 发送。"
-            : "当前：Enter 发送，Shift+Enter 换行。点一下改成 Alt+Enter 发送。";
+        _altEnterToSend = altEnterToSend;
+        SavePrefs();
+        InputBox.Focus();
+        Log($"发送方式改为 {(_altEnterToSend ? "Alt+Enter" : "Enter")}");
     }
 
     /* ── @ 提及：列出当前对话里的所有人 ─────────────────── */
