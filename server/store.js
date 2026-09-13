@@ -18,9 +18,13 @@ const DEFAULT_SETTINGS = {
   apiKey: '',
   baseUrl: 'https://api.deepseek.com',
   model: 'deepseek-chat',
+  // 推理等级：default（不传，用接口自己的默认）/ off（关掉思考）/ low / high / max
+  reasoning: 'default',
   onboarded: false, // 是否走完首次引导
   updatedAt: '',
 };
+
+export const REASONING_LEVELS = ['default', 'off', 'low', 'high', 'max'];
 
 export const THREAD_MODES = ['department', 'project', 'employee'];
 
@@ -67,6 +71,7 @@ export class Store {
       apiKey: String(employee.apiKey || '').trim() || String(settings.apiKey || '').trim(),
       baseUrl: String(employee.baseUrl || '').trim() || String(settings.baseUrl || '').trim(),
       model: String(employee.model || '').trim() || String(settings.model || '').trim(),
+      reasoning: String(employee.reasoning || '').trim() || String(settings.reasoning || '').trim() || 'default',
       inherited: !String(employee.apiKey || '').trim(),
     };
   }

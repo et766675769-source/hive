@@ -35,7 +35,7 @@ const el = {
 };
 
 const state = {
-  settings: { hasKey: false, baseUrl: '', model: '', onboarded: false },
+  settings: { hasKey: false, baseUrl: '', model: '', reasoning: 'default', onboarded: false },
   departments: [],
   employees: [],
   projects: [],
@@ -105,6 +105,19 @@ function avatarHtml(name, seed, avatar = null, size = '') {
 function withAlign(employee) {
   if (!employee?.avatar) return null;
   return employee.align ? { ...employee.avatar, align: employee.align } : employee.avatar;
+}
+
+/* 推理等级：跟桌面端同一套档位（见 server/worker.js 里怎么翻译成请求参数） */
+const REASONING_OPTIONS = [
+  ['default', '默认（接口自带）'],
+  ['off', '关闭思考'],
+  ['low', '低（快）'],
+  ['high', '高（默认档）'],
+  ['max', '最高（最慢最准）'],
+];
+function reasoningOptions(current) {
+  const value = current || 'default';
+  return REASONING_OPTIONS.map(([v, label]) => `<option value="${v}"${v === value ? ' selected' : ''}>${label}</option>`).join('');
 }
 
 function employeeById(id) {
@@ -546,13 +559,15 @@ function openSettingsModal() {
        <input class="input" id="fBase" value="${esc(state.settings.baseUrl || 'https://api.deepseek.com')}" spellcheck="false" /></label>
      <label class="field"><span class="field__label">默认模型</span>
        <input class="input" id="fModel" value="${esc(state.settings.model || 'deepseek-chat')}" /></label>
+     <label class="field"><span class="field__label">推理等级</span>
+       <select class="input" id="fReasoning">${reasoningOptions(state.settings.reasoning)}</select></label>
      <p class="field__hint">Key 只写进本机 <code>data/settings.json</code>，不上传。</p>`,
     `<button class="ghost" id="modalCancel" type="button">取消</button>
      <button class="primary" id="modalSave" type="button">保存</button>`,
   );
   $('modalCancel').onclick = closeModal;
   $('modalSave').onclick = async () => {
-    const payload = { baseUrl: $('fBase').value.trim(), model: $('fModel').value.trim(), onboarded: true };
+    const payload = { baseUrl: $('fBase').value.trim(), model: $('fModel').value.trim(), reasoning: $('fReasoning').value, onboarded: true };
     const key = $('fKey').value.trim();
     if (key) payload.apiKey = key;
     try {
@@ -706,6 +721,8 @@ function renderOnboard() {
         <input class="input" id="oBase" value="${esc(state.settings.baseUrl || 'https://api.deepseek.com')}" spellcheck="false" /></label>
       <label class="field"><span class="field__label">默认模型</span>
         <input class="input" id="oModel" value="${esc(state.settings.model || 'deepseek-chat')}" /></label>
+      <label class="field"><span class="field__label">推理等级</span>
+        <select class="input" id="oReasoning">${reasoningOptions(state.settings.reasoning)}</select></label>
       <p class="field__hint">这是「默认通道」：没有单独配 API 的员工都用它。Key 只存本机。</p>`;
   } else if (step === 1) {
     body = `
@@ -774,7 +791,7 @@ async function nextOnboardStep() {
   if (button) button.disabled = true;
   try {
     if (step === 0) {
-      const payload = { baseUrl: $('oBase').value.trim(), model: $('oModel').value.trim() };
+      const payload = { baseUrl: $('oBase').value.trim(), model: $('oModel').value.trim(), reasoning: $('oReasoning').value };
       const key = $('oKey').value.trim();
       if (key) payload.apiKey = key;
       await api('/api/settings', { method: 'POST', body: JSON.stringify(payload) });

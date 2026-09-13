@@ -92,6 +92,22 @@ dotnet build -c Release     # 需要 .NET 8 SDK，只需构建一次
 
 比如：经理用强模型把关决策，执行人员用便宜模型干活——成本和质量都照顾到。
 
+### 推理等级
+
+「全局设置 → API 设置」里可以选推理等级，管的是"先思考再回答"这件事：
+
+| 选项 | 发出去的参数 | 说明 |
+| --- | --- | --- |
+| 默认（接口自带） | 不发 | 完全按接口自己的默认来 |
+| 关闭思考 | `thinking: {type:"disabled"}` | 最快，适合格式化的杂活 |
+| 低（快） | `reasoning_effort: "low"` | |
+| 高（默认档） | `reasoning_effort: "high"` | |
+| 最高（最慢最准） | `reasoning_effort: "max"` | 最费 token |
+
+- 参数写法按 [DeepSeek 思考模式文档](https://api-docs.deepseek.com/guides/thinking_mode)：OpenAI 格式用 `reasoning_effort`，开关思考用 `thinking.type`；
+- 接口地址不是 DeepSeek 的，"关闭思考"就发通用的 `reasoning_effort: "none"`；
+- 开了推理等级时不再发 `temperature`（思考模式下它是无效参数），并把 `max_tokens` 从 900 提到 2000，免得正文被思考内容挤掉。
+
 ## 数据在哪
 
 全部在本机，纯文本，随时可看可备份：

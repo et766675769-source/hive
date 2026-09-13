@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
-import { Store, THREAD_MODES } from './store.js';
+import { Store, THREAD_MODES, REASONING_LEVELS } from './store.js';
 import { Worker } from './worker.js';
 import { faceAlign } from './align.js';
 
@@ -278,6 +278,12 @@ function serveStatic(res, filePath) {
 
 const LEVELS = ['manager', 'lead', 'worker'];
 
+/** 推理等级只认这几档，别的写法一律按「不传、用接口默认」处理。 */
+function normalizeReasoning(value) {
+  const level = String(value ?? '').trim().toLowerCase();
+  return REASONING_LEVELS.includes(level) ? level : 'default';
+}
+
 function normalizeEmployee(input, existing = null) {
   const name = String(input.name || '').trim().slice(0, 32);
   if (!name) throw new Error('员工名字不能为空');
@@ -293,6 +299,11 @@ function normalizeEmployee(input, existing = null) {
     model: String(input.model ?? existing?.model ?? '').trim().slice(0, 80),
     apiKey: String(input.apiKey ?? existing?.apiKey ?? '').trim().slice(0, 200),
     baseUrl: String(input.baseUrl ?? existing?.baseUrl ?? '').trim().slice(0, 200),
+    // 员工自己的推理等级；空 = 用全局默认
+    reasoning: (() => {
+      const level = normalizeReasoning(input.reasoning ?? existing?.reasoning ?? '');
+      return level === 'default' ? '' : level;
+    })(),
     // 头像：优先挑用得最少的发型；传 avatar:null 表示清空重挑
     avatar: pickAvatar(input.avatar === null ? null : existing),
     createdAt: existing?.createdAt || new Date().toISOString(),
@@ -380,6 +391,7 @@ const server = http.createServer(async (req, res) => {
           hasKey: Boolean(String(settings.apiKey || '').trim()),
           baseUrl: settings.baseUrl,
           model: settings.model,
+          reasoning: settings.reasoning,
           onboarded: Boolean(settings.onboarded),
         },
         departments: org.departments,
@@ -466,11 +478,12 @@ const server = http.createServer(async (req, res) => {
         apiKey: payload.apiKey === undefined ? current.apiKey : String(payload.apiKey).trim().slice(0, 200),
         baseUrl: payload.baseUrl === undefined ? current.baseUrl : String(payload.baseUrl).trim().slice(0, 200),
         model: payload.model === undefined ? current.model : String(payload.model).trim().slice(0, 80),
+        reasoning: payload.reasoning === undefined ? current.reasoning : normalizeReasoning(payload.reasoning),
         onboarded: payload.onboarded === undefined ? current.onboarded : Boolean(payload.onboarded),
       });
       return json(res, 200, {
         ok: true,
-        settings: { hasKey: Boolean(next.apiKey), baseUrl: next.baseUrl, model: next.model, onboarded: next.onboarded },
+        settings: { hasKey: Boolean(next.apiKey), baseUrl: next.baseUrl, model: next.model, reasoning: next.reasoning, onboarded: next.onboarded },
       });
     }
 

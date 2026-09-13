@@ -16,12 +16,29 @@ function endpointOf(baseUrl) {
   return raw.endsWith('/chat/completions') ? raw : `${raw}/chat/completions`;
 }
 
+/**
+ * 把「推理等级」翻译成请求体里的字段（DeepSeek / OpenAI 兼容写法）。
+ *
+ * DeepSeek 官方文档里：OpenAI 格式用 `reasoning_effort: low/high/max` 控制强度，
+ * 开关思考用 `thinking: {type: disabled}`（默认是开着的，默认强度 high）。
+ * 不是 DeepSeek 的接口就只发 reasoning_effort（这是各家通用的写法）。
+ */
+function reasoningBody(channel) {
+  const level = String(channel.reasoning || '').trim().toLowerCase();
+  if (!level || level === 'default') return null;
+  const deepseek = /deepseek/i.test(String(channel.baseUrl || ''));
+  if (level === 'off') return deepseek ? { thinking: { type: 'disabled' } } : { reasoning_effort: 'none' };
+  if (level === 'low' || level === 'high' || level === 'max') return { reasoning_effort: level };
+  return null;
+}
+
 /** 一次性调用 OpenAI 兼容接口，返回纯文本。 */
 async function callChannel(channel, { system, prompt, timeoutMs = 120000 }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('请求超时')), timeoutMs);
   const headers = { 'Content-Type': 'application/json' };
   if (channel.apiKey) headers.Authorization = `Bearer ${channel.apiKey}`;
+  const reasoning = reasoningBody(channel);
   try {
     const response = await fetch(endpointOf(channel.baseUrl), {
       method: 'POST',
@@ -32,9 +49,12 @@ async function callChannel(channel, { system, prompt, timeoutMs = 120000 }) {
           { role: 'system', content: system },
           { role: 'user', content: prompt },
         ],
-        max_tokens: 900,
-        temperature: 0.3,
+        // 思考会占掉输出预算，开了推理等级就给宽一点，免得正文被截断
+        max_tokens: reasoning ? 2000 : 900,
+        // 思考模式下 temperature 是无效参数，干脆不发
+        ...(reasoning ? {} : { temperature: 0.3 }),
         stream: false,
+        ...(reasoning || {}),
       }),
       signal: controller.signal,
     });

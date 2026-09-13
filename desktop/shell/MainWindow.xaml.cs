@@ -55,6 +55,7 @@ public partial class MainWindow : Window
     private string _dataDir = "";
     private string _baseUrl = "";
     private string _model = "";
+    private string _reasoning = "default";
 
     public MainWindow()
     {
@@ -503,6 +504,7 @@ public partial class MainWindow : Window
             _hasKey = settings.GetProperty("hasKey").GetBoolean();
             _baseUrl = settings.TryGetProperty("baseUrl", out var bu) ? bu.GetString() ?? "" : "";
             _model = settings.TryGetProperty("model", out var md) ? md.GetString() ?? "" : "";
+            _reasoning = settings.TryGetProperty("reasoning", out var rz) ? rz.GetString() ?? "default" : "default";
             _departments = root.GetProperty("departments").EnumerateArray().Select(d => new DepartmentInfo(
                 d.GetProperty("id").GetString() ?? "",
                 d.GetProperty("name").GetString() ?? "",
@@ -1213,7 +1215,8 @@ public partial class MainWindow : Window
             _dataDir,
             _hasKey,
             string.IsNullOrEmpty(_baseUrl) ? "https://api.deepseek.com" : _baseUrl,
-            string.IsNullOrEmpty(_model) ? "deepseek-chat" : _model)
+            string.IsNullOrEmpty(_model) ? "deepseek-chat" : _model,
+            string.IsNullOrEmpty(_reasoning) ? "default" : _reasoning)
         {
             Owner = this,
         };
@@ -1276,6 +1279,7 @@ public partial class MainWindow : Window
         {
             ["baseUrl"] = dialog.BaseUrlValue,
             ["model"] = dialog.ModelValue,
+            ["reasoning"] = dialog.ReasoningValue,
             ["onboarded"] = true,
         };
         if (!string.IsNullOrEmpty(dialog.ApiKeyValue)) payload["apiKey"] = dialog.ApiKeyValue;
@@ -1676,10 +1680,21 @@ public sealed class SettingsWindow : Window
 {
     private readonly ComboBox _theme;
     private readonly ComboBox _startup;
+    private readonly ComboBox _reasoning;
     private readonly TextBox _dataDir;
     private readonly TextBox _apiKey;
     private readonly TextBox _baseUrl;
     private readonly TextBox _model;
+
+    /// <summary>推理等级的中文名 ↔ 服务端取值。</summary>
+    private static readonly (string Label, string Value)[] ReasoningOptions =
+    {
+        ("默认（接口自带）", "default"),
+        ("关闭思考", "off"),
+        ("低（快）", "low"),
+        ("高（默认档）", "high"),
+        ("最高（最慢最准）", "max"),
+    };
 
     public bool DarkTheme => _theme.SelectedItem?.ToString() == "深色";
     public bool AutoStart => _startup.SelectedItem?.ToString() == "开启";
@@ -1687,8 +1702,11 @@ public sealed class SettingsWindow : Window
     public string ApiKeyValue => _apiKey.Text.Trim();
     public string BaseUrlValue => _baseUrl.Text.Trim();
     public string ModelValue => _model.Text.Trim();
+    public string ReasoningValue => _reasoning.SelectedItem?.ToString() is { } label
+        ? ReasoningOptions.FirstOrDefault(o => o.Label == label).Value ?? "default"
+        : "default";
 
-    public SettingsWindow(bool darkTheme, bool autoStart, string dataDir, bool hasKey, string baseUrl, string model)
+    public SettingsWindow(bool darkTheme, bool autoStart, string dataDir, bool hasKey, string baseUrl, string model, string reasoning = "default")
     {
         Title = "设置";
         Width = 470;
@@ -1765,6 +1783,19 @@ public sealed class SettingsWindow : Window
         apiPanel.Children.Add(Caption("默认模型", ink2));
         _model = new TextBox { Text = model, Padding = new Thickness(8, 6, 8, 6) };
         apiPanel.Children.Add(_model);
+        apiPanel.Children.Add(Caption("推理等级", ink2));
+        _reasoning = Combo(ReasoningOptions.Select(o => o.Label).ToArray(),
+            ReasoningOptions.FirstOrDefault(o => o.Value == (reasoning ?? "default")).Label ?? ReasoningOptions[0].Label);
+        _reasoning.Margin = new Thickness(0, 0, 0, 4);
+        apiPanel.Children.Add(_reasoning);
+        apiPanel.Children.Add(new TextBlock
+        {
+            Text = "思考模式会先推理再回答，更准但更慢、也更费 token；关闭思考最快。",
+            FontSize = 11.5,
+            Foreground = ink2,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 10),
+        });
         apiPanel.Children.Add(new TextBlock
         {
             Text = "这是「默认通道」：没有单独配 Key 的员工都用它。",
