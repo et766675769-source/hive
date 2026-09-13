@@ -1527,7 +1527,7 @@ public partial class MainWindow : Window
 
             _tray = new Forms.NotifyIcon
             {
-                Icon = Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? Drawing.SystemIcons.Application,
+                Icon = LoadTrayIcon(),
                 Text = "蜂群 HIVE · AI 员工面板",
                 Visible = true,
                 ContextMenuStrip = menu,
@@ -1539,6 +1539,45 @@ public partial class MainWindow : Window
         {
             Log($"托盘创建失败：{error.Message}");
         }
+    }
+
+    /// <summary>
+    /// 托盘图标：任务栏底色通常是深的，所以优先用白色版 desktop/hive-tray.ico；
+    /// 找不到就退回 exe 自带图标，保证不会没有图标。
+    /// </summary>
+    /// <summary>系统任务栏是不是浅色（Windows 个人化设置里的"系统模式"）。</summary>
+    private static bool TaskbarIsLight()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("SystemUsesLightTheme") is int value && value == 1;
+        }
+        catch
+        {
+            return false; // 查不到就按深色任务栏处理（Windows 默认）
+        }
+    }
+
+    private static Drawing.Icon LoadTrayIcon()
+    {
+        var root = FindProjectRoot();
+        // 任务栏是浅色的用黑图标、深色的用白图标，两种设置下都看得清
+        var fileName = TaskbarIsLight() ? "hive.ico" : "hive-tray.ico";
+        var candidate = root is null ? null : Path.Combine(root, "desktop", fileName);
+        if (candidate is not null && File.Exists(candidate))
+        {
+            try
+            {
+                return new Drawing.Icon(candidate);
+            }
+            catch (Exception error)
+            {
+                Log($"托盘图标加载失败，改用 exe 图标：{error.Message}");
+            }
+        }
+        return Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? Drawing.SystemIcons.Application;
     }
 
     private void RestoreWindow()
