@@ -1,4 +1,4 @@
-﻿# 蜂群 HIVE · 开发约定
+# 蜂群 HIVE · 开发约定
 
 > 这份文件是给后续改动（人也好、AI 也好）看的硬约定。改界面之前先读它。
 
@@ -109,7 +109,31 @@ App 侧实现：识别到 complete/flat 时给员工存 `avatar.file`（相对�
 > `server/align.js`（量发帘/质心）与 `tools/fix-avatar-library.mjs`（重裁老库发型图）
 > 都只对 composed 形态有意义，留作诊断与再生成用。
 
-## 六、其它
+## 六、职级与模型：P3 / P2 / P1
+
+员工有一个职级，**模型默认由职级决定**，不要再给每个员工硬编码模型：
+
+| 职级 | 角色 | 默认模型 | 在哪儿配 |
+| --- | --- | --- | --- |
+| **P3** | 经理 | `deepseek-v4-pro` | 「全局设置 → API 设置 → 按职级分配模型」 |
+| **P2** | 项目负责人 | `deepseek-flash` | 同上 |
+| **P1** | 普通员工 | 留空 = 全局默认 | 同上（可填多个免费小模型，同职级轮着用） |
+
+实现要点：
+
+- `store.js`：`LEVELS = ['manager','lead','worker']`、`LEVEL_RANKS`（manager→P3 / lead→P2 / worker→P1）、
+  `DEFAULT_SETTINGS.levelChannels = { manager|lead|worker: { models[], baseUrl, apiKey } }`；
+- `channelFor(employee)` 的优先级：**员工自己填的 → 他职级的通道 → 全局默认通道**，
+  `models` 多个时按员工 id 的稳定哈希分摊（同一个人每次拿到同一个模型）；
+- `/api/state` 里 `settings.levelChannels` 只回 `models / baseUrl / hasKey`，**不回明文 Key**；
+  员工的 `channel` 也把 `apiKey` 换成 `hasKey`（这是之前漏掉的一处：明文 Key 曾经会回给前端）；
+- 改员工时可以只传要改的字段（如只传 `level`），`normalizeEmployee` 对 `name/title/...` 都做了 `?? existing` 兜底；
+- 批量刷职级：`node tools/assign-levels.mjs`（dry-run）/ `--apply`（写回）。
+
+> 实测：13 位员工 → 陈明 P3 拿 `deepseek-v4-pro`；林晓/赵强/孙雅 P2 拿 `deepseek-flash`；其余 9 人 P1。
+> P1 填 3 个模型时，9 人分摊为 4/3/2 且每人稳定不变。
+
+## 七、其它
 
 - 服务端**零依赖**，只用 Node 内置模块
 - 数据全部存在 `data/`，或用户在「设置 → 数据存储位置」里指定的目录

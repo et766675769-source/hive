@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -56,6 +56,29 @@ public partial class MainWindow : Window
     private string _baseUrl = "";
     private string _model = "";
     private string _reasoning = "default";
+    // 按职级分配的模型通道（P3 经理 / P2 项目负责人 / P1 普通员工）
+    private Dictionary<string, LevelChannelInfo> _levelChannels = new();
+
+    /// <summary>三个职级：P3 最高（经理）→ P2（项目负责人）→ P1（普通员工）。</summary>
+    private static readonly (string Label, string Value)[] LevelOptions =
+    {
+        ("P3 · 经理", "manager"),
+        ("P2 · 项目负责人", "lead"),
+        ("P1 · 普通员工", "worker"),
+    };
+
+    private static string LevelValueOf(string label) =>
+        LevelOptions.FirstOrDefault(o => o.Label == (label ?? "")).Value ?? "worker";
+
+    private static string LevelLabelOf(string value) =>
+        LevelOptions.FirstOrDefault(o => o.Value == (value ?? "")).Label ?? LevelOptions[2].Label;
+
+    private static string LevelRankOf(string value) => value switch
+    {
+        "manager" => "P3",
+        "lead" => "P2",
+        _ => "P1",
+    };
 
     public MainWindow()
     {
@@ -496,6 +519,21 @@ public partial class MainWindow : Window
             _baseUrl = settings.TryGetProperty("baseUrl", out var bu) ? bu.GetString() ?? "" : "";
             _model = settings.TryGetProperty("model", out var md) ? md.GetString() ?? "" : "";
             _reasoning = settings.TryGetProperty("reasoning", out var rz) ? rz.GetString() ?? "default" : "default";
+            _levelChannels = new Dictionary<string, LevelChannelInfo>();
+            if (settings.TryGetProperty("levelChannels", out var lc) && lc.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var level in LevelOptions)
+                {
+                    if (!lc.TryGetProperty(level.Value, out var item) || item.ValueKind != JsonValueKind.Object) continue;
+                    var models = item.TryGetProperty("models", out var ms) && ms.ValueKind == JsonValueKind.Array
+                        ? ms.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x != "").ToArray()
+                        : System.Array.Empty<string>();
+                    _levelChannels[level.Value] = new LevelChannelInfo(
+                        models,
+                        item.TryGetProperty("baseUrl", out var lb) ? lb.GetString() ?? "" : "",
+                        item.TryGetProperty("hasKey", out var hk) && hk.ValueKind == JsonValueKind.True);
+                }
+            }
             _departments = root.GetProperty("departments").EnumerateArray().Select(d => new DepartmentInfo(
                 d.GetProperty("id").GetString() ?? "",
                 d.GetProperty("name").GetString() ?? "",
@@ -733,12 +771,28 @@ public partial class MainWindow : Window
 
         var panel = new StackPanel { Orientation = Orientation.Horizontal };
         panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, employee.AvatarFile, employee.AvatarHair, 44));
+        // 职级徽标：P3 / P2 / P1
+        panel.Children.Add(new Border
+        {
+            Background = Themed("AccentSoft"),
+            CornerRadius = new CornerRadius(999),
+            Padding = new Thickness(7, 2, 7, 3),
+            Margin = new Thickness(12, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock
+            {
+                Text = LevelRankOf(employee.Level),
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Themed("Accent"),
+            },
+        });
         // 名字稍大、职位跟在后面且颜色更淡
         panel.Children.Add(new TextBlock
         {
             Text = employee.Name,
             FontSize = 15,
-            Margin = new Thickness(12, 0, 0, 0),
+            Margin = new Thickness(8, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = (Brush)FindResource("Ink"),
         });
@@ -1134,8 +1188,8 @@ public partial class MainWindow : Window
         {
             new FormField("name", "名字", "例如 李四"),
             new FormField("title", "职能", "例如 后端工程师"),
-            new FormField("level", "层级", "部门经理 / 项目负责人 / 执行人员", "执行人员",
-                new[] { "部门经理", "项目负责人", "执行人员" }),
+            new FormField("level", "职级（P3 最高）", "", "P1 · 普通员工",
+                LevelOptions.Select(o => o.Label).ToArray()),
             new FormField("department", "所属部门", "", _departments[0].Name, _departments.Select(d => d.Name).ToArray()),
             new FormField("description", "职责描述（可留空）", ""),
             new FormField("model", "模型（留空用全局默认）", ""),
@@ -1143,12 +1197,7 @@ public partial class MainWindow : Window
         });
         if (dialog.ShowDialog() != true) return;
         var v = dialog.Values;
-        var level = v["level"] switch
-        {
-            "部门经理" => "manager",
-            "项目负责人" => "lead",
-            _ => "worker",
-        };
+        var level = LevelValueOf(v["level"]);
         try
         {
             var body = JsonSerializer.Serialize(new
@@ -1196,7 +1245,8 @@ public partial class MainWindow : Window
             _hasKey,
             string.IsNullOrEmpty(_baseUrl) ? "https://api.deepseek.com" : _baseUrl,
             string.IsNullOrEmpty(_model) ? "deepseek-chat" : _model,
-            string.IsNullOrEmpty(_reasoning) ? "default" : _reasoning)
+            string.IsNullOrEmpty(_reasoning) ? "default" : _reasoning,
+            _levelChannels)
         {
             Owner = this,
         };
@@ -1260,6 +1310,7 @@ public partial class MainWindow : Window
             ["baseUrl"] = dialog.BaseUrlValue,
             ["model"] = dialog.ModelValue,
             ["reasoning"] = dialog.ReasoningValue,
+            ["levelChannels"] = dialog.LevelChannelsValue(),
             ["onboarded"] = true,
         };
         if (!string.IsNullOrEmpty(dialog.ApiKeyValue)) payload["apiKey"] = dialog.ApiKeyValue;
@@ -1375,16 +1426,18 @@ public partial class MainWindow : Window
     private void ShowEmployeeMenu(EmployeeInfo employee, UIElement anchor)
     {
         var menu = new ContextMenu();
-        var editItem = new MenuItem { Header = "设置（模型 / API）…" };
+        var editItem = new MenuItem { Header = "设置（职级 / 模型 / API）…" };
         editItem.Click += async (_, _) =>
         {
             var dialog = new FormDialog($"设置 · {employee.Name}", new[]
             {
                 new FormField("title", "职能", "", employee.Title),
-                new FormField("model", "调用模型（留空用全局默认）", "例如 deepseek-chat", employee.Model),
+                new FormField("level", "职级（P3 最高，决定用哪个模型）", "", LevelLabelOf(employee.Level),
+                    LevelOptions.Select(o => o.Label).ToArray()),
+                new FormField("model", "自己指定模型（留空 = 按职级分配）", "例如 deepseek-chat", employee.Model),
                 new FormField("baseUrl", "接口地址（留空用全局默认）", "https://api.deepseek.com", employee.BaseUrl),
                 new FormField("apiKey", "API Key（留空保持不变）", "", "", null, true),
-            }, "这位员工可以单独用自己的一套 API 与模型——留空就跟随全局设置。");
+            }, "职级决定模型：P3 经理 / P2 项目负责人 / P1 普通员工，三档在「全局设置 → API 设置」里配。");
             if (dialog.ShowDialog() != true) return;
             var v = dialog.Values;
             var payload = new Dictionary<string, object>
@@ -1392,7 +1445,7 @@ public partial class MainWindow : Window
                 ["id"] = employee.Id,
                 ["name"] = employee.Name,
                 ["title"] = v["title"],
-                ["level"] = employee.Level,
+                ["level"] = LevelValueOf(v["level"]),
                 ["departmentId"] = employee.DepartmentId,
                 ["model"] = v["model"],
                 ["baseUrl"] = v["baseUrl"],
@@ -1749,6 +1802,9 @@ public sealed record FormField(
     string Key, string Label, string Placeholder = "", string Value = "",
     string[]? Options = null, bool IsSecret = false, bool IsFolder = false);
 
+/// <summary>某个职级配的模型通道：models 可以多个（同职级轮着用），baseUrl 留空 = 用全局默认通道。</summary>
+public sealed record LevelChannelInfo(string[] Models, string BaseUrl, bool HasKey);
+
 /// <summary>设置窗口：分组呈现；「API 设置」单独一块，点标题才展开。</summary>
 public sealed class SettingsWindow : Window
 {
@@ -1759,6 +1815,41 @@ public sealed class SettingsWindow : Window
     private readonly TextBox _apiKey;
     private readonly TextBox _baseUrl;
     private readonly TextBox _model;
+    // 三个职级的模型通道：模型 / 接口地址 / API Key
+    private readonly TextBox[] _levelModels = new TextBox[3];
+    private readonly TextBox[] _levelBaseUrls = new TextBox[3];
+    private readonly TextBox[] _levelKeys = new TextBox[3];
+
+    private static readonly (string Label, string Value)[] LevelRows =
+    {
+        ("P3 · 经理（最费、最强）", "manager"),
+        ("P2 · 项目负责人（中等）", "lead"),
+        ("P1 · 普通员工（最省，可填免费模型）", "worker"),
+    };
+
+    /// <summary>把三个职级的输入拼成 /api/settings 要的 levelChannels。</summary>
+    public Dictionary<string, object> LevelChannelsValue()
+    {
+        var result = new Dictionary<string, object>();
+        for (var i = 0; i < LevelRows.Length; i++)
+        {
+            var models = _levelModels[i].Text
+                .Split(new[] { ',', '，', ';', '；', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim())
+                .Where(x => x != "")
+                .Take(5)
+                .ToArray();
+            var entry = new Dictionary<string, object>
+            {
+                ["models"] = models,
+                ["baseUrl"] = _levelBaseUrls[i].Text.Trim(),
+            };
+            // 留空 = 不改（服务端保留原来的 Key）
+            if (!string.IsNullOrEmpty(_levelKeys[i].Text.Trim())) entry["apiKey"] = _levelKeys[i].Text.Trim();
+            result[LevelRows[i].Value] = entry;
+        }
+        return result;
+    }
 
     /// <summary>推理等级的中文名 ↔ 服务端取值。</summary>
     private static readonly (string Label, string Value)[] ReasoningOptions =
@@ -1780,7 +1871,8 @@ public sealed class SettingsWindow : Window
         ? ReasoningOptions.FirstOrDefault(o => o.Label == label).Value ?? "default"
         : "default";
 
-    public SettingsWindow(bool darkTheme, bool autoStart, string dataDir, bool hasKey, string baseUrl, string model, string reasoning = "default")
+    public SettingsWindow(bool darkTheme, bool autoStart, string dataDir, bool hasKey, string baseUrl, string model, string reasoning = "default",
+        Dictionary<string, LevelChannelInfo>? levelChannels = null)
     {
         Title = "设置";
         Width = 470;
@@ -1869,6 +1961,60 @@ public sealed class SettingsWindow : Window
             Foreground = ink2,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 10),
+        });
+
+        /* 按职级分配模型：P3 经理 / P2 项目负责人 / P1 普通员工 */
+        apiPanel.Children.Add(new TextBlock
+        {
+            Text = "按职级分配模型（P3 最高）",
+            FontSize = 12.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = (Brush)Application.Current.Resources["Ink"],
+            Margin = new Thickness(0, 6, 0, 2),
+        });
+        for (var i = 0; i < LevelRows.Length; i++)
+        {
+            var (label, value) = LevelRows[i];
+            LevelChannelInfo? current = null;
+            levelChannels?.TryGetValue(value, out current);
+            apiPanel.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 11.5,
+                Foreground = ink2,
+                Margin = new Thickness(0, 8, 0, 4),
+            });
+            _levelModels[i] = new TextBox
+            {
+                Text = current is null ? "" : string.Join(", ", current.Models),
+                Padding = new Thickness(8, 5, 8, 5),
+                Margin = new Thickness(0, 0, 0, 6),
+                ToolTip = "可以填多个模型名（逗号分隔），同一职级的人会轮着用。留空 = 用上面的默认模型。",
+            };
+            apiPanel.Children.Add(_levelModels[i]);
+            _levelBaseUrls[i] = new TextBox
+            {
+                Text = current?.BaseUrl ?? "",
+                Padding = new Thickness(8, 5, 8, 5),
+                Margin = new Thickness(0, 0, 0, 6),
+                ToolTip = "留空 = 用上面的默认接口地址。填免费厂商的地址（如 https://open.bigmodel.cn/api/paas/v4）",
+            };
+            apiPanel.Children.Add(_levelBaseUrls[i]);
+            _levelKeys[i] = new TextBox
+            {
+                Padding = new Thickness(8, 5, 8, 5),
+                Margin = new Thickness(0, 0, 0, 2),
+                ToolTip = current?.HasKey == true ? "已设置，留空不改" : "这一档自己接口地址的 Key，留空 = 用全局的",
+            };
+            apiPanel.Children.Add(_levelKeys[i]);
+        }
+        apiPanel.Children.Add(new TextBlock
+        {
+            Text = "P1 想用免费小模型：把模型名（可多个）和免费厂商的接口地址、Key 填在 P1 那三行即可。",
+            FontSize = 11.5,
+            Foreground = ink2,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 8, 0, 10),
         });
         apiPanel.Children.Add(new TextBlock
         {

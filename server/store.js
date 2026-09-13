@@ -20,13 +20,33 @@ const DEFAULT_SETTINGS = {
   model: 'deepseek-chat',
   // 推理等级：default（不传，用接口自己的默认）/ off（关掉思考）/ low / high / max
   reasoning: 'default',
+  // 按职级分配模型：每个职级一个通道，models 可以填多个（同职级的人轮着用）。
+  // baseUrl / apiKey 留空 = 用上面的默认通道；填了就用这个职级自己的（比如普通员工走免费厂商）。
+  levelChannels: {
+    manager: { models: ['deepseek-v4-pro'], baseUrl: '', apiKey: '' },
+    lead: { models: ['deepseek-flash'], baseUrl: '', apiKey: '' },
+    worker: { models: [], baseUrl: '', apiKey: '' },
+  },
   onboarded: false, // 是否走完首次引导
   updatedAt: '',
 };
 
 export const REASONING_LEVELS = ['default', 'off', 'low', 'high', 'max'];
 
+/** 三个职级：P3 最高（经理）→ P2（项目负责人）→ P1（普通员工）。 */
+export const LEVELS = ['manager', 'lead', 'worker'];
+export const LEVEL_RANKS = { manager: 'P3', lead: 'P2', worker: 'P1' };
+export const LEVEL_LABELS = { manager: '经理', lead: '项目负责人', worker: '普通员工' };
+export const LEVEL_CHANNEL_KEYS = ['manager', 'lead', 'worker'];
+
 export const THREAD_MODES = ['department', 'project', 'employee'];
+
+/** 稳定的小哈希：同一个员工每次分到同一个模型（同职级里轮着用）。 */
+function hashString(value) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) hash = (hash * 31 + value.charCodeAt(i)) % 1000003;
+  return hash;
+}
 
 export class Store {
   constructor({ dataDir }) {
@@ -55,7 +75,15 @@ export class Store {
   /* ── 全局 API 通道 ─────────────────────────────────────── */
 
   readSettings() {
-    return { ...DEFAULT_SETTINGS, ...this.#readJson(this.settingsFile, {}) };
+    const stored = this.#readJson(this.settingsFile, {});
+    const settings = { ...DEFAULT_SETTINGS, ...stored };
+    // levelChannels 要逐职级合并，不然老配置里缺的那一档会整个丢掉
+    const merged = {};
+    for (const key of LEVEL_CHANNEL_KEYS) {
+      merged[key] = { ...DEFAULT_SETTINGS.levelChannels[key], ...(stored.levelChannels?.[key] || {}) };
+    }
+    settings.levelChannels = merged;
+    return settings;
   }
 
   writeSettings(patch) {
@@ -64,14 +92,31 @@ export class Store {
     return next;
   }
 
-  /** 某个员工实际使用的通道：员工自己填的优先，空则回落到全局默认。 */
+  /**
+   * 某个员工实际使用的通道，优先级：
+   *   员工自己填的 → 他这个职级的通道（P3/P2/P1）→ 全局默认通道。
+   * 职级的 models 可以填多个，同一个职级的人按员工 id 稳定地轮着用（同一个人每次都拿同一个）。
+   */
   channelFor(employee = {}) {
     const settings = this.readSettings();
+    const level = LEVELS.includes(employee.level) ? employee.level : 'worker';
+    const channel = settings.levelChannels?.[level] || {};
+    const models = (Array.isArray(channel.models) ? channel.models : [])
+      .map((name) => String(name || '').trim())
+      .filter(Boolean);
+
+    const ownModel = String(employee.model || '').trim();
+    const picked = models.length ? models[hashString(employee.id || employee.name || '') % models.length] : '';
+
     return {
-      apiKey: String(employee.apiKey || '').trim() || String(settings.apiKey || '').trim(),
-      baseUrl: String(employee.baseUrl || '').trim() || String(settings.baseUrl || '').trim(),
-      model: String(employee.model || '').trim() || String(settings.model || '').trim(),
+      apiKey: String(employee.apiKey || '').trim() || String(channel.apiKey || '').trim() || String(settings.apiKey || '').trim(),
+      baseUrl: String(employee.baseUrl || '').trim() || String(channel.baseUrl || '').trim() || String(settings.baseUrl || '').trim(),
+      model: ownModel || picked || String(settings.model || '').trim(),
       reasoning: String(employee.reasoning || '').trim() || String(settings.reasoning || '').trim() || 'default',
+      level,
+      rank: LEVEL_RANKS[level],
+      levelModelCount: models.length,   // 这个职级配了几个模型可选
+      levelModel: picked,               // 按职级分到的模型（没配就是空）
       inherited: !String(employee.apiKey || '').trim(),
     };
   }

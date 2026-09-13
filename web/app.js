@@ -1,4 +1,4 @@
-﻿// 蜂群 HIVE · 前端
+// 蜂群 HIVE · 前端
 //
 // 一个本地面板：左边是"项目 + 团队"，右边是当前面板（部门 / 项目 / 员工三种模式）。
 // 零依赖，原生 ES module。
@@ -35,7 +35,7 @@ const el = {
 };
 
 const state = {
-  settings: { hasKey: false, baseUrl: '', model: '', reasoning: 'default', onboarded: false },
+  settings: { hasKey: false, baseUrl: '', model: '', reasoning: 'default', levelChannels: {}, onboarded: false },
   departments: [],
   employees: [],
   projects: [],
@@ -47,7 +47,9 @@ const state = {
 };
 
 const MODE_LABEL = { department: '部门', project: '项目', employee: '员工' };
-const LEVEL_LABEL = { manager: '部门经理', lead: '项目负责人', worker: '执行人员' };
+const LEVEL_LABEL = { manager: 'P3 · 经理', lead: 'P2 · 项目负责人', worker: 'P1 · 普通员工' };
+/* 三个职级：P3 最高（经理）→ P2（项目负责人）→ P1（普通员工）；模型按职级分配，见 server/store.js */
+const LEVEL_RANK = { manager: 'P3', lead: 'P2', worker: 'P1' };
 
 function esc(text) {
   return String(text ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -194,6 +196,7 @@ function employeeRow(employee) {
   return `<li>
     <button class="tree__row${active ? ' is-active' : ''}" data-kind="employee" data-id="${esc(employee.id)}">
       ${avatarHtml(employee.name, employee.avatar?.seed, employee.avatar, 'sm')}
+      <span class="tree__rank">${LEVEL_RANK[employee.level] || 'P1'}</span>
       <span class="tree__name">${esc(employee.name)}</span>
       <span class="dot ${busy ? 'dot--busy' : ''}"></span>
     </button>
@@ -536,6 +539,43 @@ function openProjectModal(project = null) {
 }
 
 /** 全局设置 */
+
+/** 三个职级的模型通道输入（P3 经理 / P2 项目负责人 / P1 普通员工）。 */
+const LEVEL_ROWS = [
+  ['manager', 'P3 · 经理（最费、最强）'],
+  ['lead', 'P2 · 项目负责人（中等）'],
+  ['worker', 'P1 · 普通员工（最省，可填免费模型）'],
+];
+
+function levelChannelFields() {
+  const channels = state.settings.levelChannels || {};
+  return `<p class="field__hint" style="margin:14px 0 6px">按职级分配模型（P3 最高）：模型名可填多个（逗号分隔），同职级的人轮着用；接口地址与 Key 留空 = 用上面的默认通道。</p>
+    ${LEVEL_ROWS.map(([value, label]) => {
+      const channel = channels[value] || {};
+      const models = Array.isArray(channel.models) ? channel.models.join(', ') : '';
+      return `<label class="field"><span class="field__label">${label} · 模型</span>
+        <input class="input" id="lvModel_${value}" value="${esc(models)}" placeholder="留空 = 用默认模型" /></label>
+      <label class="field"><span class="field__label">${label} · 接口地址</span>
+        <input class="input" id="lvBase_${value}" value="${esc(channel.baseUrl || '')}" spellcheck="false" placeholder="留空 = 用上面的默认地址" /></label>
+      <label class="field"><span class="field__label">${label} · API Key</span>
+        <input class="input" id="lvKey_${value}" type="password" autocomplete="off" placeholder="${channel.hasKey ? '已设置（留空则不改）' : '留空 = 用全局的'}" /></label>`;
+    }).join('')}`;
+}
+
+function readLevelChannels() {
+  const result = {};
+  for (const [value] of LEVEL_ROWS) {
+    const entry = {
+      models: ($(`lvModel_${value}`).value || '').split(/[,，;；\s]+/).map((x) => x.trim()).filter(Boolean).slice(0, 5),
+      baseUrl: $(`lvBase_${value}`).value.trim(),
+    };
+    const key = $(`lvKey_${value}`).value.trim();
+    if (key) entry.apiKey = key;
+    result[value] = entry;
+  }
+  return result;
+}
+
 function openSettingsModal() {
   const keyPlaceholder = state.settings.hasKey ? '已设置（留空则保持不变）' : 'sk-…';
   openModal(
@@ -549,13 +589,20 @@ function openSettingsModal() {
        <input class="input" id="fModel" value="${esc(state.settings.model || 'deepseek-chat')}" /></label>
      <label class="field"><span class="field__label">推理等级</span>
        <select class="input" id="fReasoning">${reasoningOptions(state.settings.reasoning)}</select></label>
+     ${levelChannelFields()}
      <p class="field__hint">Key 只写进本机 <code>data/settings.json</code>，不上传。</p>`,
     `<button class="ghost" id="modalCancel" type="button">取消</button>
      <button class="primary" id="modalSave" type="button">保存</button>`,
   );
   $('modalCancel').onclick = closeModal;
   $('modalSave').onclick = async () => {
-    const payload = { baseUrl: $('fBase').value.trim(), model: $('fModel').value.trim(), reasoning: $('fReasoning').value, onboarded: true };
+    const payload = {
+      baseUrl: $('fBase').value.trim(),
+      model: $('fModel').value.trim(),
+      reasoning: $('fReasoning').value,
+      levelChannels: readLevelChannels(),
+      onboarded: true,
+    };
     const key = $('fKey').value.trim();
     if (key) payload.apiKey = key;
     try {

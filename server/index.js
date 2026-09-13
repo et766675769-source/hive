@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
-import { Store, THREAD_MODES, REASONING_LEVELS } from './store.js';
+import { Store, THREAD_MODES, REASONING_LEVELS, LEVELS, LEVEL_RANKS, LEVEL_LABELS, LEVEL_CHANNEL_KEYS } from './store.js';
 import { Worker } from './worker.js';
 import { faceAlign } from './align.js';
 
@@ -350,7 +350,6 @@ function serveStatic(res, filePath) {
 
 /* ── 组织操作（部门 / 员工 / 项目）───────────────────────── */
 
-const LEVELS = ['manager', 'lead', 'worker'];
 
 /** 推理等级只认这几档，别的写法一律按「不传、用接口默认」处理。 */
 function normalizeReasoning(value) {
@@ -358,8 +357,34 @@ function normalizeReasoning(value) {
   return REASONING_LEVELS.includes(level) ? level : 'default';
 }
 
+/**
+ * 职级模型通道：每个职级一组 { models[], baseUrl, apiKey }。
+ * models 最多 5 个（同职级的人轮着用）；baseUrl / apiKey 留空 = 用全局默认通道。
+ */
+function normalizeLevelChannels(input, current = {}) {
+  const result = {};
+  for (const key of LEVEL_CHANNEL_KEYS) {
+    const raw = input?.[key] ?? {};
+    const previous = current?.[key] || {};
+    const models = (Array.isArray(raw.models) ? raw.models : String(raw.models ?? '').split(','))
+      .map((name) => String(name || '').trim().slice(0, 80))
+      .filter(Boolean)
+      .slice(0, 5);
+    result[key] = {
+      models,
+      baseUrl: raw.baseUrl === undefined ? String(previous.baseUrl || '') : String(raw.baseUrl).trim().slice(0, 200),
+      // 留空 = 不改（前端回传的是掩码）；传 null 才是"清掉这个 Key"
+      apiKey: raw.apiKey === undefined || raw.apiKey === ''
+        ? String(previous.apiKey || '')
+        : (raw.apiKey === null ? '' : String(raw.apiKey).trim().slice(0, 200)),
+    };
+  }
+  return result;
+}
+
 function normalizeEmployee(input, existing = null) {
-  const name = String(input.name || '').trim().slice(0, 32);
+  // 改员工时可以只传要改的字段（比如只改职级），名字沿用原值
+  const name = String(input.name ?? existing?.name ?? '').trim().slice(0, 32);
   if (!name) throw new Error('员工名字不能为空');
   const level = LEVELS.includes(input.level) ? input.level : existing?.level || 'worker';
   return {
@@ -467,6 +492,18 @@ const server = http.createServer(async (req, res) => {
           model: settings.model,
           reasoning: settings.reasoning,
           onboarded: Boolean(settings.onboarded),
+          // 按职级分配的模型通道（不把 Key 回传，只回有没有）
+          levelChannels: LEVEL_CHANNEL_KEYS.reduce((acc, key) => {
+            const channel = settings.levelChannels?.[key] || {};
+            acc[key] = {
+              models: Array.isArray(channel.models) ? channel.models : [],
+              baseUrl: String(channel.baseUrl || ''),
+              hasKey: Boolean(String(channel.apiKey || '').trim()),
+            };
+            return acc;
+          }, {}),
+          levelRanks: LEVEL_RANKS,
+          levelLabels: LEVEL_LABELS,
         },
         departments: org.departments,
         employees: org.employees.map((employee) => ({
@@ -474,7 +511,12 @@ const server = http.createServer(async (req, res) => {
           // 不把 Key 回传给前端，只回一个"有没有"
           apiKey: undefined,
           hasOwnKey: Boolean(String(employee.apiKey || '').trim()),
-          channel: store.channelFor(employee),
+          channel: (() => {
+            const resolved = store.channelFor(employee);
+            // channel 里带的是明文 Key，回前端前换成"有没有"
+            const { apiKey, ...rest } = resolved;
+            return { ...rest, hasKey: Boolean(String(apiKey || '').trim()) };
+          })(),
           // 诊断数据：量出这张发型图的发帘位置/发块质心（见 server/align.js）。
           // 库的规则要求两层「左上角坐标一致、直接叠加」，所以 App 不会去平移图层；
           // 这个字段留给"重裁库素材"这类工具用，也方便排查是哪张图没对齐。
@@ -554,6 +596,7 @@ const server = http.createServer(async (req, res) => {
         baseUrl: payload.baseUrl === undefined ? current.baseUrl : String(payload.baseUrl).trim().slice(0, 200),
         model: payload.model === undefined ? current.model : String(payload.model).trim().slice(0, 80),
         reasoning: payload.reasoning === undefined ? current.reasoning : normalizeReasoning(payload.reasoning),
+        levelChannels: payload.levelChannels === undefined ? current.levelChannels : normalizeLevelChannels(payload.levelChannels, current.levelChannels),
         onboarded: payload.onboarded === undefined ? current.onboarded : Boolean(payload.onboarded),
       });
       return json(res, 200, {

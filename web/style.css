@@ -1,4 +1,4 @@
-﻿/* ──────────────────────────────────────────────────────────────
+/* ──────────────────────────────────────────────────────────────
    蜂群 HIVE · AI 员工面板
    风格：style-compass → clean-minimal（素雅极简 · 干净呼吸）
    纪律：米白底、近黑字、单一低饱和强调色、极细分隔线、大留白、
@@ -277,6 +277,19 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .avatar--lg { --size: 44px; }
 .avatar--sm { --size: 26px; }
+
+/* 职级徽标 P3 / P2 / P1 */
+.tree__rank {
+  flex: none;
+  margin-left: 6px;
+  padding: 1px 6px 2px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
 
 /* 图片头像：组装式（脸 + 发型）两层叠加。形状由 .avatar 的 border-radius:50% 决定 */
 .avatar--pic {

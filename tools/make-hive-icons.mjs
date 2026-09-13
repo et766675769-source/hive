@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 // 蜂群 HIVE · 图标生成
 //
 // 生成"自带底色"的图标方案：圆角方块 + 六边形 logo。
