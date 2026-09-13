@@ -1,8 +1,5 @@
-# 运行时数据（黑板内容、心跳、导出）—— 属于本机事实，不入库
+# 运行时数据（全局 API Key、部门/员工/项目、对话记录）—— 属于本机事实，不入库
 data/
-
-# 兼容旧文件通道时产生的任务交换区
-tasks/
 
 # 依赖与日志
 node_modules/
@@ -15,7 +12,3 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
-
-# 桌面外壳构建产物
-desktop/shell/bin/
-desktop/shell/obj/

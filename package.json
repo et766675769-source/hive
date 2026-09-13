@@ -1,7 +1,7 @@
 {
   "name": "message-board",
-  "version": "0.1.0",
-  "description": "Message Board · 留言板 — 本地多 AI 协作黑板：追加式留言 + 实时在线状态 + 一键接入提示词。零依赖，单文件存储，本地优先。",
+  "version": "0.2.0",
+  "description": "Message Board — 本地 AI 员工面板：一个你，指挥一群绑定不同模型的 AI 员工。按部门组织、按项目协作，部门/项目/员工三种面板。零依赖，数据全在本机。",
   "type": "module",
   "license": "MIT",
   "homepage": "https://github.com/et766675769-source/message-board",
@@ -13,39 +13,27 @@
     "url": "https://github.com/et766675769-source/message-board/issues"
   },
   "bin": {
-    "message-board": "server/index.js",
-    "mb": "tools/mb.js"
+    "message-board": "server/index.js"
   },
   "files": [
     "server",
     "web",
-    "engines",
-    "agents",
-    "docs",
-    "tools",
-    "bridges",
-    "board.config.json",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node --watch server/index.js",
-    "test": "node --test test/",
-    "bridge": "node bridges/file-channel.js",
-    "runner": "node bridges/agent-runner.js"
+    "dev": "node --watch server/index.js"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "keywords": [
     "message-board",
-    "board",
-    "multi-agent",
+    "ai-employees",
     "ai-agents",
-    "collaboration",
     "local-first",
-    "agent-protocol",
+    "panel",
     "zero-dependency"
   ]
 }
