@@ -104,4 +104,10 @@ Ink（正文）   Ink2（次要）   Ink3（更淡）   Accent（强调）   Dan
 
 - 服务端**零依赖**，只用 Node 内置模块
 - 数据全部存在 `data/`，或用户在「设置 → 数据存储位置」里指定的目录
+- **图标跟着 Windows 的深浅色自动切换**：窗口/任务栏图标（`Window.Icon`）、托盘图标、
+  以及桌面 · 任务栏固定项 · 开始菜单里指向本 exe 的快捷方式图标，都按
+  `SystemUsesLightTheme` 选 `desktop/hive-white.ico` 或 `hive-black.ico`；
+  启动时算一次，之后由 `SystemEvents.UserPreferenceChanged` 监听系统主题变化再换，
+  改完调 `SHChangeNotify` 让资源管理器立刻重读图标
+  （exe 自身内嵌的图标运行时改不了，所以快捷方式统一指到 .ico 文件）
 - 桌面端**不内嵌浏览器**：本机 WebView2 与 WPF 窗口内容都渲染不出来，已改为 WPF 原生控件直连服务端 API

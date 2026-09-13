@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -66,6 +66,9 @@ public partial class MainWindow : Window
         Closing += OnClosing;
         InputBox.TextChanged += OnInputChanged;
         LoadPrefs();
+        // 图标跟着 Windows 的深/浅色自动换（任务栏、托盘、桌面与固定项的快捷方式）
+        WatchSystemTheme();
+        UpdateShortcutIcons();
     }
 
     /* ── 发送方式：Enter 还是 Alt+Enter，点了立刻生效 ─────── */
@@ -1595,9 +1598,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 任务栏按钮图标：跟托盘同一套规则 —— 任务栏是深色就用白色 logo，
-    /// 否则深底上黑图标根本看不见（exe 里嵌的是黑色版）。
-    /// 只改运行时窗口图标，不动 exe 图标（资源管理器里是浅底，黑色版才对）。
+    /// 任务栏按钮图标：跟托盘同一套规则 —— 任务栏是深色就用白色 logo、浅色用黑色 logo。
+    /// exe 内嵌的图标运行时改不了，但窗口图标（任务栏按钮用它）可以随时换。
     /// </summary>
     private void ApplyWindowIcon()
     {
@@ -1619,6 +1621,101 @@ public partial class MainWindow : Window
             Log($"任务栏图标加载失败：{error.Message}");
         }
     }
+
+    /// <summary>
+    /// 订阅系统主题变化：Windows 在深/浅色之间切换时，任务栏按钮、托盘、
+    /// 以及桌面/固定项里指向本程序的快捷方式图标，全部自动换成对应那版。
+    /// </summary>
+    private void WatchSystemTheme()
+    {
+        try
+        {
+            Microsoft.Win32.SystemEvents.UserPreferenceChanged += (_, args) =>
+            {
+                if (args.Category != Microsoft.Win32.UserPreferenceCategory.General &&
+                    args.Category != Microsoft.Win32.UserPreferenceCategory.VisualStyle)
+                {
+                    return;
+                }
+                Dispatcher.BeginInvoke(() =>
+                {
+                    ApplyWindowIcon();
+                    if (_tray is not null) _tray.Icon = LoadTrayIcon();
+                    UpdateShortcutIcons();
+                    Log($"系统主题已切换 → 图标换成{(TaskbarIsLight() ? "黑色版" : "白色版")}");
+                });
+            };
+        }
+        catch (Exception error)
+        {
+            Log($"订阅系统主题变化失败：{error.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 桌面 / 任务栏固定项 / 开始菜单里，凡是目标指向本 exe 的快捷方式，
+    /// 图标都改成当前主题对应的 .ico（exe 自身内嵌的图标改不了，快捷方式可以指定）。
+    /// </summary>
+    private static void UpdateShortcutIcons()
+    {
+        var root = FindProjectRoot();
+        var fileName = TaskbarIsLight() ? "hive-black.ico" : "hive-white.ico";
+        var iconPath = root is null ? null : Path.Combine(root, "desktop", fileName);
+        if (iconPath is null || !File.Exists(iconPath)) return;
+        var wanted = $"{iconPath},0";
+        var exe = Environment.ProcessPath ?? "";
+        var folders = new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Microsoft", "Internet Explorer", "Quick Launch", "User Pinned", "TaskBar"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Microsoft", "Windows", "Start Menu", "Programs"),
+        };
+        var shellType = Type.GetTypeFromProgID("WScript.Shell");
+        if (shellType is null) return;
+        var changed = false;
+        foreach (var folder in folders)
+        {
+            if (!Directory.Exists(folder)) continue;
+            foreach (var file in Directory.EnumerateFiles(folder, "*.lnk"))
+            {
+                try
+                {
+                    dynamic shell = Activator.CreateInstance(shellType)!;
+                    dynamic shortcut = shell.CreateShortcut(file);
+                    var target = (shortcut.TargetPath as string) ?? "";
+                    if (!target.Equals(exe, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (string.Equals((shortcut.IconLocation as string) ?? "", wanted, StringComparison.OrdinalIgnoreCase)) continue;
+                    shortcut.IconLocation = wanted;
+                    shortcut.Save();
+                    changed = true;
+                    Log($"快捷方式图标已更新：{Path.GetFileName(file)}");
+                }
+                catch (Exception error)
+                {
+                    Log($"改快捷方式图标失败（{Path.GetFileName(file)}）：{error.Message}");
+                }
+            }
+        }
+        if (changed) RefreshIconCache();
+    }
+
+    /// <summary>让资源管理器 / 任务栏立刻重读图标，不然要等缓存过期。</summary>
+    private static void RefreshIconCache()
+    {
+        try
+        {
+            SHChangeNotify(0x08000000, 0x1000, IntPtr.Zero, IntPtr.Zero);   // SHCNE_ASSOCCHANGED | SHCNF_FLUSH
+        }
+        catch (Exception error)
+        {
+            Log($"刷新图标缓存失败：{error.Message}");
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll")]
+    private static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);
 
     private void RestoreWindow()
     {
