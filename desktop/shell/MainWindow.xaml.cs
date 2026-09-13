@@ -46,6 +46,7 @@ public partial class MainWindow : Window
     private List<ProjectInfo> _projects = new();
     private bool _hasKey;
     private string _keyHint = "";
+    private int _chainDepthValue = 1;
 
     private DispatcherTimer? _timer;
     private int _mentionStart = -1;
@@ -591,6 +592,7 @@ public partial class MainWindow : Window
             _model = settings.TryGetProperty("model", out var md) ? md.GetString() ?? "" : "";
             _reasoning = settings.TryGetProperty("reasoning", out var rz) ? rz.GetString() ?? "default" : "default";
             _keyHint = settings.TryGetProperty("keyHint", out var kh) ? kh.GetString() ?? "" : "";
+            _chainDepthValue = settings.TryGetProperty("chainDepth", out var cd) && cd.ValueKind == JsonValueKind.Number ? cd.GetInt32() : 1;
             _levelChannels = new Dictionary<string, LevelChannelInfo>();
             if (settings.TryGetProperty("levelChannels", out var lc) && lc.ValueKind == JsonValueKind.Object)
             {
@@ -1394,7 +1396,8 @@ public partial class MainWindow : Window
             string.IsNullOrEmpty(_model) ? "deepseek-chat" : _model,
             string.IsNullOrEmpty(_reasoning) ? "default" : _reasoning,
             _levelChannels,
-            _keyHint)
+            _keyHint,
+            _chainDepthValue)
         {
             Owner = this,
         };
@@ -1458,6 +1461,7 @@ public partial class MainWindow : Window
             ["baseUrl"] = dialog.BaseUrlValue,
             ["model"] = dialog.ModelValue,
             ["reasoning"] = dialog.ReasoningValue,
+            ["chainDepth"] = dialog.ChainDepthValue,
             ["levelChannels"] = dialog.LevelChannelsValue(),
             ["onboarded"] = true,
         };
@@ -1990,6 +1994,7 @@ public sealed class SettingsWindow : Window
     private readonly ComboBox _theme;
     private readonly ComboBox _startup;
     private readonly ComboBox _reasoning;
+    private readonly ComboBox _chainDepth;
     private readonly TextBox _dataDir;
     private readonly TextBox _apiKey;
     private readonly TextBox _baseUrl;
@@ -2050,8 +2055,21 @@ public sealed class SettingsWindow : Window
         ? ReasoningOptions.FirstOrDefault(o => o.Label == label).Value ?? "default"
         : "default";
 
+    /// <summary>任务自动下派层数（0~3）：只回点名的人 / 他派的活也自动送 / 再往下。</summary>
+    private static readonly (string Label, int Value)[] ChainDepthOptions =
+    {
+        ("0 层 · 只回我点名的人", 0),
+        ("1 层 · 他派的活也自动送（推荐）", 1),
+        ("2 层 · 再往下派一层", 2),
+        ("3 层 · 一直往下派（最费）", 3),
+    };
+
+    public int ChainDepthValue => _chainDepth.SelectedItem?.ToString() is { } label
+        ? ChainDepthOptions.FirstOrDefault(o => o.Label == label).Value
+        : 1;
+
     public SettingsWindow(bool darkTheme, bool autoStart, string dataDir, bool hasKey, string baseUrl, string model, string reasoning = "default",
-        Dictionary<string, LevelChannelInfo>? levelChannels = null, string keyHint = "")
+        Dictionary<string, LevelChannelInfo>? levelChannels = null, string keyHint = "", int chainDepth = 1)
     {
         Title = "设置";
         Width = 470;
@@ -2139,6 +2157,22 @@ public sealed class SettingsWindow : Window
         apiPanel.Children.Add(new TextBlock
         {
             Text = "思考模式会先推理再回答，更准但更慢、也更费 token；关闭思考最快。",
+            FontSize = 11.5,
+            Foreground = ink2,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 10),
+        });
+
+        /* 任务自动下派层数：控制"会不会一堆人一起冒出来" */
+        apiPanel.Children.Add(Caption("任务自动下派层数", ink2));
+        _chainDepth = Combo(ChainDepthOptions.Select(o => o.Label).ToArray(),
+            ChainDepthOptions.FirstOrDefault(o => o.Value == chainDepth).Label ?? ChainDepthOptions[1].Label);
+        _chainDepth.Margin = new Thickness(0, 0, 0, 4);
+        apiPanel.Children.Add(_chainDepth);
+        apiPanel.Children.Add(new TextBlock
+        {
+            Text = "1 层 = 我点名的人接到活之后，他按下属职能派出去的活也自动送（经理 → 负责人）；"
+                 + "再往下的派活只记录、不自动送，面板上会留一条系统提示等你决定。",
             FontSize = 11.5,
             Foreground = ink2,
             TextWrapping = TextWrapping.Wrap,

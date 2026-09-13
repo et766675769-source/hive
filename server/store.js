@@ -20,6 +20,8 @@ const DEFAULT_SETTINGS = {
   model: 'deepseek-chat',
   // 推理等级：default（不传，用接口自己的默认）/ off（关掉思考）/ low / high / max
   reasoning: 'default',
+  // 任务自动下派层数：0=只回人点名的那位；1=他派的活也自动送（默认）；2~3=再往下
+  chainDepth: 1,
   // 按职级分配模型：每个职级一个通道，models 可以填多个（同职级的人轮着用）。
   // baseUrl / apiKey 留空 = 用上面的默认通道；填了就用这个职级自己的（比如普通员工走免费厂商）。
   levelChannels: {

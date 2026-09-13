@@ -165,6 +165,14 @@ export class Worker {
     return lines.join('\n');
   }
 
+  /**
+   * 往面板上写一条"系统提示"（不是某个员工说的）。
+   * 目前用在：下派层数用完时告诉人"这活已记录但没自动派下去"。
+   */
+  notice(mode, threadId, { text, fromName = '系统', replyTo = null }) {
+    return this.#write(mode, threadId, { from: 'system', fromName, kind: 'notice', status: 'notice', replyTo, text });
+  }
+
   #write(mode, threadId, payload) {
     const message = {
       id: `m_${randomUUID().slice(0, 8)}`,

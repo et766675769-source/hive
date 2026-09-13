@@ -38,7 +38,7 @@ const el = {
 };
 
 const state = {
-  settings: { hasKey: false, baseUrl: '', model: '', reasoning: 'default', levelChannels: {}, onboarded: false },
+  settings: { hasKey: false, baseUrl: '', model: '', reasoning: 'default', chainDepth: 1, levelChannels: {}, onboarded: false },
   departments: [],
   employees: [],
   projects: [],
@@ -111,6 +111,20 @@ const REASONING_OPTIONS = [
 function reasoningOptions(current) {
   const value = current || 'default';
   return REASONING_OPTIONS.map(([v, label]) => `<option value="${v}"${v === value ? ' selected' : ''}>${label}</option>`).join('');
+}
+
+/* 任务自动下派层数：0 = 只回我点名的人；1 = 他派的活也自动送（默认）；2/3 = 再往下 */
+const CHAIN_DEPTH_OPTIONS = [
+  [0, '0 层 · 只回我点名的人'],
+  [1, '1 层 · 他派的活也自动送（推荐）'],
+  [2, '2 层 · 再往下派一层'],
+  [3, '3 层 · 一直往下派（最费）'],
+];
+function chainDepthOptions(current) {
+  const value = Number(current ?? 1);
+  return CHAIN_DEPTH_OPTIONS
+    .map(([v, label]) => `<option value="${v}"${v === value ? ' selected' : ''}>${label}</option>`)
+    .join('');
 }
 
 function employeeById(id) {
@@ -604,6 +618,9 @@ function openSettingsModal() {
        <input class="input" id="fModel" value="${esc(state.settings.model || 'deepseek-chat')}" /></label>
      <label class="field"><span class="field__label">推理等级</span>
        <select class="input" id="fReasoning">${reasoningOptions(state.settings.reasoning)}</select></label>
+     <label class="field"><span class="field__label">任务自动下派层数</span>
+       <select class="input" id="fChainDepth">${chainDepthOptions(state.settings.chainDepth)}</select></label>
+     <p class="field__hint" style="margin-bottom:12px">1 层 = 我点名的人接到活后，他派给下属的活也自动送；再往下只记录不自动送。</p>
      ${levelChannelFields()}
      <p class="field__hint">Key 只写进本机 <code>data/settings.json</code>，不上传。</p>`,
     `<button class="ghost" id="modalCancel" type="button">取消</button>
@@ -615,6 +632,7 @@ function openSettingsModal() {
       baseUrl: $('fBase').value.trim(),
       model: $('fModel').value.trim(),
       reasoning: $('fReasoning').value,
+      chainDepth: Number($('fChainDepth').value),
       levelChannels: readLevelChannels(),
       onboarded: true,
     };

@@ -265,17 +265,26 @@ const worker = new Worker({ store, onEvent: broadcast });
 const migratedAvatars = migrateAvatarStyle();
 if (migratedAvatars) console.log(`头像库已是完整头像形态，已为 ${migratedAvatars} 位员工重新分配头像`);
 
+/** 任务自动下派层数（0~3，默认 1）：见 dispatchChain 的说明。 */
+function chainDepth() {
+  const value = Number(store.readSettings().chainDepth);
+  return Number.isFinite(value) ? Math.max(0, Math.min(3, Math.round(value))) : 1;
+}
+
 /**
- * 派活，并顺着回复里的 @点名 继续派下去。
+ * 派活，并顺着回复里的「【派活】@名字」继续往下派。
  *
- * 这一条就是"任务自动分配"的全部机制：经理接到任务 → 他按下属职能用 @名字 分派
- * → 系统解析回复里的点名、把任务自动送给那几位下属 → 下属再各自开工。
- * 全程不需要人再转一手，也不需要任何"心跳"来发现谁该干活。
+ * 这一条就是"任务自动分配"的机制：人 @经理 → 经理按下属职能分派 → 系统解析他回复里的
+ * 【派活】行、自动把活送给那几位下属 → 下属各自开工。全程不需要人再转一手。
  *
- * 两道保险：链条深度≤3，且同一条链上不重复派给同一个人（防止互相 @ 转圈）。
+ * 下派层数由设置里的 chainDepth 控制（默认 1：只下派一层）：
+ *   depth 0 = 人点名的那个人；depth 1 = 他派的活；再往下就要人自己确认了。
+ * 这样"经理分派给几位负责人"是自动的，但负责人不会再把整条链自发扩散下去。
+ * 另一道保险：同一条链上不重复派给同一个人（防互相 @ 转圈）。
  */
 async function dispatchChain({ employeeId, mode, threadId, taskText, fromName, replyTo, depth, chain }) {
-  if (depth > 3 || chain.includes(employeeId)) return;
+  const maxDepth = chainDepth();
+  if (depth > maxDepth || chain.includes(employeeId)) return;
   const nextChain = [...chain, employeeId];
 
   let result;
@@ -295,8 +304,16 @@ async function dispatchChain({ employeeId, mode, threadId, taskText, fromName, r
   if (!assignments.length) return;
 
   const me = employees.find((item) => item.id === employeeId);
+  const held = [];
   for (const item of assignments) {
     if (nextChain.includes(item.employeeId)) continue;
+    const target = employees.find((x) => x.id === item.employeeId);
+    // 下派层数已经用完：先记下来，循环结束后合成一条系统提示，避免刷屏
+    if (depth + 1 > maxDepth) {
+      held.push(`@${target?.name || item.employeeId}：${item.task}`);
+      broadcast('assign', { from: employeeId, fromName: me?.name || '', to: item.employeeId, task: item.task, held: true });
+      continue;
+    }
     broadcast('assign', { from: employeeId, fromName: me?.name || '', to: item.employeeId, task: item.task });
     void dispatchChain({
       employeeId: item.employeeId,
@@ -307,6 +324,15 @@ async function dispatchChain({ employeeId, mode, threadId, taskText, fromName, r
       replyTo: result.reply.id,
       depth: depth + 1,
       chain: nextChain,
+    });
+  }
+  if (held.length) {
+    worker.notice(mode, threadId, {
+      replyTo: result.reply.id,
+      text: `【已记录，未自动下派】${me?.name || '同事'} 还想把这 ${held.length} 件活往下派：\n`
+        + held.map((line) => `- ${line}`).join('\n')
+        + `\n当前「自动下派层数」是 ${maxDepth} 层，继续往下要你自己接着派；`
+        + '想让它自动往下走，可在「设置 → API 设置 → 任务自动下派层数」里调高。',
     });
   }
 }
@@ -538,6 +564,7 @@ const server = http.createServer(async (req, res) => {
           baseUrl: settings.baseUrl,
           model: settings.model,
           reasoning: settings.reasoning,
+          chainDepth: chainDepth(),
           onboarded: Boolean(settings.onboarded),
           // 按职级分配的模型通道（不把 Key 回传，只回掩码）
           levelChannels: LEVEL_CHANNEL_KEYS.reduce((acc, key) => {
@@ -694,6 +721,7 @@ const server = http.createServer(async (req, res) => {
         baseUrl: payload.baseUrl === undefined ? current.baseUrl : String(payload.baseUrl).trim().slice(0, 200),
         model: payload.model === undefined ? current.model : String(payload.model).trim().slice(0, 80),
         reasoning: payload.reasoning === undefined ? current.reasoning : normalizeReasoning(payload.reasoning),
+        chainDepth: payload.chainDepth === undefined ? current.chainDepth : Math.max(0, Math.min(3, Math.round(Number(payload.chainDepth) || 0))),
         levelChannels: payload.levelChannels === undefined ? current.levelChannels : normalizeLevelChannels(payload.levelChannels, current.levelChannels),
         onboarded: payload.onboarded === undefined ? current.onboarded : Boolean(payload.onboarded),
       });
