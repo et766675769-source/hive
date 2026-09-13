@@ -263,6 +263,11 @@ function renderPanelHead() {
 }
 
 function renderStream() {
+  // 渲染前先看人是不是贴在底部：上滑看历史时不要把他拽回最新
+  const wasAtBottom = state.forceBottom === true
+    || el.stream.scrollHeight - el.stream.scrollTop - el.stream.clientHeight < 48;
+  state.forceBottom = false;
+
   if (!state.messages.length) {
     const { mode, id } = state.context;
     let hint = '这里还没有对话。在下面说点什么，或用 @名字 点名一位员工。';
@@ -295,7 +300,8 @@ function renderStream() {
       </div>
     </article>`;
   }).join('');
-  el.stream.scrollTop = el.stream.scrollHeight;
+  // 只有人本来就在底部时才跟着最新走；上滑看历史的时候不要把他拽回去
+  if (wasAtBottom) el.stream.scrollTop = el.stream.scrollHeight;
 }
 
 function renderAll() {
@@ -347,6 +353,7 @@ async function loadThread() {
 function switchContext(mode, id) {
   state.context = { mode, id };
   if (mode === 'department') state.expanded.add(id);
+  state.forceBottom = true;   // 换面板总是从最新看起
   renderAll();
   void loadThread();
 }
@@ -370,6 +377,7 @@ async function send() {
   el.sendBtn.disabled = true;
   try {
     await api('/api/message', { method: 'POST', body: JSON.stringify({ mode, threadId: id, text }) });
+    state.forceBottom = true;
     el.composerInput.value = '';
     el.composerInput.style.height = 'auto';
   } catch (error) {

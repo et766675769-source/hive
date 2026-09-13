@@ -653,9 +653,13 @@ public partial class MainWindow : Window
         _ => false,
     };
 
+    /// <summary>下次刷新强制跳到最新（切面板、自己发消息、点「回到最新」时用）。</summary>
+    private void ForceScrollToBottom() => _stickToBottom = true;
+
     private async Task RefreshThreadAsync()
     {
         if (_threadId == "") { MessageList.ItemsSource = null; return; }
+        pendingOffset = StreamScroll.VerticalOffset;
         try
         {
             var text = await Http.GetStringAsync($"{BaseUrl}/api/thread?mode={_mode}&id={Uri.EscapeDataString(_threadId)}");
@@ -689,12 +693,57 @@ public partial class MainWindow : Window
                 });
             }
             MessageList.ItemsSource = items;
-            StreamScroll.ScrollToEnd();
+            // 只有"人本来就在底部"时才自动跟到最新；正在上滑看历史就别打扰他
+            if (_stickToBottom)
+            {
+                StreamScroll.ScrollToEnd();
+            }
+            else
+            {
+                RestoreScrollOffset(pendingOffset);
+            }
         }
         catch (Exception error)
         {
             Log($"读取对话失败：{error.Message}");
         }
+    }
+
+    /// <summary>刷新前记下位置：换了 ItemsSource 之后 ScrollViewer 会跳回顶部，得自己复原。</summary>
+    private double pendingOffset;
+
+    /// <summary>是否跟着最新消息走（人在底部 = true）。上滑看历史时置 false。</summary>
+    private bool _stickToBottom = true;
+
+    private void OnStreamScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (e.ExtentHeight <= e.ViewportHeight) { _stickToBottom = true; UpdateJumpButton(); return; }
+        var distanceFromBottom = e.ExtentHeight - e.ViewportHeight - e.VerticalOffset;
+        _stickToBottom = distanceFromBottom < 48;   // 48px 容差，避免像素级抖动
+        UpdateJumpButton();
+    }
+
+    private void UpdateJumpButton()
+    {
+        if (JumpLatestButton is null) return;
+        JumpLatestButton.Visibility = _stickToBottom ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void OnJumpToLatest(object sender, RoutedEventArgs e)
+    {
+        _stickToBottom = true;
+        StreamScroll.ScrollToEnd();
+        UpdateJumpButton();
+    }
+
+    private void RestoreScrollOffset(double offset)
+    {
+        // 等布局跑完再恢复，否则 ScrollViewer 还没算完 ExtentHeight
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            StreamScroll.ScrollToVerticalOffset(offset);
+            UpdateJumpButton();
+        }), DispatcherPriority.Loaded);
     }
 
     private static string ParseTime(string? iso)
@@ -1052,6 +1101,7 @@ public partial class MainWindow : Window
         // 展开/收起只归左边那个方块按钮管。
         RenderSidebar();
         RenderHeader();
+        ForceScrollToBottom();   // 换面板总是从最新看起
         _ = RefreshThreadAsync();
     }
 
@@ -1227,6 +1277,7 @@ public partial class MainWindow : Window
                 Log($"发送失败：{response.StatusCode}");
             }
             InputBox.Text = "";
+            ForceScrollToBottom();   // 自己发的消息一定要看到
             await RefreshThreadAsync();
         }
         catch (Exception error)
