@@ -792,7 +792,7 @@ public partial class MainWindow : Window
         {
             Width = size,
             Height = size,
-            Clip = RoundedHexagonGeometry(size),
+            Clip = CircleGeometry(size),
             Background = AvatarBrush(seed),
             VerticalAlignment = VerticalAlignment.Center,
             Child = new TextBlock
@@ -807,58 +807,12 @@ public partial class MainWindow : Window
         };
     }
 
-    /// <summary>
-    /// 圆角六边形（尖顶朝上，与 logo 同形状）——头像统一用它裁剪。
-    /// 六个顶点各自内缩出一小段，顶点之间用圆弧连起来，就是圆角效果。
-    /// </summary>
-    private static Geometry RoundedHexagonGeometry(double size, double radiusRatio = 0.18)
+    /// <summary>头像统一用正圆裁剪（不再是六边形；六边形只属于品牌 logo）。</summary>
+    private static Geometry CircleGeometry(double size)
     {
-        // 正六边形（尖顶朝上）的宽高比是 √3 : 2 ≈ 0.866 : 1。
-        // 之前把顶点直接铺满正方形，等于横向压扁了 13%，所以比例看着不对。
-        var height = size;
-        var width = size * 0.866;
-        var left = (size - width) / 2;
-        var pts = new[]
-        {
-            new Point(left + width * 0.5, 0),
-            new Point(left + width, height * 0.25),
-            new Point(left + width, height * 0.75),
-            new Point(left + width * 0.5, height),
-            new Point(left, height * 0.75),
-            new Point(left, height * 0.25),
-        };
-        var radius = size * radiusRatio;
-        var ins = new Point[6];
-        var outs = new Point[6];
-        for (var i = 0; i < 6; i++)
-        {
-            ins[i] = MoveToward(pts[i], pts[(i + 5) % 6], radius);
-            outs[i] = MoveToward(pts[i], pts[(i + 1) % 6], radius);
-        }
-
-        var geometry = new StreamGeometry();
-        using (var ctx = geometry.Open())
-        {
-            ctx.BeginFigure(outs[0], true, true);
-            for (var i = 0; i < 6; i++)
-            {
-                ctx.LineTo(ins[(i + 1) % 6], true, false);
-                ctx.ArcTo(outs[(i + 1) % 6], new Size(radius, radius), 0,
-                    false, SweepDirection.Clockwise, true, false);
-            }
-        }
+        var geometry = new EllipseGeometry(new Point(size / 2, size / 2), size / 2, size / 2);
         geometry.Freeze();
         return geometry;
-    }
-
-    private static Point MoveToward(Point from, Point to, double distance)
-    {
-        var dx = to.X - from.X;
-        var dy = to.Y - from.Y;
-        var length = Math.Sqrt(dx * dx + dy * dy);
-        if (length <= 0.0001) return from;
-        var scale = Math.Min(distance, length / 2) / length;
-        return new Point(from.X + dx * scale, from.Y + dy * scale);
     }
 
     private static readonly Dictionary<string, BitmapImage> AvatarImages = new();
@@ -888,22 +842,23 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 把头像图统一包装成"六边形头像"：
-    ///   底层  纯白六边形实底（不是线框；黑白线条头像需要一块白底才立得出来）
-    ///   中间  头像图层，按六边形的实际宽度适配并居中——六边形比正方形窄 13.4%，
-    ///         所以图片要跟着缩到同样宽，既不会被裁掉两侧，也不会被拉伸变形
+    /// 把头像图统一包装成"圆形头像"：
+    ///   底层  纯白正圆实底（不是线框；黑白线条头像需要一块白底才立得出来）
+    ///   中间  头像图层，按画布宽度的 90% 缩放并居中
+    /// 缩放系数由素材本身决定：脸 + 发型合成后最远像素约在画布宽度的 0.54 半径处，
+    /// 乘 0.9 后落在圆的 0.5 半径内，所以既不会被切边，也不会被拉伸变形。
     /// 顺序：先按原比例摆正、最后才裁剪，比例不会被带偏。
     /// </summary>
     private static UIElement WrapAvatar(IEnumerable<ImageSource> layers, double size)
     {
-        var width = size * 0.866;   // 六边形的实际宽度（正六边形宽:高 = √3:2）
+        var art = size * 0.9;
         var stack = new Grid { Width = size, Height = size };
 
-        stack.Children.Add(new System.Windows.Shapes.Path
+        stack.Children.Add(new System.Windows.Shapes.Ellipse
         {
-            Data = RoundedHexagonGeometry(size),
+            Width = size,
+            Height = size,
             Fill = Brushes.White,
-            Stretch = Stretch.None,
         });
 
         foreach (var source in layers)
@@ -911,8 +866,8 @@ public partial class MainWindow : Window
             stack.Children.Add(new Image
             {
                 Source = source,
-                Width = width,
-                Height = width,
+                Width = art,
+                Height = art,
                 Stretch = Stretch.Uniform,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -923,7 +878,7 @@ public partial class MainWindow : Window
         {
             Width = size,
             Height = size,
-            Clip = RoundedHexagonGeometry(size),
+            Clip = CircleGeometry(size),
             VerticalAlignment = VerticalAlignment.Center,
             Child = stack,
         };
