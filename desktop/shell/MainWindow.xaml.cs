@@ -768,19 +768,7 @@ public partial class MainWindow : Window
             var hairImage = LoadAvatarImage($"{BaseUrl}/api/avatar/hair/{Uri.EscapeDataString(hair)}");
             if (face is not null && hairImage is not null)
             {
-                // 图片按原始比例铺满正方形，再由六边形裁剪。
-                // 不能用 Path + VisualBrush —— 那会把图拉伸到六边形较窄的边界上（横向压扁约 13%）。
-                var stack = new Grid { Width = size, Height = size };
-                stack.Children.Add(new Image { Source = face, Width = size, Height = size, Stretch = Stretch.Uniform });
-                stack.Children.Add(new Image { Source = hairImage, Width = size, Height = size, Stretch = Stretch.Uniform });
-                return new Border
-                {
-                    Width = size,
-                    Height = size,
-                    Clip = RoundedHexagonGeometry(size),
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Child = stack,
-                };
+                return WrapAvatar(new[] { face, hairImage }, size);
             }
         }
 
@@ -789,20 +777,7 @@ public partial class MainWindow : Window
             var image = LoadAvatarImage($"{BaseUrl}/api/avatar/{Uri.EscapeDataString(file)}");
             if (image is not null)
             {
-                return new Border
-                {
-                    Width = size,
-                    Height = size,
-                    Clip = RoundedHexagonGeometry(size),
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Child = new Image
-                    {
-                        Source = image,
-                        Width = size,
-                        Height = size,
-                        Stretch = Stretch.Uniform,
-                    },
-                };
+                return WrapAvatar(new[] { image }, size);
             }
         }
 
@@ -904,6 +879,45 @@ public partial class MainWindow : Window
             Log($"头像加载失败 {url}：{error.Message}");
             return null;
         }
+    }
+
+    /// <summary>
+    /// 把头像图统一包装成"有框的六边形"：
+    ///   底层  底色（黑白线条头像在深色底上会糊住，需要一块底把它衬出来）
+    ///   中间  头像图层（按原始比例铺满，再由外层六边形裁掉四角）
+    ///   顶层  六边形描边，勾出轮廓
+    /// 顺序很重要：先按原比例摆正、最后才裁剪，比例不会被带偏。
+    /// </summary>
+    private static UIElement WrapAvatar(IEnumerable<ImageSource> layers, double size)
+    {
+        var stack = new Grid { Width = size, Height = size };
+        stack.Children.Add(new Border { Background = Themed("Surface") });
+        foreach (var source in layers)
+        {
+            stack.Children.Add(new Image
+            {
+                Source = source,
+                Width = size,
+                Height = size,
+                Stretch = Stretch.Uniform,
+            });
+        }
+        stack.Children.Add(new System.Windows.Shapes.Path
+        {
+            Data = RoundedHexagonGeometry(size),
+            Stroke = Themed("LineStrong"),
+            StrokeThickness = 2,
+            Stretch = Stretch.None,
+        });
+
+        return new Border
+        {
+            Width = size,
+            Height = size,
+            Clip = RoundedHexagonGeometry(size),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = stack,
+        };
     }
 
     private static Brush AvatarBrush(int seed)

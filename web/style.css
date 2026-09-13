@@ -282,7 +282,8 @@ code, pre, .mono { font-family: var(--mono); }
 .avatar--pic {
   position: relative;
   overflow: hidden;
-  background: none;
+  /* 底色框：黑白线条头像在深色底上会糊住，需要一块底色衬出来 */
+  background: var(--surface);
   box-shadow: none;
 }
 .avatar--pic img {
