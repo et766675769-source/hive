@@ -621,7 +621,7 @@ public partial class MainWindow : Window
         var active = _mode == "department" && _threadId == department.Id;
         var count = _employees.Count(e => e.DepartmentId == department.Id);
 
-        var grid = new Grid { Margin = new Thickness(0, 1, 0, 1) };
+        var grid = new Grid { Margin = new Thickness(0, 3, 0, 3) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -664,7 +664,7 @@ public partial class MainWindow : Window
         {
             CornerRadius = new CornerRadius(8),
             Background = active ? Themed("AccentSoft") : Brushes.Transparent,
-            Padding = new Thickness(9, 6, 8, 6),
+            Padding = new Thickness(10, 9, 8, 9),
             Margin = new Thickness(4, 0, 0, 0),
             Cursor = Cursors.Hand,
             Child = new TextBlock { Text = department.Name, FontWeight = FontWeights.Medium, VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Ink") },
@@ -697,13 +697,13 @@ public partial class MainWindow : Window
         var active = _mode == "employee" && _threadId == employee.Id;
 
         var panel = new StackPanel { Orientation = Orientation.Horizontal };
-        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, employee.AvatarFile, employee.AvatarHair, 26));
+        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, employee.AvatarFile, employee.AvatarHair, 32));
         // 名字稍大、职位跟在后面且颜色更淡
         panel.Children.Add(new TextBlock
         {
             Text = employee.Name,
-            FontSize = 14.5,
-            Margin = new Thickness(9, 0, 0, 0),
+            FontSize = 15,
+            Margin = new Thickness(12, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = (Brush)FindResource("Ink"),
         });
@@ -712,8 +712,8 @@ public partial class MainWindow : Window
             panel.Children.Add(new TextBlock
             {
                 Text = employee.Title,
-                FontSize = 11.5,
-                Margin = new Thickness(6, 0, 0, 0),
+                FontSize = 12,
+                Margin = new Thickness(8, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
                 Foreground = (Brush)FindResource("Ink3"),
             });
@@ -723,10 +723,10 @@ public partial class MainWindow : Window
         {
             Content = panel,
             HorizontalContentAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(indent, 1, 0, 1),
+            Margin = new Thickness(indent, 4, 0, 4),
             Background = active ? Themed("AccentSoft") : Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(8, 5, 8, 5),
+            Padding = new Thickness(8, 8, 8, 8),
             ToolTip = string.IsNullOrEmpty(employee.Title) ? null : employee.Title,
         };
         button.Click += (_, _) => SetContext("employee", employee.Id);
