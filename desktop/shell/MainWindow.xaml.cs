@@ -141,12 +141,33 @@ public partial class MainWindow : Window
         UpdateBrandIcon();
     }
 
-    /// <summary>深色底用白 logo，浅色底用黑 logo —— 不然深色下那个黑图标根本看不见。</summary>
+    /// <summary>
+    /// 深色底用白图标、浅色底用黑图标 —— 不然深色下黑图标根本看不见。
+    /// 品牌 logo 与设置按钮图标都跟着主题走。
+    /// </summary>
     private void UpdateBrandIcon()
     {
-        var preferred = _darkTheme ? "hive-icon-white.png" : "hive-icon-black.png";
-        var path = FindAsset(preferred) ?? FindAsset("hive-icon-black.png");
-        if (path is null) return;
+        var brandFile = _darkTheme ? "hive-icon-white.png" : "hive-icon-black.png";
+        var brandPath = FindAsset(brandFile) ?? FindAsset("hive-icon-black.png");
+        var brandImage = LoadLocalImage(brandPath);
+        if (brandImage is not null)
+        {
+            BrandIcon.Source = brandImage;
+            if (TitleIcon is not null) TitleIcon.Source = brandImage;
+        }
+
+        var settingsFile = _darkTheme ? "icon-settings-white.png" : "icon-settings-black.png";
+        var settingsImage = LoadLocalImage(FindAsset(settingsFile));
+        if (settingsImage is not null && SettingsIcon is not null)
+        {
+            SettingsIcon.Source = settingsImage;
+        }
+    }
+
+    /// <summary>从本地文件读图（窗口刚构造时服务端还没起，所以不能用 HTTP 取）。</summary>
+    private static BitmapImage? LoadLocalImage(string? path)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
         try
         {
             var image = new BitmapImage();
@@ -154,12 +175,13 @@ public partial class MainWindow : Window
             image.CacheOption = BitmapCacheOption.OnLoad;
             image.UriSource = new Uri(path);
             image.EndInit();
-            BrandIcon.Source = image;
-            if (TitleIcon is not null) TitleIcon.Source = image;
+            image.Freeze();
+            return image;
         }
         catch (Exception error)
         {
-            Log($"品牌图标加载失败：{error.Message}");
+            Log($"图片加载失败 {path}：{error.Message}");
+            return null;
         }
     }
 

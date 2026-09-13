@@ -148,8 +148,10 @@
         <Border DockPanel.Dock="Top" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="16,12">
           <DockPanel>
             <Button x:Name="AppSettingsButton" DockPanel.Dock="Right" Style="{StaticResource IconButton}"
-                    Content="⚙" Click="OnOpenAppSettings" ToolTip="设置（开机启动 / 存储位置 / 全局 API / 主题）"
-                    VerticalAlignment="Top" />
+                    Click="OnOpenAppSettings" ToolTip="设置（开机启动 / 存储位置 / 全局 API / 主题）"
+                    VerticalAlignment="Top">
+              <Image x:Name="SettingsIcon" Width="17" Height="17" Stretch="Uniform" />
+            </Button>
             <StackPanel Orientation="Horizontal">
               <Image x:Name="BrandIcon" Width="40" Height="40" Margin="0,0,10,0" />
               <StackPanel VerticalAlignment="Center">
