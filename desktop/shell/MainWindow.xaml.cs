@@ -278,7 +278,7 @@ public partial class MainWindow : Window
         foreach (var person in people)
         {
             var content = new StackPanel { Orientation = Orientation.Horizontal };
-            content.Children.Add(Avatar(person.Name, person.AvatarSeed, person.AvatarFile, person.AvatarHair, 30, person.AlignFaceX, person.AlignFaceY, person.AlignHairX, person.AlignHairY));
+            content.Children.Add(Avatar(person.Name, person.AvatarSeed, person.AvatarFile, person.AvatarHair, 30));
             content.Children.Add(new TextBlock
             {
                 Text = person.Name,
@@ -476,20 +476,8 @@ public partial class MainWindow : Window
     /* ── 数据 ───────────────────────────────────────────── */
 
     private sealed record DepartmentInfo(string Id, string Name, string Description);
-    private sealed record EmployeeInfo(string Id, string Name, string Title, string Level, string DepartmentId, string Model, string BaseUrl, int AvatarSeed, string AvatarFile, string AvatarHair, double AlignFaceX, double AlignFaceY, double AlignHairX, double AlignHairY);
+    private sealed record EmployeeInfo(string Id, string Name, string Title, string Level, string DepartmentId, string Model, string BaseUrl, int AvatarSeed, string AvatarFile, string AvatarHair);
 
-    /// <summary>从 state JSON 里读员工头像的对齐修正（缺失就是 0，按库里原始约定叠加）。</summary>
-    private static double AlignOf(JsonElement employee, string layer, string axis)
-    {
-        return employee.TryGetProperty("align", out var align)
-            && align.ValueKind == JsonValueKind.Object
-            && align.TryGetProperty(layer, out var part)
-            && part.ValueKind == JsonValueKind.Object
-            && part.TryGetProperty(axis, out var value)
-            && value.ValueKind == JsonValueKind.Number
-            ? value.GetDouble()
-            : 0;
-    }
     private sealed record ProjectInfo(string Id, string Name, string Description, string[] DepartmentIds);
 
     private async Task RefreshStateAsync()
@@ -519,8 +507,7 @@ public partial class MainWindow : Window
                 e.TryGetProperty("baseUrl", out var bu) ? bu.GetString() ?? "" : "",
                 e.TryGetProperty("avatar", out var av) && av.TryGetProperty("seed", out var sd) ? sd.GetInt32() : 0,
                 e.TryGetProperty("avatar", out var av2) && av2.TryGetProperty("file", out var af) ? af.GetString() ?? "" : "",
-                e.TryGetProperty("avatar", out var av3) && av3.TryGetProperty("hair", out var ah) ? ah.GetString() ?? "" : "",
-                AlignOf(e, "face", "dx"), AlignOf(e, "face", "dy"), AlignOf(e, "hair", "dx"), AlignOf(e, "hair", "dy"))).ToList();
+                e.TryGetProperty("avatar", out var av3) && av3.TryGetProperty("hair", out var ah) ? ah.GetString() ?? "" : "")).ToList();
             _projects = root.GetProperty("projects").EnumerateArray().Select(p => new ProjectInfo(
                 p.GetProperty("id").GetString() ?? "",
                 p.GetProperty("name").GetString() ?? "",
@@ -581,7 +568,7 @@ public partial class MainWindow : Window
                     TextColor = failed ? Themed("Danger") : kind == "ack" ? Themed("Ink2") : Themed("Ink"),
                     Avatar = speaker is null
                         ? null
-                        : Avatar(speaker.Name, speaker.AvatarSeed, speaker.AvatarFile, speaker.AvatarHair, 34, speaker.AlignFaceX, speaker.AlignFaceY, speaker.AlignHairX, speaker.AlignHairY),
+                        : Avatar(speaker.Name, speaker.AvatarSeed, speaker.AvatarFile, speaker.AvatarHair, 34),
                     AvatarVisibility = speaker is null ? Visibility.Collapsed : Visibility.Visible,
                 });
             }
@@ -742,7 +729,7 @@ public partial class MainWindow : Window
         var active = _mode == "employee" && _threadId == employee.Id;
 
         var panel = new StackPanel { Orientation = Orientation.Horizontal };
-        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, employee.AvatarFile, employee.AvatarHair, 40, employee.AlignFaceX, employee.AlignFaceY, employee.AlignHairX, employee.AlignHairY));
+        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, employee.AvatarFile, employee.AvatarHair, 40));
         // 名字稍大、职位跟在后面且颜色更淡
         panel.Children.Add(new TextBlock
         {
@@ -783,7 +770,7 @@ public partial class MainWindow : Window
     /// 头像三层优先：组装式（固定脸型 + 随机发型，两图叠加）→ 现成图片 → 种子色块 + 首字。
     /// 组装规则跟头像库的约定一致：先画脸，再把发型以相同左上角叠加（PNG alpha 合成）。
     /// </summary>
-    private static UIElement Avatar(string name, int seed, string file, string hair, double size, double faceX = 0, double faceY = 0, double hairX = 0, double hairY = 0)
+    private static UIElement Avatar(string name, int seed, string file, string hair, double size)
     {
         if (!string.IsNullOrEmpty(hair))
         {
@@ -791,7 +778,7 @@ public partial class MainWindow : Window
             var hairImage = LoadAvatarImage($"{BaseUrl}/api/avatar/hair/{Uri.EscapeDataString(hair)}");
             if (face is not null && hairImage is not null)
             {
-                return WrapAvatar(new[] { face, hairImage }, size, faceX, faceY, hairX, hairY);
+                return WrapAvatar(new[] { face, hairImage }, size);
             }
         }
 
@@ -865,13 +852,13 @@ public partial class MainWindow : Window
     /// 缩放系数由素材本身决定：脸 + 发型合成后最远像素约在画布宽度的 0.54 半径处，
     /// 乘 0.9 后落在圆的 0.5 半径内，所以既不会被切边，也不会被拉伸变形。
     /// 顺序：先按原比例摆正、最后才裁剪，比例不会被带偏。
-    /// faceShift/hairShift 是服务端按发型图算出来的平移量（256 画布坐标，见 server/align.js）：
-    /// 优先把裁歪的发型层挪正，挪不动的余量交给脸层补，两层都不出画布。
+    /// faceShift/hairShift 保留为空参数：库的「组合规则」要求两层以**相同的左上角坐标**
+    /// 直接 source-over 叠加、不要裁剪/拉伸/旋转单个图层。
+    /// 所以这里两层都按同一个方框、同一个中心摆放，不做任何单独平移。
     /// </summary>
-    private static UIElement WrapAvatar(IEnumerable<ImageSource> layers, double size, double faceShiftX = 0, double faceShiftY = 0, double hairShiftX = 0, double hairShiftY = 0)
+    private static UIElement WrapAvatar(IEnumerable<ImageSource> layers, double size)
     {
         var art = size * 0.9;
-        var unit = art / 256.0;   // 1 个画布像素对应多少显示像素
         var stack = new Grid { Width = size, Height = size };
 
         stack.Children.Add(new System.Windows.Shapes.Ellipse
@@ -881,10 +868,9 @@ public partial class MainWindow : Window
             Fill = Brushes.White,
         });
 
-        var index = 0;
         foreach (var source in layers)
         {
-            var layer = new Image
+            stack.Children.Add(new Image
             {
                 Source = source,
                 Width = art,
@@ -892,16 +878,7 @@ public partial class MainWindow : Window
                 Stretch = Stretch.Uniform,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-            };
-            // 第 1 层是脸、第 2 层是发型，各自带自己的修正量
-            var shiftX = index == 0 ? faceShiftX : hairShiftX;
-            var shiftY = index == 0 ? faceShiftY : hairShiftY;
-            if (shiftX != 0 || shiftY != 0)
-            {
-                layer.RenderTransform = new TranslateTransform(shiftX * unit, shiftY * unit);
-            }
-            index++;
-            stack.Children.Add(layer);
+            });
         }
 
         return new Border

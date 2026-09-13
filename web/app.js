@@ -1,4 +1,4 @@
-// 蜂群 HIVE · 前端
+﻿// 蜂群 HIVE · 前端
 //
 // 一个本地面板：左边是"项目 + 团队"，右边是当前面板（部门 / 项目 / 员工三种模式）。
 // 零依赖，原生 ES module。
@@ -78,18 +78,11 @@ function avatarHtml(name, seed, avatar = null, size = '') {
   const cls = `avatar${size ? ` avatar--${size}` : ''}`;
   // 组装式（脸 + 发型）与现成图片都走图片；否则退回色块 + 首字
   if (avatar?.hair) {
-    // 服务端按发型图算出的修正量（256 画布坐标，见 server/align.js）：
-    // 优先把裁歪的发型层挪正，挪不动的余量交给脸层补，两层都不出画布。
-    const align = avatar.align || null;
-    const shift = (part) => {
-      if (!align?.[part]) return '';
-      const { dx = 0, dy = 0 } = align[part];
-      if (!dx && !dy) return '';
-      return ` style="transform:translate(${(dx / 2.56).toFixed(3)}%,${(dy / 2.56).toFixed(3)}%)"`;
-    };
+    // 按头像库的「组合规则」：先画脸，再把发型以相同的左上角坐标叠加（PNG alpha 合成），
+    // 单个图层不裁剪、不拉伸、不旋转。所以这里两层都放在同一个方框里。
     return `<span class="${cls} avatar--pic">
-      <img src="/api/avatar/face/base-face-reference.png" alt=""${shift('face')} />
-      <img src="/api/avatar/hair/${encodeURIComponent(avatar.hair)}" alt=""${shift('hair')} />
+      <img src="/api/avatar/face/base-face-reference.png" alt="" />
+      <img src="/api/avatar/hair/${encodeURIComponent(avatar.hair)}" alt="" />
     </span>`;
   }
   if (avatar?.file) {
@@ -101,11 +94,6 @@ function avatarHtml(name, seed, avatar = null, size = '') {
   return `<span class="${cls}" style="background:linear-gradient(135deg,hsl(${hue} 58% 58%),hsl(${hue2} 54% 46%))">${ch}</span>`;
 }
 
-// 头像对齐修正挂在员工上（服务端按发型图算出来的），拼进 avatar 一起交给绘制函数
-function withAlign(employee) {
-  if (!employee?.avatar) return null;
-  return employee.align ? { ...employee.avatar, align: employee.align } : employee.avatar;
-}
 
 /* 推理等级：跟桌面端同一套档位（见 server/worker.js 里怎么翻译成请求参数） */
 const REASONING_OPTIONS = [
@@ -205,7 +193,7 @@ function employeeRow(employee) {
   const busy = state.busy.includes(employee.id);
   return `<li>
     <button class="tree__row${active ? ' is-active' : ''}" data-kind="employee" data-id="${esc(employee.id)}">
-      ${avatarHtml(employee.name, employee.avatar?.seed, withAlign(employee), 'sm')}
+      ${avatarHtml(employee.name, employee.avatar?.seed, employee.avatar, 'sm')}
       <span class="tree__name">${esc(employee.name)}</span>
       <span class="dot ${busy ? 'dot--busy' : ''}"></span>
     </button>
@@ -249,7 +237,7 @@ function renderPanelHead() {
 
   el.panelRoster.innerHTML = members.map((employee) => `
     <button class="roster__item" data-kind="employee" data-id="${esc(employee.id)}" title="${esc(employee.title)}">
-      ${avatarHtml(employee.name, employee.avatar?.seed, withAlign(employee), 'sm')}
+      ${avatarHtml(employee.name, employee.avatar?.seed, employee.avatar, 'sm')}
       <span>${esc(employee.name)}</span>
     </button>`).join('');
 }
@@ -276,7 +264,7 @@ function renderStream() {
     ].filter(Boolean).join(' ');
     const when = message.at ? new Date(message.at).toLocaleTimeString('zh-CN', { hour12: false }) : '';
     return `<article class="${cls}">
-      ${isLocal ? '' : avatarHtml(message.fromName || '?', seed, employee ? withAlign(employee) : null)}
+      ${isLocal ? '' : avatarHtml(message.fromName || '?', seed, employee?.avatar)}
       <div class="msg__body">
         <div class="msg__head">
           <span class="msg__who">${esc(message.fromName || message.from)}</span>

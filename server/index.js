@@ -401,8 +401,9 @@ const server = http.createServer(async (req, res) => {
           apiKey: undefined,
           hasOwnKey: Boolean(String(employee.apiKey || '').trim()),
           channel: store.channelFor(employee),
-          // 发型图里"头的开口"每张都不一样，这里现算一个脸层平移量，
-          // 让每款发型出来都是同一套比例（见 server/align.js）
+          // 诊断数据：量出这张发型图的发帘位置/发块质心（见 server/align.js）。
+          // 库的规则要求两层「左上角坐标一致、直接叠加」，所以 App 不会去平移图层；
+          // 这个字段留给"重裁库素材"这类工具用，也方便排查是哪张图没对齐。
           align: avatarAlign(employee),
         })),
         projects,
