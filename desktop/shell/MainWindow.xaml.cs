@@ -61,12 +61,6 @@ public partial class MainWindow : Window
         Log("=== 外壳启动（原生界面）===");
         InitializeComponent();
 
-        var iconPath = FindAsset("hive-icon-black.png");
-        if (iconPath is not null)
-        {
-            BrandIcon.Source = new BitmapImage(new Uri(iconPath));
-        }
-
         Loaded += OnLoadedAsync;
         Closing += OnClosing;
         InputBox.TextChanged += OnInputChanged;
@@ -143,6 +137,29 @@ public partial class MainWindow : Window
         Set("BubbleLocalLine", "#BFD6FB", "#35507F");
         Set("Danger", "#C2554F", "#E0857E");
         Set("DangerLine", "#E3B4B0", "#6B3E3B");
+
+        UpdateBrandIcon();
+    }
+
+    /// <summary>深色底用白 logo，浅色底用黑 logo —— 不然深色下那个黑图标根本看不见。</summary>
+    private void UpdateBrandIcon()
+    {
+        var preferred = _darkTheme ? "hive-icon-white.png" : "hive-icon-black.png";
+        var path = FindAsset(preferred) ?? FindAsset("hive-icon-black.png");
+        if (path is null) return;
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.UriSource = new Uri(path);
+            image.EndInit();
+            BrandIcon.Source = image;
+        }
+        catch (Exception error)
+        {
+            Log($"品牌图标加载失败：{error.Message}");
+        }
     }
 
     /// <summary>点发送按钮后面的小箭头：弹出可以选的发送方式，当前那个打勾。</summary>
@@ -1544,7 +1561,7 @@ public sealed class FormDialog : Window
         Width = 440;
         SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = new SolidColorBrush(Color.FromRgb(250, 249, 247));
+        Background = (Brush)Application.Current.Resources["Bg"];
         FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI");
         FontSize = 13;
 
@@ -1555,7 +1572,7 @@ public sealed class FormDialog : Window
             {
                 Text = note,
                 TextWrapping = TextWrapping.Wrap,
-                Foreground = new SolidColorBrush(Color.FromRgb(107, 114, 128)),
+                Foreground = (Brush)Application.Current.Resources["Ink2"],
                 Margin = new Thickness(0, 0, 0, 12),
             });
         }
@@ -1565,7 +1582,7 @@ public sealed class FormDialog : Window
             stack.Children.Add(new TextBlock
             {
                 Text = field.Label,
-                Foreground = new SolidColorBrush(Color.FromRgb(107, 114, 128)),
+                Foreground = (Brush)Application.Current.Resources["Ink2"],
                 FontSize = 12,
                 Margin = new Thickness(0, 0, 0, 4),
             });
@@ -1643,7 +1660,7 @@ public sealed class FormDialog : Window
         {
             Content = "确定",
             Width = 84,
-            Background = new SolidColorBrush(Color.FromRgb(59, 130, 246)),
+            Background = (Brush)Application.Current.Resources["Accent"],
             Foreground = Brushes.White,
             BorderThickness = new Thickness(0),
             Padding = new Thickness(0, 7, 0, 7),
