@@ -278,6 +278,21 @@ code, pre, .mono { font-family: var(--mono); }
 .avatar--lg { --size: 36px; }
 .avatar--sm { --size: 22px; }
 
+/* 图片头像：组装式（脸 + 发型）两层叠加，裁成圆 */
+.avatar--pic {
+  position: relative;
+  overflow: hidden;
+  background: none;
+  box-shadow: none;
+}
+.avatar--pic img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
 /* ── 主面板 ───────────────────────────────────────────── */
 
 .main {

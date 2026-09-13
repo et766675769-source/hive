@@ -74,11 +74,21 @@ async function api(path, options = {}) {
 
 /* ── 随机头像：种子 → 颜色 + 首字（简单、零依赖）──────── */
 
-function avatarHtml(name, seed, size = '') {
+function avatarHtml(name, seed, avatar = null, size = '') {
+  const cls = `avatar${size ? ` avatar--${size}` : ''}`;
+  // 组装式（脸 + 发型）与现成图片都走图片；否则退回色块 + 首字
+  if (avatar?.hair) {
+    return `<span class="${cls} avatar--pic">
+      <img src="/api/avatar/face/base-face-reference.png" alt="" />
+      <img src="/api/avatar/hair/${encodeURIComponent(avatar.hair)}" alt="" />
+    </span>`;
+  }
+  if (avatar?.file) {
+    return `<span class="${cls} avatar--pic"><img src="/api/avatar/${encodeURIComponent(avatar.file)}" alt="" /></span>`;
+  }
   const hue = Math.abs(Number(seed) || 0) % 360;
   const hue2 = (hue + 42) % 360;
   const ch = esc(String(name || '?').trim().slice(0, 1).toUpperCase());
-  const cls = `avatar${size ? ` avatar--${size}` : ''}`;
   return `<span class="${cls}" style="background:linear-gradient(135deg,hsl(${hue} 58% 58%),hsl(${hue2} 54% 46%))">${ch}</span>`;
 }
 
@@ -167,7 +177,7 @@ function employeeRow(employee) {
   const busy = state.busy.includes(employee.id);
   return `<li>
     <button class="tree__row${active ? ' is-active' : ''}" data-kind="employee" data-id="${esc(employee.id)}">
-      ${avatarHtml(employee.name, employee.avatar?.seed, 'sm')}
+      ${avatarHtml(employee.name, employee.avatar?.seed, employee.avatar, 'sm')}
       <span class="tree__name">${esc(employee.name)}</span>
       <span class="dot ${busy ? 'dot--busy' : ''}"></span>
     </button>
@@ -211,7 +221,7 @@ function renderPanelHead() {
 
   el.panelRoster.innerHTML = members.map((employee) => `
     <button class="roster__item" data-kind="employee" data-id="${esc(employee.id)}" title="${esc(employee.title)}">
-      ${avatarHtml(employee.name, employee.avatar?.seed, 'sm')}
+      ${avatarHtml(employee.name, employee.avatar?.seed, employee.avatar, 'sm')}
       <span>${esc(employee.name)}</span>
     </button>`).join('');
 }
@@ -238,7 +248,7 @@ function renderStream() {
     ].filter(Boolean).join(' ');
     const when = message.at ? new Date(message.at).toLocaleTimeString('zh-CN', { hour12: false }) : '';
     return `<article class="${cls}">
-      ${isLocal ? '' : avatarHtml(message.fromName || '?', seed)}
+      ${isLocal ? '' : avatarHtml(message.fromName || '?', seed, employee?.avatar)}
       <div class="msg__body">
         <div class="msg__head">
           <span class="msg__who">${esc(message.fromName || message.from)}</span>

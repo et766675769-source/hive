@@ -254,7 +254,7 @@ public partial class MainWindow : Window
         foreach (var person in people)
         {
             var content = new StackPanel { Orientation = Orientation.Horizontal };
-            content.Children.Add(Avatar(person.Name, person.AvatarSeed, person.AvatarFile, 24));
+            content.Children.Add(Avatar(person.Name, person.AvatarSeed, person.AvatarFile, person.AvatarHair, 24));
             content.Children.Add(new TextBlock
             {
                 Text = person.Name,
@@ -452,7 +452,7 @@ public partial class MainWindow : Window
     /* ── 数据 ───────────────────────────────────────────── */
 
     private sealed record DepartmentInfo(string Id, string Name, string Description);
-    private sealed record EmployeeInfo(string Id, string Name, string Title, string Level, string DepartmentId, string Model, string BaseUrl, int AvatarSeed, string AvatarFile);
+    private sealed record EmployeeInfo(string Id, string Name, string Title, string Level, string DepartmentId, string Model, string BaseUrl, int AvatarSeed, string AvatarFile, string AvatarHair);
     private sealed record ProjectInfo(string Id, string Name, string Description, string[] DepartmentIds);
 
     private async Task RefreshStateAsync()
@@ -480,7 +480,8 @@ public partial class MainWindow : Window
                 e.TryGetProperty("model", out var m) ? m.GetString() ?? "" : "",
                 e.TryGetProperty("baseUrl", out var bu) ? bu.GetString() ?? "" : "",
                 e.TryGetProperty("avatar", out var av) && av.TryGetProperty("seed", out var sd) ? sd.GetInt32() : 0,
-                e.TryGetProperty("avatar", out var av2) && av2.TryGetProperty("file", out var af) ? af.GetString() ?? "" : "")).ToList();
+                e.TryGetProperty("avatar", out var av2) && av2.TryGetProperty("file", out var af) ? af.GetString() ?? "" : "",
+                e.TryGetProperty("avatar", out var av3) && av3.TryGetProperty("hair", out var ah) ? ah.GetString() ?? "" : "")).ToList();
             _projects = root.GetProperty("projects").EnumerateArray().Select(p => new ProjectInfo(
                 p.GetProperty("id").GetString() ?? "",
                 p.GetProperty("name").GetString() ?? "",
@@ -696,7 +697,7 @@ public partial class MainWindow : Window
         var active = _mode == "employee" && _threadId == employee.Id;
 
         var panel = new StackPanel { Orientation = Orientation.Horizontal };
-        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, employee.AvatarFile, 26));
+        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, employee.AvatarFile, employee.AvatarHair, 26));
         // 名字稍大、职位跟在后面且颜色更淡
         panel.Children.Add(new TextBlock
         {
@@ -733,18 +734,39 @@ public partial class MainWindow : Window
         return button;
     }
 
-    /// <summary>头像：头像库里有图就用图（圆形裁剪），没有就退回"种子 → 色相 + 首字"。</summary>
-    private static UIElement Avatar(string name, int seed, string file, double size)
+    /// <summary>
+    /// 头像三层优先：组装式（固定脸型 + 随机发型，两图叠加）→ 现成图片 → 种子色块 + 首字。
+    /// 组装规则跟头像库的约定一致：先画脸，再把发型以相同左上角叠加（PNG alpha 合成）。
+    /// </summary>
+    private static UIElement Avatar(string name, int seed, string file, string hair, double size)
     {
+        if (!string.IsNullOrEmpty(hair))
+        {
+            var face = LoadAvatarImage($"{BaseUrl}/api/avatar/face/base-face-reference.png");
+            var hairImage = LoadAvatarImage($"{BaseUrl}/api/avatar/hair/{Uri.EscapeDataString(hair)}");
+            if (face is not null && hairImage is not null)
+            {
+                var visual = new DrawingVisual();
+                using (var dc = visual.RenderOpen())
+                {
+                    dc.DrawImage(face, new Rect(0, 0, size, size));
+                    dc.DrawImage(hairImage, new Rect(0, 0, size, size));
+                }
+                return new System.Windows.Shapes.Ellipse
+                {
+                    Width = size,
+                    Height = size,
+                    Fill = new VisualBrush(visual),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+            }
+        }
+
         if (!string.IsNullOrEmpty(file))
         {
-            try
+            var image = LoadAvatarImage($"{BaseUrl}/api/avatar/{Uri.EscapeDataString(file)}");
+            if (image is not null)
             {
-                var image = new BitmapImage();
-                image.BeginInit();
-                image.CacheOption = BitmapCacheOption.OnLoad;
-                image.UriSource = new Uri($"{BaseUrl}/api/avatar/{Uri.EscapeDataString(file)}");
-                image.EndInit();
                 return new System.Windows.Shapes.Ellipse
                 {
                     Width = size,
@@ -753,11 +775,9 @@ public partial class MainWindow : Window
                     VerticalAlignment = VerticalAlignment.Center,
                 };
             }
-            catch (Exception error)
-            {
-                Log($"头像加载失败（{file}）：{error.Message}");
-            }
         }
+
+        // 兜底：种子色相 + 名字首字
         return new Border
         {
             Width = size,
@@ -775,6 +795,32 @@ public partial class MainWindow : Window
                 VerticalAlignment = VerticalAlignment.Center,
             },
         };
+    }
+
+    private static readonly Dictionary<string, BitmapImage> AvatarImages = new();
+
+    /// <summary>把头像图取到本地缓存（图都很小，同步取一次即可）。</summary>
+    private static BitmapImage? LoadAvatarImage(string url)
+    {
+        if (AvatarImages.TryGetValue(url, out var cached)) return cached;
+        try
+        {
+            var bytes = Http.GetByteArrayAsync(url).GetAwaiter().GetResult();
+            using var stream = new MemoryStream(bytes);
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.StreamSource = stream;
+            image.EndInit();
+            image.Freeze();
+            AvatarImages[url] = image;
+            return image;
+        }
+        catch (Exception error)
+        {
+            Log($"头像加载失败 {url}：{error.Message}");
+            return null;
+        }
     }
 
     private static Brush AvatarBrush(int seed)

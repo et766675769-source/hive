@@ -79,37 +79,73 @@ const AVATAR_DIRS = [
 
 const AVATAR_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 
-let avatarCache = { at: 0, dir: null, files: [] };
+let avatarCache = { at: 0, dir: null, kind: 'none', face: '', hairs: [], files: [] };
 
-/** 扫出第一个可用的头像库（10 秒缓存，免得每次建员工都读盘）。 */
+/**
+ * 扫出头像库。支持两种形态：
+ *   composed —— face/base-face-reference.png + hair/hair-XX.png（固定脸型 + 随机发型，叠加合成）
+ *   flat     —— 目录里直接放一堆完整头像
+ * 10 秒缓存，免得每次建员工都读盘。
+ */
 function avatarLibrary() {
   const now = Date.now();
   if (now - avatarCache.at < 10000) return avatarCache;
   for (const dir of AVATAR_DIRS) {
     try {
-      const files = fs
-        .readdirSync(dir)
-        .filter((name) => AVATAR_EXT.has(path.extname(name).toLowerCase()))
-        .sort();
+      const pick = (sub) =>
+        fs
+          .readdirSync(path.join(dir, sub))
+          .filter((name) => AVATAR_EXT.has(path.extname(name).toLowerCase()))
+          .sort();
+      const face = path.join(dir, 'face', 'base-face-reference.png');
+      const hairs = fs.existsSync(path.join(dir, 'hair')) ? pick('hair') : [];
+      if (fs.existsSync(face) && hairs.length) {
+        avatarCache = { at: now, dir, kind: 'composed', face: 'face/base-face-reference.png', hairs, files: [] };
+        return avatarCache;
+      }
+      const files = pick('.').filter((name) => name !== 'base-face-reference.png');
       if (files.length) {
-        avatarCache = { at: now, dir, files };
+        avatarCache = { at: now, dir, kind: 'flat', face: '', hairs: [], files };
         return avatarCache;
       }
     } catch {
       /* 目录不存在就试下一个 */
     }
   }
-  avatarCache = { at: now, dir: null, files: [] };
+  avatarCache = { at: now, dir: null, kind: 'none', face: '', hairs: [], files: [] };
   return avatarCache;
 }
 
-/** 给一个新员工挑头像：库里优先随机挑，挑不到就只留种子。 */
+/** 统计现在各发型被用了几次（用来尽量避免整组撞脸）。 */
+function avatarUsage() {
+  const used = new Map();
+  for (const employee of store.readOrg().employees) {
+    const hair = employee.avatar?.hair;
+    if (hair) used.set(hair, (used.get(hair) || 0) + 1);
+  }
+  return used;
+}
+
+/** 给一个新员工挑头像：优先挑"用得最少"的，实在用完才允许重复。 */
 function pickAvatar(existing) {
   const seed = existing?.avatar?.seed || Math.floor(Math.random() * 1e9);
-  if (existing?.avatar?.file) return { seed, file: existing.avatar.file };
+  const current = existing?.avatar;
+  if (current?.file || current?.hair) return { ...current, seed };
   const library = avatarLibrary();
-  if (!library.files.length) return { seed };
-  return { seed, file: library.files[Math.floor(Math.random() * library.files.length)] };
+
+  if (library.kind === 'composed') {
+    const used = avatarUsage();
+    const leastUsed = Math.min(...library.hairs.map((name) => used.get(name) || 0));
+    const fresh = library.hairs.filter((name) => (used.get(name) || 0) === leastUsed);
+    return { seed, hair: fresh[Math.floor(Math.random() * fresh.length)] };
+  }
+  if (library.kind === 'flat') {
+    const used = avatarUsage();
+    const leastUsed = Math.min(...library.files.map((name) => used.get(name) || 0));
+    const fresh = library.files.filter((name) => (used.get(name) || 0) === leastUsed);
+    return { seed, file: fresh[Math.floor(Math.random() * fresh.length)] };
+  }
+  return { seed };
 }
 
 /* ── SSE：把新留言和员工忙闲实时推给面板 ─────────────────── */
@@ -230,8 +266,8 @@ function normalizeEmployee(input, existing = null) {
     model: String(input.model ?? existing?.model ?? '').trim().slice(0, 80),
     apiKey: String(input.apiKey ?? existing?.apiKey ?? '').trim().slice(0, 200),
     baseUrl: String(input.baseUrl ?? existing?.baseUrl ?? '').trim().slice(0, 200),
-    // 头像：优先从头像库随机挑一张，库里没有就退回"种子 → 色相 + 首字"
-    avatar: pickAvatar(existing),
+    // 头像：优先挑用得最少的发型；传 avatar:null 表示清空重挑
+    avatar: pickAvatar(input.avatar === null ? null : existing),
     createdAt: existing?.createdAt || new Date().toISOString(),
   };
 }
@@ -271,14 +307,16 @@ const server = http.createServer(async (req, res) => {
   const pathname = decodeURIComponent(url.pathname);
 
   try {
-    /* ---- 头像文件：从头像库里直接发给前端 / 桌面端 ---- */
+    /* ---- 头像文件：支持子目录（face/…、hair/…），只允许库内路径 ---- */
     if (pathname.startsWith('/api/avatar/') && req.method === 'GET') {
-      const name = decodeURIComponent(pathname.slice('/api/avatar/'.length));
+      const rel = decodeURIComponent(pathname.slice('/api/avatar/'.length));
       const library = avatarLibrary();
-      if (!library.dir || !library.files.includes(name) || name.includes('..')) {
+      const root = library.dir ? path.resolve(library.dir) : '';
+      const full = root ? path.resolve(root, rel) : '';
+      if (!root || !full.startsWith(root) || !fs.existsSync(full) || !fs.statSync(full).isFile()) {
         return json(res, 404, { ok: false, error: '头像库里没有这个文件' });
       }
-      return serveStatic(res, path.join(library.dir, name));
+      return serveStatic(res, full);
     }
 
     /* ---- 实时流 ---- */
@@ -330,7 +368,13 @@ const server = http.createServer(async (req, res) => {
         summary: store.summary(),
         avatar: (() => {
           const library = avatarLibrary();
-          return { dir: library.dir, count: library.files.length };
+          return {
+            dir: library.dir,
+            kind: library.kind,
+            face: library.face,
+            hairs: library.hairs.length,
+            files: library.files.length,
+          };
         })(),
       });
     }
