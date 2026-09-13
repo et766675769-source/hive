@@ -1,0 +1,29 @@
+<Window x:Class="Hive.Shell.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="蜂群 HIVE"
+        Height="840" Width="1320"
+        MinHeight="520" MinWidth="820"
+        WindowStartupLocation="CenterScreen"
+        Background="#FAF9F7">
+  <Grid>
+    <!-- 面板本体 -->
+    <wv2:WebView2 x:Name="Web" Visibility="Collapsed" />
+
+    <!-- 启动遮罩：面板起来之前给个交代，别是一片白 -->
+    <Border x:Name="Splash" Background="#FAF9F7">
+      <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+        <TextBlock Text="蜂群 HIVE"
+                   FontSize="26" FontWeight="SemiBold"
+                   Foreground="#1E1E1E" HorizontalAlignment="Center" />
+        <TextBlock Text="一个你，指挥一群绑定不同模型的 AI 员工"
+                   Margin="0,10,0,0" FontSize="13"
+                   Foreground="#6B7280" HorizontalAlignment="Center" />
+        <TextBlock x:Name="SplashText" Text="正在准备…"
+                   Margin="0,22,0,0" FontSize="12.5"
+                   Foreground="#A3A29E" HorizontalAlignment="Center" />
+      </StackPanel>
+    </Border>
+  </Grid>
+</Window>

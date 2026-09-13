@@ -284,7 +284,6 @@ async function loadState() {
 
   renderAll();
   await loadThread();
-  maybeShowOnboard();
 }
 
 async function loadThread() {
@@ -366,7 +365,14 @@ function openEmployeeModal(employee = null, presetDepartmentId = '') {
          <select class="select" id="fLevel">${levelOptions(data.level)}</select></label>
      </div>
      <label class="field"><span class="field__label">所属部门</span>
-       <select class="select" id="fDept"><option value="">（未分配）</option>${departmentOptions(data.departmentId)}</select></label>
+       <select class="select" id="fDept">
+         <option value="">（未分配）</option>${departmentOptions(data.departmentId)}
+         <option value="__new__">＋ 新建部门…</option>
+       </select>
+       <div class="dept-new" id="fDeptNew" hidden>
+         <input class="input" id="fDeptNewName" placeholder="新部门名字，例如 市场部" />
+         <button class="ghost" id="fDeptNewBtn" type="button">创建</button>
+       </div></label>
      <label class="field"><span class="field__label">职责描述（会写进他的提示词）</span>
        <textarea class="textarea" id="fDesc" placeholder="他负责什么、擅长什么">${esc(data.description)}</textarea></label>
      <label class="field"><span class="field__label">模型（留空用全局默认）</span>
@@ -379,6 +385,28 @@ function openEmployeeModal(employee = null, presetDepartmentId = '') {
      <button class="primary" id="modalSave" type="button">${isNew ? '添加' : '保存'}</button>`,
   );
   $('modalCancel').onclick = closeModal;
+  // 所属部门支持"就地新建"：不用退出这个弹窗，建完自动选中新部门
+  $('fDept').onchange = () => {
+    const creating = $('fDept').value === '__new__';
+    $('fDeptNew').hidden = !creating;
+    if (creating) $('fDeptNewName').focus();
+  };
+  $('fDeptNewBtn').onclick = async () => {
+    const deptName = $('fDeptNewName').value.trim();
+    if (!deptName) return toast('请填部门名字');
+    try {
+      const created = await api('/api/department', { method: 'POST', body: JSON.stringify({ name: deptName }) });
+      await loadState();
+      const select = $('fDept');
+      select.innerHTML = `<option value="">（未分配）</option>${departmentOptions(created.department.id)}<option value="__new__">＋ 新建部门…</option>`;
+      select.value = created.department.id;
+      $('fDeptNew').hidden = true;
+      $('fDeptNewName').value = '';
+      toast(`已创建部门「${deptName}」`);
+    } catch (error) {
+      toast(`创建失败：${error.message}`);
+    }
+  };
   $('modalSave').onclick = async () => {
     const name = $('fName').value.trim();
     if (!name) return toast('请填名字');
@@ -602,8 +630,9 @@ function projectMenu(project) {
 
 /* ── 开机引导 ─────────────────────────────────────────── */
 
+/** 只有"还没走完引导"时才显示；走完就不再打扰（哪怕后来把部门删光了）。 */
 function maybeShowOnboard() {
-  if (state.settings.onboarded && state.departments.length) {
+  if (state.settings.onboarded) {
     el.onboard.hidden = true;
     return;
   }
@@ -644,17 +673,22 @@ function renderOnboard() {
           <select class="select" id="oEmpLevel">${levelOptions('worker')}</select></label>
       </div>
       <label class="field"><span class="field__label">所属部门</span>
-        <select class="select" id="oEmpDept">${departmentOptions(state.departments[0]?.id)}</select></label>
-      <label class="field"><span class="field__label">职责描述</span>
+        <select class="select" id="oEmpDept"><option value="">（未分配）</option>${departmentOptions(state.departments[0]?.id)}</select></label>
+      <label class="field"><span class="field__label">职责描述（可留空）</span>
         <input class="input" id="oEmpDesc" placeholder="他负责什么" /></label>`;
   }
 
   const nextLabel = step === 2 ? '完成，开始使用' : '下一步';
   el.onboard.innerHTML = `
     <div class="onboard__card">
-      <img class="onboard__logo" src="assets/hive-icon-black.png" alt="" />
-      <h2>${esc(APP_NAME)}</h2>
-      <p>一个你，指挥一群绑定不同模型的 AI 员工。三步就能开工。</p>
+      <header class="onboard__head">
+        <span class="onboard__logo">
+          <img class="logo logo--light" src="assets/hive-icon-black.png" alt="" />
+          <img class="logo logo--dark" src="assets/hive-icon-white.png" alt="" />
+        </span>
+        <h2>${esc(APP_NAME)}</h2>
+        <p>一个你，指挥一群绑定不同模型的 AI 员工。三步就能开工。</p>
+      </header>
       ${stepBar}
       ${body}
       <div class="modal__foot" style="border:0;padding:6px 0 0">
@@ -663,50 +697,79 @@ function renderOnboard() {
       </div>
     </div>`;
 
-  $('oSkip').onclick = async () => {
+  $('oSkip').onclick = () => void skipOnboard();
+  $('oNext').onclick = () => void nextOnboardStep();
+}
+
+async function skipOnboard() {
+  try {
     await api('/api/settings', { method: 'POST', body: JSON.stringify({ onboarded: true }) });
-    el.onboard.hidden = true;
-    await loadState();
-  };
-  $('oNext').onclick = async () => {
-    try {
-      if (step === 0) {
-        const payload = { onboarded: false, baseUrl: $('oBase').value.trim(), model: $('oModel').value.trim() };
-        const key = $('oKey').value.trim();
-        if (key) payload.apiKey = key;
-        await api('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
-        state.onboardingStep = 1;
-      } else if (step === 1) {
-        const name = $('oDeptName').value.trim();
-        if (!name) return toast('请填部门名字');
-        await api('/api/department', { method: 'POST', body: JSON.stringify({ name, description: $('oDeptDesc').value.trim() }) });
-        await loadState();
-        state.onboardingStep = 2;
-      } else {
-        const name = $('oEmpName').value.trim();
-        if (!name) return toast('请填员工名字');
-        await api('/api/employee', {
-          method: 'POST',
-          body: JSON.stringify({
-            name,
-            title: $('oEmpTitle').value.trim() || '员工',
-            level: $('oEmpLevel').value,
-            departmentId: $('oEmpDept').value,
-            description: $('oEmpDesc').value.trim(),
-          }),
-        });
-        await api('/api/settings', { method: 'POST', body: JSON.stringify({ onboarded: true }) });
-        el.onboard.hidden = true;
-        await loadState();
-        toast('已经可以开工了：在下面的输入框说点什么，或用 @名字 点名');
+    state.settings.onboarded = true;
+  } catch {
+    /* 跳过失败也放行，别把人卡在引导里 */
+  }
+  el.onboard.hidden = true;
+  await loadState();
+}
+
+/**
+ * 引导下一步：每一步只做自己那件事，成功后推进步骤号并重渲染。
+ * 之前这里和 loadState 互相调用（loadState → maybeShowOnboard → renderOnboard），
+ * 会用旧步骤号重渲染、把按钮处理器绑错，于是"点完成没反应"。现在步骤号只在这里推进。
+ */
+async function nextOnboardStep() {
+  const step = state.onboardingStep;
+  const button = $('oNext');
+  if (button) button.disabled = true;
+  try {
+    if (step === 0) {
+      const payload = { baseUrl: $('oBase').value.trim(), model: $('oModel').value.trim() };
+      const key = $('oKey').value.trim();
+      if (key) payload.apiKey = key;
+      await api('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
+      state.onboardingStep = 1;
+      renderOnboard();
+    } else if (step === 1) {
+      const name = $('oDeptName').value.trim();
+      if (!name) {
+        toast('请填部门名字');
         return;
       }
-      await loadState();
+      await api('/api/department', {
+        method: 'POST',
+        body: JSON.stringify({ name, description: $('oDeptDesc').value.trim() }),
+      });
+      state.onboardingStep = 2;
+      await loadState(); // 让「所属部门」下拉里有刚建好的部门
       renderOnboard();
-    } catch (error) {
-      toast(error.message);
+    } else {
+      const name = $('oEmpName').value.trim();
+      if (!name) {
+        toast('请填员工名字');
+        return;
+      }
+      await api('/api/employee', {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          title: $('oEmpTitle').value.trim() || '员工',
+          level: $('oEmpLevel').value,
+          departmentId: $('oEmpDept').value,
+          description: $('oEmpDesc').value.trim(), // 允许留空
+        }),
+      });
+      await api('/api/settings', { method: 'POST', body: JSON.stringify({ onboarded: true }) });
+      state.settings.onboarded = true;
+      await loadState();
+      el.onboard.hidden = true;
+      toast('已经可以开工了：在下面说点什么，或用 @名字 点名');
     }
-  };
+  } catch (error) {
+    toast(`没成功：${error.message}`);
+  } finally {
+    const again = $('oNext');
+    if (again) again.disabled = false;
+  }
 }
 
 /* ── 事件绑定 ─────────────────────────────────────────── */
@@ -832,7 +895,9 @@ function connectStream() {
 
 /* ── 启动 ─────────────────────────────────────────────── */
 
-loadState().catch((error) => {
-  el.stream.innerHTML = `<div class="stream__empty">连不上服务端：${esc(error.message)}<br />请确认 <code>node server/index.js</code> 正在运行。</div>`;
-});
+loadState()
+  .then(() => maybeShowOnboard())
+  .catch((error) => {
+    el.stream.innerHTML = `<div class="stream__empty">连不上服务端：${esc(error.message)}<br />请确认 <code>node server/index.js</code> 正在运行。</div>`;
+  });
 connectStream();

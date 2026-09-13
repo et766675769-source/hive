@@ -56,9 +56,22 @@ npm start
 
 1. **填 API 通道** —— API Key + 接口地址 + 默认模型（任何 OpenAI 兼容的端点都行，本机 Ollama 也可以）
 2. **建一个部门** —— 例如「研发部」
-3. **加一位员工** —— 起名字、写职责、选层级
+3. **加一位员工** —— 起名字、写职能、选层级（职责描述可以留空，后面再补）
 
 然后在输入框里说一句话，或者 `@他的名字` 点名试试。
+
+## 桌面应用
+
+想要一个能双击打开的窗口（而不是浏览器标签页）：
+
+```bash
+cd desktop/shell
+dotnet build -c Release     # 需要 .NET 8 SDK，只需构建一次
+```
+
+然后双击 `desktop/Hive.vbs` 即可。它会自动把面板拉起来，关掉窗口时也只停自己拉起的那个进程。
+
+跑 `desktop/install-shortcut.vbs` 还能在桌面创建一个带图标的快捷方式。详见 [`desktop/README.md`](desktop/README.md)。
 
 ## 员工怎么干活
 

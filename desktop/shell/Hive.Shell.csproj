@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Hive.Shell</AssemblyName>
+    <RootNamespace>Hive.Shell</RootNamespace>
+    <Version>0.2.0</Version>
+    <Product>蜂群 HIVE</Product>
+    <AssemblyTitle>蜂群 HIVE</AssemblyTitle>
+    <Description>本地面板：一个你，指挥一群绑定不同模型的 AI 员工</Description>
+    <ApplicationIcon>..\hive.ico</ApplicationIcon>
+    <!-- 单文件发布时不带控制台窗口 -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2592.51" />
+  </ItemGroup>
+
+</Project>

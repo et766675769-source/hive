@@ -6,6 +6,10 @@ node_modules/
 npm-debug.log*
 *.log
 
+# 桌面外壳构建产物（源码在 desktop/shell，产物不入库）
+desktop/shell/bin/
+desktop/shell/obj/
+
 # 编辑器 / 系统
 .DS_Store
 Thumbs.db
