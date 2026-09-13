@@ -558,7 +558,7 @@ function levelChannelFields() {
       <label class="field"><span class="field__label">${label} · 接口地址</span>
         <input class="input" id="lvBase_${value}" value="${esc(channel.baseUrl || '')}" spellcheck="false" placeholder="留空 = 用上面的默认地址" /></label>
       <label class="field"><span class="field__label">${label} · API Key</span>
-        <input class="input" id="lvKey_${value}" type="password" autocomplete="off" placeholder="${channel.hasKey ? '已设置（留空则不改）' : '留空 = 用全局的'}" /></label>`;
+        <input class="input" id="lvKey_${value}" type="password" autocomplete="off" placeholder="${channel.hasKey ? `已设置 ${esc(channel.keyHint || '')}（留空则不改）` : '留空 = 用全局的'}" /></label>`;
     }).join('')}`;
 }
 
@@ -577,7 +577,9 @@ function readLevelChannels() {
 }
 
 function openSettingsModal() {
-  const keyPlaceholder = state.settings.hasKey ? '已设置（留空则保持不变）' : 'sk-…';
+  const keyPlaceholder = state.settings.hasKey
+    ? `已设置 ${state.settings.keyHint || ''}（留空则保持不变）`
+    : 'sk-…';
   openModal(
     '全局设置',
     `<p class="field__hint" style="margin-bottom:14px">这里填的通道是「默认通道」：没有单独设置 API 的员工都用它。</p>

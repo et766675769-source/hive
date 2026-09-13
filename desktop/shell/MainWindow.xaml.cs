@@ -45,6 +45,7 @@ public partial class MainWindow : Window
     private List<EmployeeInfo> _employees = new();
     private List<ProjectInfo> _projects = new();
     private bool _hasKey;
+    private string _keyHint = "";
 
     private DispatcherTimer? _timer;
     private int _mentionStart = -1;
@@ -519,6 +520,7 @@ public partial class MainWindow : Window
             _baseUrl = settings.TryGetProperty("baseUrl", out var bu) ? bu.GetString() ?? "" : "";
             _model = settings.TryGetProperty("model", out var md) ? md.GetString() ?? "" : "";
             _reasoning = settings.TryGetProperty("reasoning", out var rz) ? rz.GetString() ?? "default" : "default";
+            _keyHint = settings.TryGetProperty("keyHint", out var kh) ? kh.GetString() ?? "" : "";
             _levelChannels = new Dictionary<string, LevelChannelInfo>();
             if (settings.TryGetProperty("levelChannels", out var lc) && lc.ValueKind == JsonValueKind.Object)
             {
@@ -531,7 +533,8 @@ public partial class MainWindow : Window
                     _levelChannels[level.Value] = new LevelChannelInfo(
                         models,
                         item.TryGetProperty("baseUrl", out var lb) ? lb.GetString() ?? "" : "",
-                        item.TryGetProperty("hasKey", out var hk) && hk.ValueKind == JsonValueKind.True);
+                        item.TryGetProperty("hasKey", out var hk) && hk.ValueKind == JsonValueKind.True,
+                        item.TryGetProperty("keyHint", out var khm) ? khm.GetString() ?? "" : "");
                 }
             }
             _departments = root.GetProperty("departments").EnumerateArray().Select(d => new DepartmentInfo(
@@ -1246,7 +1249,8 @@ public partial class MainWindow : Window
             string.IsNullOrEmpty(_baseUrl) ? "https://api.deepseek.com" : _baseUrl,
             string.IsNullOrEmpty(_model) ? "deepseek-chat" : _model,
             string.IsNullOrEmpty(_reasoning) ? "default" : _reasoning,
-            _levelChannels)
+            _levelChannels,
+            _keyHint)
         {
             Owner = this,
         };
@@ -1770,6 +1774,37 @@ public partial class MainWindow : Window
     [System.Runtime.InteropServices.DllImport("shell32.dll")]
     private static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);
 
+    /// <summary>
+    /// 让普通窗口（设置、表单弹窗）的系统标题栏跟着配色走：
+    /// 深色主题下调 DWM 的 immersive dark 模式，标题栏就是深色的，不再是一条白杠。
+    /// </summary>
+    internal static void ApplyTitleBarTheme(Window window)
+    {
+        try
+        {
+            var dark = true;
+            if (Application.Current.Resources["Bg"] is SolidColorBrush brush)
+            {
+                var color = brush.Color;
+                dark = (0.299 * color.R + 0.587 * color.G + 0.114 * color.B) < 128;
+            }
+            var value = dark ? 1 : 0;
+            var handle = new System.Windows.Interop.WindowInteropHelper(window).EnsureHandle();
+            // 20 = DWMWA_USE_IMMERSIVE_DARK_MODE（旧版 Windows 10 用 19）
+            if (DwmSetWindowAttribute(handle, 20, ref value, sizeof(int)) != 0)
+            {
+                DwmSetWindowAttribute(handle, 19, ref value, sizeof(int));
+            }
+        }
+        catch
+        {
+            /* 老系统不支持就算了，不影响功能 */
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
     private void RestoreWindow()
     {
         Show();
@@ -1803,7 +1838,7 @@ public sealed record FormField(
     string[]? Options = null, bool IsSecret = false, bool IsFolder = false);
 
 /// <summary>某个职级配的模型通道：models 可以多个（同职级轮着用），baseUrl 留空 = 用全局默认通道。</summary>
-public sealed record LevelChannelInfo(string[] Models, string BaseUrl, bool HasKey);
+public sealed record LevelChannelInfo(string[] Models, string BaseUrl, bool HasKey, string KeyHint);
 
 /// <summary>设置窗口：分组呈现；「API 设置」单独一块，点标题才展开。</summary>
 public sealed class SettingsWindow : Window
@@ -1872,7 +1907,7 @@ public sealed class SettingsWindow : Window
         : "default";
 
     public SettingsWindow(bool darkTheme, bool autoStart, string dataDir, bool hasKey, string baseUrl, string model, string reasoning = "default",
-        Dictionary<string, LevelChannelInfo>? levelChannels = null)
+        Dictionary<string, LevelChannelInfo>? levelChannels = null, string keyHint = "")
     {
         Title = "设置";
         Width = 470;
@@ -1883,6 +1918,7 @@ public sealed class SettingsWindow : Window
         Foreground = (Brush)Application.Current.Resources["Ink"];
         FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI");
         FontSize = 13;
+        SourceInitialized += (_, _) => MainWindow.ApplyTitleBarTheme(this);   // 标题栏跟随配色
 
         var ink2 = (Brush)Application.Current.Resources["Ink2"];
         var line = (Brush)Application.Current.Resources["Line"];
@@ -1940,7 +1976,9 @@ public sealed class SettingsWindow : Window
 
         /* API 设置：单独一块，折叠着，点标题才展开 */
         var apiPanel = new StackPanel();
-        apiPanel.Children.Add(Caption(hasKey ? "API Key（已设置，留空不改）" : "API Key", ink2));
+        apiPanel.Children.Add(Caption(hasKey
+            ? (string.IsNullOrEmpty(keyHint) ? "API Key（已设置，留空不改）" : $"API Key（已设置 {keyHint}，留空不改）")
+            : "API Key", ink2));
         _apiKey = new TextBox { Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 0, 0, 10) };
         apiPanel.Children.Add(_apiKey);
         apiPanel.Children.Add(Caption("接口地址", ink2));
@@ -2023,7 +2061,9 @@ public sealed class SettingsWindow : Window
             apiPanel.Children.Add(new TextBlock
             {
                 Text = current?.HasKey == true
-                    ? "③ API Key —— 已设置，留空则不改"
+                    ? (string.IsNullOrEmpty(current.KeyHint)
+                        ? "③ API Key —— 已设置，留空则不改"
+                        : $"③ API Key —— 已设置 {current.KeyHint}，留空则不改")
                     : "③ API Key —— 这一档专用的 Key；留空 = 用上面的全局 Key",
                 FontSize = 11.5,
                 Foreground = ink2,
@@ -2124,6 +2164,7 @@ public sealed class FormDialog : Window
         Background = (Brush)Application.Current.Resources["Bg"];
         FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI");
         FontSize = 13;
+        SourceInitialized += (_, _) => MainWindow.ApplyTitleBarTheme(this);   // 标题栏跟随配色
 
         var stack = new StackPanel { Margin = new Thickness(20, 18, 20, 16) };
         if (note is not null)

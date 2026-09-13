@@ -361,15 +361,30 @@ function normalizeReasoning(value) {
  * 职级模型通道：每个职级一组 { models[], baseUrl, apiKey }。
  * models 最多 5 个（同职级的人轮着用）；baseUrl / apiKey 留空 = 用全局默认通道。
  */
+/**
+ * 给用户看的 Key 掩码：只露头尾，用来在设置里显示"已经填过了"。
+ * 明文 Key 一律不回前端。
+ */
+function keyHintOf(key) {
+  const value = String(key || '').trim();
+  if (!value) return '';
+  if (value.length <= 10) return `${value.slice(0, 3)}…`;
+  return `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
 function normalizeLevelChannels(input, current = {}) {
   const result = {};
   for (const key of LEVEL_CHANNEL_KEYS) {
     const raw = input?.[key] ?? {};
     const previous = current?.[key] || {};
-    const models = (Array.isArray(raw.models) ? raw.models : String(raw.models ?? '').split(','))
-      .map((name) => String(name || '').trim().slice(0, 80))
-      .filter(Boolean)
-      .slice(0, 5);
+    // models 不传 = 保持不变；传数组或逗号串才覆盖（避免前端漏字段把已配的模型清空）
+    const rawModels = raw.models;
+    const models = rawModels === undefined
+      ? (Array.isArray(previous.models) ? previous.models : [])
+      : (Array.isArray(rawModels) ? rawModels : String(rawModels ?? '').split(','))
+          .map((name) => String(name || '').trim().slice(0, 80))
+          .filter(Boolean)
+          .slice(0, 5);
     result[key] = {
       models,
       baseUrl: raw.baseUrl === undefined ? String(previous.baseUrl || '') : String(raw.baseUrl).trim().slice(0, 200),
@@ -488,17 +503,20 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         settings: {
           hasKey: Boolean(String(settings.apiKey || '').trim()),
+          // 给界面显示用：能看出"已经填过了"但不泄露明文
+          keyHint: keyHintOf(settings.apiKey),
           baseUrl: settings.baseUrl,
           model: settings.model,
           reasoning: settings.reasoning,
           onboarded: Boolean(settings.onboarded),
-          // 按职级分配的模型通道（不把 Key 回传，只回有没有）
+          // 按职级分配的模型通道（不把 Key 回传，只回掩码）
           levelChannels: LEVEL_CHANNEL_KEYS.reduce((acc, key) => {
             const channel = settings.levelChannels?.[key] || {};
             acc[key] = {
               models: Array.isArray(channel.models) ? channel.models : [],
               baseUrl: String(channel.baseUrl || ''),
               hasKey: Boolean(String(channel.apiKey || '').trim()),
+              keyHint: keyHintOf(channel.apiKey),
             };
             return acc;
           }, {}),

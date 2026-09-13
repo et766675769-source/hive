@@ -19,61 +19,7 @@
   </shell:WindowChrome.WindowChrome>
 
   <Window.Resources>
-    <!-- 全部圆角 -->
-    <Style TargetType="Button">
-      <Setter Property="Padding" Value="14,7" />
-      <Setter Property="Background" Value="{DynamicResource Surface}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource LineStrong}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="Foreground" Value="{DynamicResource Ink}" />
-      <Setter Property="Cursor" Value="Hand" />
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="9"
-                    Background="{TemplateBinding Background}"
-                    BorderBrush="{TemplateBinding BorderBrush}"
-                    BorderThickness="{TemplateBinding BorderThickness}"
-                    Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                VerticalAlignment="Center" />
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Opacity" Value="0.85" />
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter TargetName="Bd" Property="Opacity" Value="0.5" />
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <Style TargetType="TextBox">
-      <Setter Property="Padding" Value="9,7" />
-      <Setter Property="BorderBrush" Value="{DynamicResource LineStrong}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="Background" Value="{DynamicResource Surface}" />
-      <Setter Property="Foreground" Value="{DynamicResource Ink}" />
-      <Setter Property="CaretBrush" Value="{DynamicResource Ink}" />
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="TextBox">
-            <Border CornerRadius="9"
-                    Background="{TemplateBinding Background}"
-                    BorderBrush="{TemplateBinding BorderBrush}"
-                    BorderThickness="{TemplateBinding BorderThickness}">
-              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
-                            VerticalAlignment="Center" />
-            </Border>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- ComboBox / ContextMenu / MenuItem / Expander 的圆角样式在 App.xaml（全局） -->
+    <!-- Button / TextBox 的圆角样式已经搬到 App.xaml（全局），这样设置窗口、表单弹窗也吃得到 -->
 
     <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
       <Setter Property="Background" Value="{DynamicResource Accent}" />
