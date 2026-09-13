@@ -293,6 +293,21 @@ code, pre, .mono { font-family: var(--mono); }
   object-fit: contain;
 }
 
+/* 头像形状：圆角六边形（与 logo / 桌面端同一套几何）。
+   桌面端用 WPF 的 Geometry 裁剪，这里用 SVG mask，坐标按元素尺寸缩放。 */
+:root {
+  --hex-mask: url("data:image/svg+xml;utf8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22 preserveAspectRatio=%22none%22%3E%3Cpath d=%22M 66.1 8.05 L 82 16 A 18 18 0 0 1 100 43 L 100 57 A 18 18 0 0 1 83.9 83.05 L 66.1 91.95 A 18 18 0 0 1 33.9 91.95 L 18 84 A 18 18 0 0 1 0 57 L 0 7 A 18 18 0 0 1 16.1 16.95 L 33.9 8.05 A 18 18 0 0 1 66.1 8.05 Z%22 fill=%22black%22/%3E%3C/svg%3E");
+}
+
+.avatar {
+  -webkit-mask-image: var(--hex-mask);
+  mask-image: var(--hex-mask);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
 /* ── 主面板 ───────────────────────────────────────────── */
 
 .main {

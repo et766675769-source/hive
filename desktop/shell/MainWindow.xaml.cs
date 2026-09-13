@@ -752,11 +752,12 @@ public partial class MainWindow : Window
                     dc.DrawImage(face, new Rect(0, 0, size, size));
                     dc.DrawImage(hairImage, new Rect(0, 0, size, size));
                 }
-                return new System.Windows.Shapes.Ellipse
+                return new System.Windows.Shapes.Path
                 {
+                    Data = RoundedHexagonGeometry(size),
+                    Fill = new VisualBrush(visual),
                     Width = size,
                     Height = size,
-                    Fill = new VisualBrush(visual),
                     VerticalAlignment = VerticalAlignment.Center,
                 };
             }
@@ -767,11 +768,12 @@ public partial class MainWindow : Window
             var image = LoadAvatarImage($"{BaseUrl}/api/avatar/{Uri.EscapeDataString(file)}");
             if (image is not null)
             {
-                return new System.Windows.Shapes.Ellipse
+                return new System.Windows.Shapes.Path
                 {
+                    Data = RoundedHexagonGeometry(size),
+                    Fill = new ImageBrush(image) { Stretch = Stretch.UniformToFill },
                     Width = size,
                     Height = size,
-                    Fill = new ImageBrush(image) { Stretch = Stretch.UniformToFill },
                     VerticalAlignment = VerticalAlignment.Center,
                 };
             }
@@ -782,7 +784,7 @@ public partial class MainWindow : Window
         {
             Width = size,
             Height = size,
-            CornerRadius = new CornerRadius(size / 2),
+            Clip = RoundedHexagonGeometry(size),
             Background = AvatarBrush(seed),
             VerticalAlignment = VerticalAlignment.Center,
             Child = new TextBlock
@@ -795,6 +797,55 @@ public partial class MainWindow : Window
                 VerticalAlignment = VerticalAlignment.Center,
             },
         };
+    }
+
+    /// <summary>
+    /// 圆角六边形（尖顶朝上，与 logo 同形状）——头像统一用它裁剪。
+    /// 六个顶点各自内缩出一小段，顶点之间用圆弧连起来，就是圆角效果。
+    /// </summary>
+    private static Geometry RoundedHexagonGeometry(double size, double radiusRatio = 0.18)
+    {
+        var pts = new[]
+        {
+            new Point(size * 0.5, 0),
+            new Point(size, size * 0.25),
+            new Point(size, size * 0.75),
+            new Point(size * 0.5, size),
+            new Point(0, size * 0.75),
+            new Point(0, size * 0.25),
+        };
+        var radius = size * radiusRatio;
+        var ins = new Point[6];
+        var outs = new Point[6];
+        for (var i = 0; i < 6; i++)
+        {
+            ins[i] = MoveToward(pts[i], pts[(i + 5) % 6], radius);
+            outs[i] = MoveToward(pts[i], pts[(i + 1) % 6], radius);
+        }
+
+        var geometry = new StreamGeometry();
+        using (var ctx = geometry.Open())
+        {
+            ctx.BeginFigure(outs[0], true, true);
+            for (var i = 0; i < 6; i++)
+            {
+                ctx.LineTo(ins[(i + 1) % 6], true, false);
+                ctx.ArcTo(outs[(i + 1) % 6], new Size(radius, radius), 0,
+                    false, SweepDirection.Clockwise, true, false);
+            }
+        }
+        geometry.Freeze();
+        return geometry;
+    }
+
+    private static Point MoveToward(Point from, Point to, double distance)
+    {
+        var dx = to.X - from.X;
+        var dy = to.Y - from.Y;
+        var length = Math.Sqrt(dx * dx + dy * dy);
+        if (length <= 0.0001) return from;
+        var scale = Math.Min(distance, length / 2) / length;
+        return new Point(from.X + dx * scale, from.Y + dy * scale);
     }
 
     private static readonly Dictionary<string, BitmapImage> AvatarImages = new();
