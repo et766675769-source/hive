@@ -158,8 +158,8 @@ MIT
 
 ## 头像库（随仓库附带）
 
-仓库里 `library/` 是一份可直接使用的**头像库快照**（100 张完整头像 + 预览图 + manifest），
-所以 clone 下来不配任何东西就能跑。程序按这个顺序找库，用第一个存在的：
+仓库里 `library/` 是**整份头像库**（100 张完整头像 + 预览图 + 原始设计图集 + manifest），
+所以 clone 下来不配任何东西就能跑，也能拿这份图集继续生成新头像。程序按这个顺序找库，用第一个存在的：
 
 1. 环境变量 `HIVE_AVATAR_DIR`
 2. `D:\随机头像库`（本机自建库的默认位置，方便随时换素材）
@@ -167,5 +167,6 @@ MIT
 4. `web/avatars`
 
 想换成自己的库：把 `HIVE_AVATAR_DIR` 指过去，或直接放到 `D:\随机头像库`。
-库的格式见 `library/README.md`（`manifest.json` 里声明 `mode` 与文件清单）；
-`source/`（设计图集）不随仓库走，需要的话在本机库里保留即可。
+库的格式见 `library/README.md`（`manifest.json` 里声明 `mode`、文件清单与 `source/` 图集）；
+`library/source/` 里是原始设计图集（`reference-style-atlas.png`、`additional-10-atlas.png`），
+生成新头像时用得到，所以随仓库一起带。
