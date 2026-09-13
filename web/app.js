@@ -584,6 +584,32 @@ function employeeMenu(employee) {
   return [
     { action: 'panel', label: '打开工作面板', run: () => switchContext('employee', employee.id) },
     { action: 'config', label: '设置…', run: () => openEmployeeModal(employee) },
+    {
+      action: 'avatar',
+      label: '重新生成头像',
+      run: async () => {
+        try {
+          // avatar: null 表示清掉旧的，让服务端重新挑一个（优先挑别人没用过的）
+          await api('/api/employee', {
+            method: 'POST',
+            body: JSON.stringify({
+              id: employee.id,
+              name: employee.name,
+              title: employee.title,
+              level: employee.level,
+              departmentId: employee.departmentId,
+              model: employee.model,
+              baseUrl: employee.baseUrl,
+              avatar: null,
+            }),
+          });
+          toast('已重新生成头像');
+          await loadState();
+        } catch (error) {
+          toast(`换头像失败：${error.message}`);
+        }
+      },
+    },
     '-',
     {
       action: 'delete',

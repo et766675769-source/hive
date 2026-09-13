@@ -1380,6 +1380,9 @@ public partial class MainWindow : Window
                 new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"));
             await RefreshStateAsync();
         };
+        var avatarItem = new MenuItem { Header = "重新生成头像" };
+        avatarItem.Click += async (_, _) => await RegenerateAvatar(employee);
+
         var deleteItem = new MenuItem { Header = "删除员工" };
         deleteItem.Click += async (_, _) =>
         {
@@ -1390,9 +1393,45 @@ public partial class MainWindow : Window
             await RefreshStateAsync();
         };
         menu.Items.Add(editItem);
+        menu.Items.Add(avatarItem);
         menu.Items.Add(deleteItem);
         menu.PlacementTarget = anchor;
         menu.IsOpen = true;
+    }
+
+    /// <summary>重新生成头像：传 avatar:null 让服务端重挑一个（优先挑别人没用过的）。</summary>
+    private async Task RegenerateAvatar(EmployeeInfo employee)
+    {
+        try
+        {
+            var payload = new Dictionary<string, object?>
+            {
+                ["id"] = employee.Id,
+                ["name"] = employee.Name,
+                ["title"] = employee.Title,
+                ["level"] = employee.Level,
+                ["departmentId"] = employee.DepartmentId,
+                ["model"] = employee.Model,
+                ["baseUrl"] = employee.BaseUrl,
+                // 不传 managerId / description / apiKey：服务端会沿用原有值
+                ["avatar"] = null, // 清掉旧头像 → 服务端重新挑一个
+            };
+            var response = await Http.PostAsync($"{BaseUrl}/api/employee",
+                new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"));
+            if (!response.IsSuccessStatusCode)
+            {
+                MessageBox.Show($"换头像失败：{await response.Content.ReadAsStringAsync()}", "蜂群 HIVE");
+                return;
+            }
+            AvatarImages.Clear(); // 丢掉本地图片缓存，确保拿到的是新分配的那张
+            await RefreshStateAsync();
+            Log($"已为 {employee.Name} 重新生成头像");
+        }
+        catch (Exception error)
+        {
+            Log($"换头像出错：{error.Message}");
+            MessageBox.Show($"换头像出错：{error.Message}", "蜂群 HIVE");
+        }
     }
 
     /* ── 窗口控制（无边框，标题栏自己画）──────────────────── */
