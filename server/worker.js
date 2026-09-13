@@ -49,8 +49,10 @@ async function callChannel(channel, { system, prompt, timeoutMs = 120000 }) {
           { role: 'system', content: system },
           { role: 'user', content: prompt },
         ],
-        // 思考会占掉输出预算，开了推理等级就给宽一点，免得正文被截断
-        max_tokens: reasoning ? 2000 : 900,
+        // 思考模式下 max_tokens 是「思考 + 正文」共用的预算：
+        // deepseek-flash / deepseek-v4-pro 默认就开思考，给 900 的话长任务的正文会被思考吃掉
+        // （实测 max_tokens=16 时只回思考、正文是空的），所以统一给到 2000。
+        max_tokens: 2000,
         // 思考模式下 temperature 是无效参数，干脆不发
         ...(reasoning ? {} : { temperature: 0.3 }),
         stream: false,
