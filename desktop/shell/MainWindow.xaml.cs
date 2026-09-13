@@ -1052,8 +1052,8 @@ public partial class MainWindow : Window
         {
             new FormField("theme", "面板风格", "", _darkTheme ? "深色" : "浅色", new[] { "浅色", "深色" }),
             new FormField("startup", "开机自动启动", "", autoStart ? "开启" : "关闭", new[] { "开启", "关闭" }),
-            new FormField("dataDir", "数据存储位置（下次启动生效）", "",
-                string.IsNullOrEmpty(_dataDir) ? "" : _dataDir),
+            new FormField("dataDir", "数据存储位置（选好后立即切换）", "",
+                string.IsNullOrEmpty(_dataDir) ? "" : _dataDir, null, false, true),
             new FormField("apiKey", _hasKey ? "全局 API Key（已设置，留空不改）" : "全局 API Key", "sk-…", "", null, true),
             new FormField("baseUrl", "接口地址", "https://api.deepseek.com", "https://api.deepseek.com"),
             new FormField("model", "默认模型", "deepseek-chat", "deepseek-chat"),
@@ -1077,10 +1077,41 @@ public partial class MainWindow : Window
         var wantStartup = v["startup"] == "开启";
         if (wantStartup != autoStart) SetAutoStart(wantStartup);
 
-        // 存储位置：记在偏好里，下次拉起服务时带上
+        // 存储位置：换了就重启服务端，让新位置立刻生效（所有数据都跟着走）
         var dir = v["dataDir"].Trim();
-        _dataDir = dir.Contains("默认") ? "" : dir;
+        var newDir = dir.Contains("默认") ? "" : dir;
+        var dirChanged = !string.Equals(newDir, _dataDir, StringComparison.OrdinalIgnoreCase);
+        _dataDir = newDir;
         SavePrefs();
+
+        if (dirChanged)
+        {
+            var label = string.IsNullOrEmpty(_dataDir) ? "默认 data 目录" : _dataDir;
+            if (_startedByUs && _server is { HasExited: false })
+            {
+                Log($"存储位置改为「{label}」，重启面板服务");
+                try
+                {
+                    _server.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    /* 忽略 */
+                }
+                await Task.Delay(900);
+                _startedByUs = StartServer();
+                var ready = await WaitForBoardAsync(TimeSpan.FromSeconds(25));
+                Log($"按新目录重启：{(ready ? "就绪" : "超时")}");
+                await RefreshStateAsync();
+            }
+            else
+            {
+                MessageBox.Show(
+                    "存储位置已记录，但当前面板服务不是由这个窗口启动的（可能是别处已在运行）。\n\n" +
+                    "退出那个服务再打开本窗口，新位置就会生效。",
+                    "蜂群 HIVE");
+            }
+        }
 
         // 全局 API
         var payload = new Dictionary<string, object>
@@ -1335,10 +1366,10 @@ public partial class MainWindow : Window
     }
 }
 
-/// <summary>一个字段：关键字、标签、占位、默认值、可选下拉项、是否密码。</summary>
+/// <summary>一个字段：关键字、标签、占位、默认值、可选下拉项、是否密码、是否是目录选择。</summary>
 public sealed record FormField(
     string Key, string Label, string Placeholder = "", string Value = "",
-    string[]? Options = null, bool IsSecret = false);
+    string[]? Options = null, bool IsSecret = false, bool IsFolder = false);
 
 /// <summary>够用就好的原生输入对话框：一列字段 + 确定/取消。</summary>
 public sealed class FormDialog : Window
@@ -1392,13 +1423,53 @@ public sealed class FormDialog : Window
                 var box = new TextBox
                 {
                     Text = field.Value,
-                    Margin = new Thickness(0, 0, 0, 12),
+                    Margin = field.IsFolder ? new Thickness(0) : new Thickness(0, 0, 0, 12),
                     Padding = new Thickness(8, 6, 8, 6),
                 };
                 if (field.Placeholder != "") box.ToolTip = field.Placeholder;
                 if (field.IsSecret) box.FontFamily = new FontFamily("Consolas");
                 _boxes[field.Key] = box;
-                stack.Children.Add(box);
+
+                if (field.IsFolder)
+                {
+                    // 目录字段：右边配一个「浏览…」，点开系统文件夹选择框
+                    var capturedBox = box;
+                    var browse = new Button
+                    {
+                        Content = "浏览…",
+                        Width = 80,
+                        Margin = new Thickness(8, 0, 0, 0),
+                        Padding = new Thickness(0, 6, 0, 6),
+                        Cursor = Cursors.Hand,
+                    };
+                    browse.Click += (_, _) =>
+                    {
+                        using var picker = new Forms.FolderBrowserDialog
+                        {
+                            Description = "选择数据存储位置（部门、员工、项目、全部对话都会存在这里）",
+                            UseDescriptionForTitle = true,
+                            ShowNewFolderButton = true,
+                        };
+                        if (!string.IsNullOrEmpty(capturedBox.Text) && Directory.Exists(capturedBox.Text))
+                        {
+                            picker.SelectedPath = capturedBox.Text;
+                        }
+                        if (picker.ShowDialog() == Forms.DialogResult.OK)
+                        {
+                            capturedBox.Text = picker.SelectedPath;
+                        }
+                    };
+
+                    var row = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
+                    DockPanel.SetDock(browse, Dock.Right);
+                    row.Children.Add(browse);
+                    row.Children.Add(box);
+                    stack.Children.Add(row);
+                }
+                else
+                {
+                    stack.Children.Add(box);
+                }
             }
         }
 
