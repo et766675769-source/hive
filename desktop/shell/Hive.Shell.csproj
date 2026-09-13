@@ -4,6 +4,8 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <!-- 托盘图标用 WinForms 的 NotifyIcon：WPF 自身没有，这样不用引第三方包 -->
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Hive.Shell</AssemblyName>
@@ -13,12 +15,15 @@
     <AssemblyTitle>蜂群 HIVE</AssemblyTitle>
     <Description>本地面板：一个你，指挥一群绑定不同模型的 AI 员工</Description>
     <ApplicationIcon>..\hive.ico</ApplicationIcon>
-    <!-- 单文件发布时不带控制台窗口 -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+    <!-- UseWindowsForms 会把 System.Windows.Forms 塞进隐式 using，和 WPF 的类型打架
+         （Button / TextBox / Application…）。我们只用 Forms.NotifyIcon，走别名 Forms.，
+         所以把这条隐式 using 去掉。 -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
   </ItemGroup>
 
 </Project>

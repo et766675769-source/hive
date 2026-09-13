@@ -71,6 +71,12 @@ export class Worker {
   }
 
   /** 员工的身份 + 它该用的通道。 */
+  /** 直接下属（派活的依据）。 */
+  reportsOf(managerId) {
+    const { employees } = this.store.readOrg();
+    return employees.filter((e) => e.managerId && e.managerId === managerId);
+  }
+
   describe(employeeId) {
     const { departments, employees } = this.store.readOrg();
     const employee = employees.find((item) => item.id === employeeId);
@@ -80,12 +86,26 @@ export class Worker {
   }
 
   /** 给模型看的 system：把这个员工是谁、在哪、什么脾气说清楚。 */
-  #system({ employee, department }) {
+  #system({ employee, department, reports }) {
     const lines = [
       `你是「${employee.name}」，${department ? `${department.name}的` : ''}${employee.title || '员工'}。`,
     ];
-    if (employee.description) lines.push(`你的职责与专长：${employee.description}`);
-    if (department?.description) lines.push(`你所属部门：${department.name}——${department.description}`);
+    // 职责描述就是这个员工的提示词：人设的核心，放最前面
+    if (employee.description) {
+      lines.push('', '你的职责（这是你的角色定义，按它来思考和说话）：', employee.description);
+    }
+    if (department?.description) lines.push('', `你所属部门：${department.name}——${department.description}`);
+
+    if (reports.length) {
+      lines.push(
+        '',
+        '你的下属（可以直接用 @名字 给他们派活，系统会自动把任务送过去，不用人再转一手）：',
+        ...reports.map((r) => `- @${r.name}：${r.title}${r.description ? ` —— ${r.description}` : ''}`),
+        '',
+        '接到任务时：先判断该由哪几位下属来做，然后用 @名字 把活分派出去，每人写清"要做什么、交付什么"。',
+        '不要自己把下属的活全干了——你的价值在于拆解和分配。',
+      );
+    }
     lines.push(
       '你在一家由 AI 员工组成的公司里工作，通过「蜂群 HIVE」面板与负责人和同事沟通。',
       '工作纪律：',
@@ -160,7 +180,7 @@ export class Worker {
       }
       const recent = this.store.readThread(mode, threadId, { limit: 12 }).slice(0, -0);
       const text = await callChannel(channel, {
-        system: this.#system({ employee, department }),
+        system: this.#system({ employee, department, reports: this.reportsOf(employeeId) }),
         prompt: this.#prompt({ mode, contextName, recent, taskText, fromName }),
       });
       const reply = this.#write(mode, threadId, {

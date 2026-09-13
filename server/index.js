@@ -81,6 +81,48 @@ function broadcast(event, data) {
 
 const worker = new Worker({ store, onEvent: broadcast });
 
+/**
+ * 派活，并顺着回复里的 @点名 继续派下去。
+ *
+ * 这一条就是"任务自动分配"的全部机制：经理接到任务 → 他按下属职能用 @名字 分派
+ * → 系统解析回复里的点名、把任务自动送给那几位下属 → 下属再各自开工。
+ * 全程不需要人再转一手，也不需要任何"心跳"来发现谁该干活。
+ *
+ * 两道保险：链条深度≤3，且同一条链上不重复派给同一个人（防止互相 @ 转圈）。
+ */
+async function dispatchChain({ employeeId, mode, threadId, taskText, fromName, replyTo, depth, chain }) {
+  if (depth > 3 || chain.includes(employeeId)) return;
+  const nextChain = [...chain, employeeId];
+
+  let result;
+  try {
+    result = await worker.dispatch({ employeeId, mode, threadId, taskText, fromName, replyTo });
+  } catch (error) {
+    broadcast('error', { employeeId, error: error.message });
+    return;
+  }
+  if (!result.reply || result.error) return;
+
+  const { employees } = store.readOrg();
+  const mentioned = worker.parseMentions(result.reply.text, employees);
+  if (!mentioned.length) return;
+
+  const me = employees.find((item) => item.id === employeeId);
+  for (const id of mentioned) {
+    if (nextChain.includes(id)) continue;
+    void dispatchChain({
+      employeeId: id,
+      mode,
+      threadId,
+      taskText: result.reply.text,
+      fromName: me?.name || '同事',
+      replyTo: result.reply.id,
+      depth: depth + 1,
+      chain: nextChain,
+    });
+  }
+}
+
 /* ── HTTP 小工具 ─────────────────────────────────────────── */
 
 const shortId = (prefix) => `${prefix}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
@@ -132,6 +174,7 @@ function normalizeEmployee(input, existing = null) {
     title: String(input.title || existing?.title || '员工').trim().slice(0, 32),
     level,
     departmentId: String(input.departmentId ?? existing?.departmentId ?? '').trim(),
+    managerId: String(input.managerId ?? existing?.managerId ?? '').trim(),
     description: String(input.description ?? existing?.description ?? '').trim().slice(0, 500),
     model: String(input.model ?? existing?.model ?? '').trim().slice(0, 80),
     apiKey: String(input.apiKey ?? existing?.apiKey ?? '').trim().slice(0, 200),
@@ -270,9 +313,7 @@ const server = http.createServer(async (req, res) => {
       const started = [];
       for (const employeeId of targets) {
         started.push(employeeId);
-        worker
-          .dispatch({ employeeId, mode, threadId, taskText: text, fromName: '你', replyTo: message.id })
-          .catch((error) => broadcast('error', { employeeId, error: error.message }));
+        void dispatchChain({ employeeId, mode, threadId, taskText: text, fromName: '你', replyTo: message.id, depth: 0, chain: [] });
       }
       return json(res, 200, { ok: true, message, dispatched: started });
     }

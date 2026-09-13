@@ -1,45 +1,69 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Net.Http;
+using System.Text;
+using System.Text.Json;
 using System.Windows;
-using Microsoft.Web.WebView2.Core;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
+using Forms = System.Windows.Forms;
+using Drawing = System.Drawing;
 
 namespace Hive.Shell;
 
 /// <summary>
-/// 桌面外壳：负责"把面板开起来"，其余一律交给 Web 界面。
-///   1. 面板已经在跑 → 直接连过去（不重复起一个）
-///   2. 没在跑 → 起 node server/index.js，等它就绪
-///   3. 关窗口 → 只停自己起的那个进程
+/// 桌面外壳 · 原生界面版。
 ///
-/// 另外有一层保险：有些环境里 WebView2 的渲染输出是"冻结"的（DOM 与 JS 全正常，
-/// 但画面不变，看上去就是白屏）。这里会做一次"改背景色再截图"的实验来判定，
-/// 一旦判定冻结就自动改用 Edge 应用模式，保证界面一定能显示出来。
-/// 全程写 %LOCALAPPDATA%\Hive\shell.log。
+/// 为什么不内嵌浏览器：这台机器上 WebView2 与 WPF 的窗口内容都画不出来（DOM/布局正常、
+/// 像素不动），只有独立窗口能渲染。所以这里直接用 WPF 原生控件画界面，
+/// 数据全部走已有的本地服务端 API（/api/state、/api/thread、/api/message …）。
 /// </summary>
 public partial class MainWindow : Window
 {
     private const int Port = 8787;
     private static readonly string BaseUrl = $"http://127.0.0.1:{Port}";
-
     private static readonly string LogDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Hive");
     private static readonly string LogFile = Path.Combine(LogDir, "shell.log");
-    /// <summary>上次判定 WebView2 渲染不出来时留下这个标记，下次直接走 Edge，省掉一轮等待。</summary>
-    private static readonly string EdgeModeFlag = Path.Combine(LogDir, "use-edge-mode");
+
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     private Process? _server;
     private bool _startedByUs;
+    private Forms.NotifyIcon? _tray;
+    private bool _reallyExit;
+
+    private readonly HashSet<string> _expandedDepartments = new();
+    private string _mode = "";
+    private string _threadId = "";
+
+    private List<DepartmentInfo> _departments = new();
+    private List<EmployeeInfo> _employees = new();
+    private List<ProjectInfo> _projects = new();
+    private bool _hasKey;
+
+    private DispatcherTimer? _timer;
 
     public MainWindow()
     {
-        Log("=== 外壳启动 ===");
+        Log("=== 外壳启动（原生界面）===");
         InitializeComponent();
+
+        var iconPath = FindAsset("hive-icon-black.png");
+        if (iconPath is not null)
+        {
+            BrandIcon.Source = new BitmapImage(new Uri(iconPath));
+        }
+
         Loaded += OnLoadedAsync;
         Closing += OnClosing;
     }
+
+    /* ── 日志 ───────────────────────────────────────────── */
 
     private static void Log(string message)
     {
@@ -54,269 +78,76 @@ public partial class MainWindow : Window
         }
     }
 
+    /* ── 启动 ───────────────────────────────────────────── */
+
     private async void OnLoadedAsync(object sender, RoutedEventArgs e)
     {
-        // 上次已经判定过 WebView2 画不出来，这次就别再等了
-        var useEdge = File.Exists(EdgeModeFlag);
-
-        if (!useEdge)
-        {
-            try
-            {
-                var userData = Path.Combine(LogDir, "WebView2");
-                Directory.CreateDirectory(userData);
-                var options = new CoreWebView2EnvironmentOptions
-                {
-                    AdditionalBrowserArguments =
-                        "--disable-gpu --disable-gpu-compositing --disable-features=CalculateNativeWinOcclusion",
-                };
-                var environment = await CoreWebView2Environment.CreateAsync(null, userData, options);
-                await Web.EnsureCoreWebView2Async(environment);
-                Log($"WebView2 就绪，内核 {environment.BrowserVersionString}");
-                Web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
-                Web.CoreWebView2.Settings.IsStatusBarEnabled = false;
-            }
-            catch (Exception error)
-            {
-                Log($"WebView2 初始化失败：{error}");
-                useEdge = true;
-            }
-        }
-        else
-        {
-            Log("上次判定 WebView2 渲染不可用，直接用 Edge 模式");
-        }
+        SetupTray();
+        ShowStatus("正在准备…");
 
         var ready = await IsBoardAliveAsync();
         if (!ready)
         {
-            SplashText.Text = "正在启动面板…";
+            ShowStatus("正在启动面板服务…");
             _startedByUs = StartServer();
             Log($"启动服务器：{(_startedByUs ? "已发起" : "失败")}");
             ready = await WaitForBoardAsync(TimeSpan.FromSeconds(45));
         }
         if (!ready)
         {
-            ShowFailure("面板没能起来。请确认已安装 Node.js（≥18），或在项目目录手动运行 npm start 看报错。");
+            ShowStatus("面板服务没能起来。请确认已安装 Node.js（≥18），或在项目目录运行 npm start 查看报错。");
             return;
         }
-        Log("面板就绪");
+        Log("面板服务就绪");
 
-        if (useEdge)
+        await RefreshStateAsync();
+
+        // 首次使用：没有 Key 也没部门，就引导一下
+        if (!_hasKey && _departments.Count == 0)
         {
-            await FallbackToEdgeAsync("已用 Edge 打开面板（功能与内嵌完全一样）。");
-            return;
+            await OnOpenSettings();
+            if (_departments.Count == 0) await OnAddDepartment();
         }
 
+        _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _timer.Tick += async (_, _) =>
+        {
+            await RefreshThreadAsync();
+            await RefreshStateAsync();
+        };
+        _timer.Start();
+    }
+
+    private bool StartServer()
+    {
+        var root = FindProjectRoot();
+        if (root is null) return false;
         try
         {
-            Web.CoreWebView2.Navigate(BaseUrl);
-            Log("已发起导航，等首屏");
-            await Task.Delay(2200);
-            Log("开始渲染检测");
-
-            if (await IsRenderFrozenAsync())
+            _server = Process.Start(new ProcessStartInfo
             {
-                Log("判定 WebView2 渲染冻结 → 记住该结论，改用 Edge 应用模式");
-                try
-                {
-                    File.WriteAllText(EdgeModeFlag, DateTime.Now.ToString("O"));
-                }
-                catch
-                {
-                    /* 写不了标记只是下次多等一轮 */
-                }
-                await FallbackToEdgeAsync("这个环境的 WebView2 渲染不出来，已改用 Edge 打开（功能完全一样）。");
-                return;
-            }
-
-            Log("渲染正常，显示内嵌界面");
-            Splash.Visibility = Visibility.Collapsed;
-            Web.Visibility = Visibility.Visible;
+                FileName = "node",
+                Arguments = $"server/index.js --port {Port} --host 127.0.0.1",
+                WorkingDirectory = root,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            });
+            return _server is not null;
         }
         catch (Exception error)
         {
-            Log($"导航或检测出错：{error}");
-            await FallbackToEdgeAsync($"内嵌界面出错：{error.Message}");
-        }
-    }
-
-    /// <summary>
-    /// 判定渲染是否"冻结"：把 body 背景刷成红色再截一张，两张完全一样就说明
-    /// 画面根本没跟着变（DOM 在动、像素不动），也就是白屏的根因。
-    /// 截图/脚本调用一旦超时也按"渲染有问题"处理 —— 宁可降级，也不要卡在半路。
-    /// </summary>
-    private async Task<bool> IsRenderFrozenAsync()
-    {
-        var before = await CaptureAsync();
-        Log($"第一张截图：{before.Length} 字节");
-        if (before.Length == 0)
-        {
-            Log("首次截图就失败/超时 → 判定渲染异常");
-            return true;
-        }
-
-        var painted = await RunScriptAsync("document.body.style.background='#ff0000'");
-        if (!painted)
-        {
-            Log("执行脚本超时 → 判定渲染异常");
-            return true;
-        }
-        await Task.Delay(900);
-
-        var after = await CaptureAsync();
-        Log($"第二张截图：{after.Length} 字节");
-        await RunScriptAsync("document.body.style.background=''");
-
-        if (after.Length == 0) return true;
-        return before.SequenceEqual(after);
-    }
-
-    private async Task<byte[]> CaptureAsync(int timeoutMs = 4000)
-    {
-        try
-        {
-            // 必须在 UI 线程上调（WebView2 是 UI 线程对象），超时交给 WhenAny，
-            // 因为渲染冻结时 CapturePreviewAsync 会一直不返回。
-            var stream = new MemoryStream();
-            var task = Web.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream);
-            var finished = await Task.WhenAny(task, Task.Delay(timeoutMs));
-            if (finished != task)
-            {
-                Log("截图超时");
-                return Array.Empty<byte>();
-            }
-            await task;
-            return stream.ToArray();
-        }
-        catch (Exception error)
-        {
-            Log($"截图失败：{error.Message}");
-            return Array.Empty<byte>();
-        }
-    }
-
-    private async Task<bool> RunScriptAsync(string script, int timeoutMs = 4000)
-    {
-        try
-        {
-            var task = Web.CoreWebView2.ExecuteScriptAsync(script);
-            var finished = await Task.WhenAny(task, Task.Delay(timeoutMs));
-            if (finished != task)
-            {
-                Log("脚本执行超时");
-                return false;
-            }
-            await task;
-            return true;
-        }
-        catch (Exception error)
-        {
-            Log($"脚本执行失败：{error.Message}");
+            Log($"启动 node 失败：{error.Message}");
             return false;
         }
-    }
-
-    /// <summary>改用 Edge 应用模式打开面板：外观就是独立窗口，渲染用 Edge 自己的管线。</summary>
-    private async Task FallbackToEdgeAsync(string reason)
-    {
-        var edge = FindEdge();
-        if (edge is null)
-        {
-            ShowFailure($"{reason}\n但没有找到 Edge 浏览器，可以点下面按钮用默认浏览器打开。");
-            return;
-        }
-        try
-        {
-            var profile = Path.Combine(LogDir, "EdgeProfile");
-            Process.Start(new ProcessStartInfo(edge)
-            {
-                UseShellExecute = false,
-                Arguments = $"--app={BaseUrl} --window-size=1320,860 --user-data-dir=\"{profile}\" --no-first-run",
-            });
-            Log("已用 Edge 打开面板");
-
-            // 外壳退到后台：窗口藏起来，但进程留着托管服务器。
-            // 注意不能监听 msedge 进程退出 —— 它会把活儿转交给已有实例后自己先退出，
-            // 监听它会导致"Edge 窗口刚开就被连带关掉"。
-            Hide();
-            _ = WatchEdgeAsync();
-        }
-        catch (Exception error)
-        {
-            Log($"启动 Edge 失败：{error.Message}");
-            ShowFailure($"{reason}\n启动 Edge 也失败了：{error.Message}");
-        }
-        await Task.CompletedTask;
-    }
-
-    /// <summary>盯着那个 Edge 应用窗口：它关了，就说明用户不用了，外壳跟着退并停掉服务器。</summary>
-    private async Task WatchEdgeAsync()
-    {
-        await Task.Delay(8000); // 给它启动时间
-        for (; ; )
-        {
-            await Task.Delay(3000);
-            if (IsHiveEdgeWindowOpen()) continue;
-            Log("Edge 面板窗口已关闭 → 外壳退出");
-            Close();
-            return;
-        }
-    }
-
-    /// <summary>面板窗口还在不在（按窗口标题判断，比看进程可靠）。</summary>
-    private static bool IsHiveEdgeWindowOpen()
-    {
-        try
-        {
-            foreach (var process in Process.GetProcessesByName("msedge"))
-            {
-                try
-                {
-                    var title = process.MainWindowTitle ?? string.Empty;
-                    if (title.Contains("HIVE") || title.Contains("蜂群")) return true;
-                }
-                finally
-                {
-                    process.Dispose();
-                }
-            }
-        }
-        catch
-        {
-            return true; // 查不出来就别乱退
-        }
-        return false;
-    }
-
-    private static string? FindEdge()
-    {
-        string[] candidates =
-        {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-                "Microsoft", "Edge", "Application", "msedge.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                "Microsoft", "Edge", "Application", "msedge.exe"),
-        };
-        return candidates.FirstOrDefault(File.Exists);
-    }
-
-    /// <summary>把失败原因和"用浏览器打开"的出路一起摆出来，别让人对着白屏猜。</summary>
-    private void ShowFailure(string message)
-    {
-        Show();
-        Splash.Visibility = Visibility.Visible;
-        Web.Visibility = Visibility.Collapsed;
-        SplashText.Text = message;
-        OpenInBrowser.Visibility = Visibility.Visible;
     }
 
     private static async Task<bool> IsBoardAliveAsync()
     {
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-            var response = await http.GetAsync($"{BaseUrl}/api/state");
+            var response = await Http.GetAsync($"{BaseUrl}/api/state");
             return response.IsSuccessStatusCode;
         }
         catch
@@ -336,35 +167,6 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private bool StartServer()
-    {
-        var root = FindProjectRoot();
-        Log($"项目根：{root ?? "(没找到)"}");
-        if (root is null) return false;
-
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "node",
-            Arguments = $"server/index.js --port {Port} --host 127.0.0.1",
-            WorkingDirectory = root,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        try
-        {
-            _server = Process.Start(startInfo);
-            return _server is not null;
-        }
-        catch (Exception error)
-        {
-            Log($"启动 node 失败：{error.Message}");
-            return false;
-        }
-    }
-
-    /// <summary>从 exe 所在目录向上找含 server/index.js 的项目根。</summary>
     private static string? FindProjectRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
@@ -376,21 +178,650 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private void OnOpenInBrowser(object sender, RoutedEventArgs e)
+    private static string? FindAsset(string name)
+    {
+        var root = FindProjectRoot();
+        if (root is null) return null;
+        var path = Path.Combine(root, "web", "assets", name);
+        return File.Exists(path) ? path : null;
+    }
+
+    /* ── 数据 ───────────────────────────────────────────── */
+
+    private sealed record DepartmentInfo(string Id, string Name, string Description);
+    private sealed record EmployeeInfo(string Id, string Name, string Title, string Level, string DepartmentId, string Model, string BaseUrl, int AvatarSeed);
+    private sealed record ProjectInfo(string Id, string Name, string Description, string[] DepartmentIds);
+
+    private async Task RefreshStateAsync()
     {
         try
         {
-            Process.Start(new ProcessStartInfo(BaseUrl) { UseShellExecute = true });
+            var text = await Http.GetStringAsync($"{BaseUrl}/api/state");
+            using var doc = JsonDocument.Parse(text);
+            var root = doc.RootElement;
+
+            _hasKey = root.GetProperty("settings").GetProperty("hasKey").GetBoolean();
+            _departments = root.GetProperty("departments").EnumerateArray().Select(d => new DepartmentInfo(
+                d.GetProperty("id").GetString() ?? "",
+                d.GetProperty("name").GetString() ?? "",
+                d.TryGetProperty("description", out var desc) ? desc.GetString() ?? "" : "")).ToList();
+            _employees = root.GetProperty("employees").EnumerateArray().Select(e => new EmployeeInfo(
+                e.GetProperty("id").GetString() ?? "",
+                e.GetProperty("name").GetString() ?? "",
+                e.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "",
+                e.TryGetProperty("level", out var lv) ? lv.GetString() ?? "worker" : "worker",
+                e.TryGetProperty("departmentId", out var dp) ? dp.GetString() ?? "" : "",
+                e.TryGetProperty("model", out var m) ? m.GetString() ?? "" : "",
+                e.TryGetProperty("baseUrl", out var bu) ? bu.GetString() ?? "" : "",
+                e.TryGetProperty("avatar", out var av) && av.TryGetProperty("seed", out var sd) ? sd.GetInt32() : 0)).ToList();
+            _projects = root.GetProperty("projects").EnumerateArray().Select(p => new ProjectInfo(
+                p.GetProperty("id").GetString() ?? "",
+                p.GetProperty("name").GetString() ?? "",
+                p.TryGetProperty("description", out var pd) ? pd.GetString() ?? "" : "",
+                p.TryGetProperty("departmentIds", out var ds)
+                    ? ds.EnumerateArray().Select(x => x.GetString() ?? "").ToArray()
+                    : System.Array.Empty<string>())).ToList();
+
+            RenderSidebar();
+
+            // 上下文失效就退回第一个部门
+            if (_threadId != "" && !ContextExists()) SetContext("department", "");
+            if (_threadId == "" && _departments.Count > 0) SetContext("department", _departments[0].Id);
+            RenderHeader();
         }
         catch (Exception error)
         {
-            Log($"打开浏览器失败：{error.Message}");
+            Log($"读取状态失败：{error.Message}");
         }
+    }
+
+    private bool ContextExists() => _mode switch
+    {
+        "department" => _departments.Any(d => d.Id == _threadId),
+        "employee" => _employees.Any(e => e.Id == _threadId),
+        "project" => _projects.Any(p => p.Id == _threadId),
+        _ => false,
+    };
+
+    private async Task RefreshThreadAsync()
+    {
+        if (_threadId == "") { MessageList.ItemsSource = null; return; }
+        try
+        {
+            var text = await Http.GetStringAsync($"{BaseUrl}/api/thread?mode={_mode}&id={Uri.EscapeDataString(_threadId)}");
+            using var doc = JsonDocument.Parse(text);
+            var items = new List<MessageVm>();
+            foreach (var m in doc.RootElement.GetProperty("messages").EnumerateArray())
+            {
+                var from = m.GetProperty("from").GetString() ?? "";
+                var kind = m.TryGetProperty("kind", out var k) ? k.GetString() ?? "" : "";
+                var status = m.TryGetProperty("status", out var s) ? s.GetString() ?? "" : "";
+                var model = m.TryGetProperty("model", out var md) ? md.GetString() ?? "" : "";
+                var isLocal = from == "local";
+                var failed = kind == "notice" && status == "failed";
+                items.Add(new MessageVm
+                {
+                    Who = m.TryGetProperty("fromName", out var n) ? n.GetString() ?? from : from,
+                    When = ParseTime(m.TryGetProperty("at", out var a) ? a.GetString() : null),
+                    Text = m.TryGetProperty("text", out var tx) ? tx.GetString() ?? "" : "",
+                    Model = model == "" ? "" : $"模型：{model}",
+                    ModelVisibility = model == "" ? Visibility.Collapsed : Visibility.Visible,
+                    Align = isLocal ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+                    Bubble = isLocal ? "#EFF5FF" : kind == "ack" ? "#FFFFFF" : "#FFFFFF",
+                    BubbleLine = failed ? "#E3B4B0" : isLocal ? "#BFD6FB" : "#E9E6E1",
+                    TextColor = failed ? "#C2554F" : kind == "ack" ? "#6B7280" : "#1E1E1E",
+                });
+            }
+            MessageList.ItemsSource = items;
+            StreamScroll.ScrollToEnd();
+        }
+        catch (Exception error)
+        {
+            Log($"读取对话失败：{error.Message}");
+        }
+    }
+
+    private static string ParseTime(string? iso)
+    {
+        if (string.IsNullOrEmpty(iso)) return "";
+        return DateTime.TryParse(iso, out var t) ? t.ToLocalTime().ToString("HH:mm:ss") : "";
+    }
+
+    /* ── 渲染 ───────────────────────────────────────────── */
+
+    private void ShowStatus(string message)
+    {
+        PanelKind.Text = "";
+        PanelTitle.Text = message;
+        PanelSub.Text = "";
+    }
+
+    private void RenderSidebar()
+    {
+        // 项目
+        ProjectList.ItemsSource = _projects.Select(p => ProjectRow(p)).ToList();
+        ProjectEmpty.Visibility = _projects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        var rows = new List<UIElement>();
+        foreach (var department in _departments)
+        {
+            rows.Add(DepartmentRow(department));
+            if (!_expandedDepartments.Contains(department.Id)) continue;
+            var members = _employees.Where(e => e.DepartmentId == department.Id).ToList();
+            if (members.Count == 0)
+            {
+                rows.Add(new TextBlock
+                {
+                    Text = "还没有员工",
+                    FontSize = 12,
+                    Foreground = (Brush)FindResource("Ink3"),
+                    Margin = new Thickness(30, 2, 0, 6),
+                });
+            }
+            foreach (var employee in members) rows.Add(EmployeeRow(employee, 26));
+        }
+        DepartmentList.ItemsSource = rows;
+
+        var orphans = _employees.Where(e => string.IsNullOrEmpty(e.DepartmentId)).ToList();
+        var orphanRows = orphans.Select(e => EmployeeRow(e, 6)).ToList();
+        OrphanList.ItemsSource = orphanRows;
+        OrphanHeader.Visibility = orphans.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        OrphanList.Visibility = orphans.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private Button ProjectRow(ProjectInfo project)
+    {
+        var active = _mode == "project" && _threadId == project.Id;
+        var button = new Button
+        {
+            Content = new TextBlock { Text = project.Name, TextTrimming = TextTrimming.CharacterEllipsis },
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 1, 0, 1),
+            Background = active ? new SolidColorBrush(Color.FromRgb(233, 240, 254)) : Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 7, 8, 7),
+        };
+        button.Click += (_, _) => SetContext("project", project.Id);
+        button.MouseRightButtonUp += (_, _) => ShowProjectMenu(project, button);
+        return button;
+    }
+
+    private Button DepartmentRow(DepartmentInfo department)
+    {
+        var open = _expandedDepartments.Contains(department.Id);
+        var active = _mode == "department" && _threadId == department.Id;
+        var count = _employees.Count(e => e.DepartmentId == department.Id);
+
+        var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        panel.Children.Add(new TextBlock
+        {
+            Text = open ? "▾" : "▸",
+            Width = 16,
+            Foreground = (Brush)FindResource("Ink3"),
+        });
+        panel.Children.Add(new TextBlock { Text = department.Name, FontWeight = FontWeights.Medium });
+        panel.Children.Add(new TextBlock
+        {
+            Text = count.ToString(),
+            Margin = new Thickness(8, 0, 0, 0),
+            FontSize = 11.5,
+            Foreground = (Brush)FindResource("Ink3"),
+        });
+
+        var button = new Button
+        {
+            Content = panel,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 1, 0, 1),
+            Background = active ? new SolidColorBrush(Color.FromRgb(233, 240, 254)) : Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 7, 8, 7),
+        };
+        button.Click += (_, _) =>
+        {
+            if (_expandedDepartments.Contains(department.Id)) _expandedDepartments.Remove(department.Id);
+            else _expandedDepartments.Add(department.Id);
+            SetContext("department", department.Id);
+        };
+        button.MouseRightButtonUp += (_, _) => ShowDepartmentMenu(department, button);
+        return button;
+    }
+
+    private Button EmployeeRow(EmployeeInfo employee, double indent)
+    {
+        var active = _mode == "employee" && _threadId == employee.Id;
+
+        var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, 24));
+        panel.Children.Add(new TextBlock
+        {
+            Text = employee.Name,
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        var button = new Button
+        {
+            Content = panel,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(indent, 1, 0, 1),
+            Background = active ? new SolidColorBrush(Color.FromRgb(233, 240, 254)) : Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 5, 8, 5),
+            ToolTip = string.IsNullOrEmpty(employee.Title) ? null : employee.Title,
+        };
+        button.Click += (_, _) => SetContext("employee", employee.Id);
+        button.MouseRightButtonUp += (_, _) => ShowEmployeeMenu(employee, button);
+        return button;
+    }
+
+    /// <summary>随机极简头像：种子 → 色相，取名字首字。零素材、零依赖。</summary>
+    private static Border Avatar(string name, int seed, double size)
+    {
+        return new Border
+        {
+            Width = size,
+            Height = size,
+            CornerRadius = new CornerRadius(size / 2),
+            Background = AvatarBrush(seed),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock
+            {
+                Text = string.IsNullOrEmpty(name) ? "?" : name[..1],
+                Foreground = Brushes.White,
+                FontSize = size * 0.44,
+                FontWeight = FontWeights.SemiBold,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+    }
+
+    private static Brush AvatarBrush(int seed)
+    {
+        var hue = Math.Abs(seed) % 360;
+        return new SolidColorBrush(HslToRgb(hue, 0.52, 0.56));
+    }
+
+    private static Color HslToRgb(double h, double s, double l)
+    {
+        var c = (1 - Math.Abs(2 * l - 1)) * s;
+        var x = c * (1 - Math.Abs((h / 60) % 2 - 1));
+        var m = l - c / 2;
+        double r, g, b;
+        if (h < 60) { r = c; g = x; b = 0; }
+        else if (h < 120) { r = x; g = c; b = 0; }
+        else if (h < 180) { r = 0; g = c; b = x; }
+        else if (h < 240) { r = 0; g = x; b = c; }
+        else if (h < 300) { r = x; g = 0; b = c; }
+        else { r = c; g = 0; b = x; }
+        return Color.FromRgb((byte)((r + m) * 255), (byte)((g + m) * 255), (byte)((b + m) * 255));
+    }
+
+    private void SetContext(string mode, string id)
+    {
+        _mode = mode;
+        _threadId = id;
+        if (mode == "department") _expandedDepartments.Add(id);
+        RenderSidebar();
+        RenderHeader();
+        _ = RefreshThreadAsync();
+    }
+
+    private void RenderHeader()
+    {
+        if (_threadId == "")
+        {
+            ShowStatus(_departments.Count == 0 ? "先建一个部门，再添加员工" : "在左侧选一个部门或员工");
+            return;
+        }
+        if (_mode == "department")
+        {
+            var d = _departments.FirstOrDefault(x => x.Id == _threadId);
+            PanelKind.Text = "部门";
+            PanelTitle.Text = d?.Name ?? "部门";
+            var members = _employees.Count(e => e.DepartmentId == _threadId);
+            PanelSub.Text = string.IsNullOrEmpty(d?.Description) ? $"{members} 位成员" : $"{d!.Description} · {members} 位成员";
+        }
+        else if (_mode == "project")
+        {
+            var p = _projects.FirstOrDefault(x => x.Id == _threadId);
+            PanelKind.Text = "项目";
+            PanelTitle.Text = p?.Name ?? "项目";
+            var depts = (p?.DepartmentIds ?? System.Array.Empty<string>())
+                .Select(id => _departments.FirstOrDefault(d => d.Id == id)?.Name)
+                .Where(n => !string.IsNullOrEmpty(n));
+            var parts = new List<string>();
+            if (!string.IsNullOrEmpty(p?.Description)) parts.Add(p!.Description);
+            var deptText = string.Join("、", depts);
+            if (deptText != "") parts.Add($"参与部门：{deptText}");
+            PanelSub.Text = parts.Count > 0 ? string.Join(" · ", parts) : "在这个项目的面板里说任务，@负责人 即可";
+        }
+        else
+        {
+            var e = _employees.FirstOrDefault(x => x.Id == _threadId);
+            var dept = _departments.FirstOrDefault(d => d.Id == e?.DepartmentId);
+            PanelKind.Text = "员工";
+            PanelTitle.Text = e?.Name ?? "员工";
+            PanelSub.Text = string.Join(" · ", new[] { dept?.Name, e?.Title, e?.Model == "" ? "默认模型" : e?.Model }
+                .Where(x => !string.IsNullOrEmpty(x)));
+        }
+    }
+
+    /* ── 交互 ───────────────────────────────────────────── */
+
+    private async void OnSend(object sender, RoutedEventArgs e) => await SendAsync();
+
+    private async void OnInputKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Shift) == 0)
+        {
+            e.Handled = true;
+            await SendAsync();
+        }
+    }
+
+    private async Task SendAsync()
+    {
+        var text = InputBox.Text.Trim();
+        if (text == "" || _threadId == "") return;
+        SendButton.IsEnabled = false;
+        try
+        {
+            var body = JsonSerializer.Serialize(new { mode = _mode, threadId = _threadId, text });
+            var response = await Http.PostAsync($"{BaseUrl}/api/message",
+                new StringContent(body, Encoding.UTF8, "application/json"));
+            if (!response.IsSuccessStatusCode)
+            {
+                Log($"发送失败：{response.StatusCode}");
+            }
+            InputBox.Text = "";
+            await RefreshThreadAsync();
+        }
+        catch (Exception error)
+        {
+            Log($"发送异常：{error.Message}");
+        }
+        finally
+        {
+            SendButton.IsEnabled = true;
+        }
+    }
+
+    private async void OnAddDepartment(object sender, RoutedEventArgs e) => await OnAddDepartment();
+
+    private async void OnAddProject(object sender, RoutedEventArgs e)
+    {
+        var dialog = new FormDialog("新建项目", new[]
+        {
+            new FormField("name", "项目名字", "例如 官网改版"),
+            new FormField("description", "项目说明（可留空）", ""),
+        });
+        if (dialog.ShowDialog() != true) return;
+        var v = dialog.Values;
+        try
+        {
+            var body = JsonSerializer.Serialize(new
+            {
+                name = v["name"],
+                description = v["description"],
+                departmentIds = _departments.Select(d => d.Id).ToArray(),
+            });
+            await Http.PostAsync($"{BaseUrl}/api/project", new StringContent(body, Encoding.UTF8, "application/json"));
+            await RefreshStateAsync();
+            Log($"已建项目：{v["name"]}");
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show($"建项目失败：{error.Message}", "蜂群 HIVE");
+        }
+    }
+
+    private void ShowProjectMenu(ProjectInfo project, UIElement anchor)
+    {
+        var menu = new ContextMenu();
+        var rename = new MenuItem { Header = "改名 / 改说明…" };
+        rename.Click += async (_, _) =>
+        {
+            var dialog = new FormDialog($"设置 · {project.Name}", new[]
+            {
+                new FormField("name", "项目名字", "", project.Name),
+                new FormField("description", "项目说明", "", project.Description),
+            });
+            if (dialog.ShowDialog() != true) return;
+            var v = dialog.Values;
+            await Http.PostAsync($"{BaseUrl}/api/project", new StringContent(
+                JsonSerializer.Serialize(new { id = project.Id, name = v["name"], description = v["description"] }),
+                Encoding.UTF8, "application/json"));
+            await RefreshStateAsync();
+        };
+        var delete = new MenuItem { Header = "删除项目" };
+        delete.Click += async (_, _) =>
+        {
+            if (MessageBox.Show($"确定删除项目「{project.Name}」？对话会保留。",
+                    "蜂群 HIVE", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
+            await Http.PostAsync($"{BaseUrl}/api/project/delete",
+                new StringContent(JsonSerializer.Serialize(new { id = project.Id }), Encoding.UTF8, "application/json"));
+            await RefreshStateAsync();
+        };
+        menu.Items.Add(rename);
+        menu.Items.Add(delete);
+        menu.PlacementTarget = anchor;
+        menu.IsOpen = true;
+    }
+
+    private async Task OnAddDepartment()
+    {
+        var dialog = new FormDialog("新建部门", new[]
+        {
+            new FormField("name", "部门名字", "例如 研发部"),
+            new FormField("description", "部门职责（可留空）", ""),
+        });
+        if (dialog.ShowDialog() != true) return;
+        var values = dialog.Values;
+        try
+        {
+            var body = JsonSerializer.Serialize(new { name = values["name"], description = values["description"] });
+            await Http.PostAsync($"{BaseUrl}/api/department", new StringContent(body, Encoding.UTF8, "application/json"));
+            await RefreshStateAsync();
+            Log($"已建部门：{values["name"]}");
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show($"建部门失败：{error.Message}", "蜂群 HIVE");
+        }
+    }
+
+    private async void OnAddEmployee(object sender, RoutedEventArgs e) => await OnAddEmployee();
+
+    private async Task OnAddEmployee()
+    {
+        if (_departments.Count == 0)
+        {
+            MessageBox.Show("请先建一个部门，员工要挂在部门下。", "蜂群 HIVE");
+            return;
+        }
+        var departmentOptions = _departments.ToDictionary(d => d.Name, d => d.Id);
+        var dialog = new FormDialog("添加员工", new[]
+        {
+            new FormField("name", "名字", "例如 李四"),
+            new FormField("title", "职能", "例如 后端工程师"),
+            new FormField("level", "层级", "部门经理 / 项目负责人 / 执行人员", "执行人员",
+                new[] { "部门经理", "项目负责人", "执行人员" }),
+            new FormField("department", "所属部门", "", _departments[0].Name, _departments.Select(d => d.Name).ToArray()),
+            new FormField("description", "职责描述（可留空）", ""),
+            new FormField("model", "模型（留空用全局默认）", ""),
+            new FormField("apiKey", "API Key（留空用全局的）", "", "", null, true),
+        });
+        if (dialog.ShowDialog() != true) return;
+        var v = dialog.Values;
+        var level = v["level"] switch
+        {
+            "部门经理" => "manager",
+            "项目负责人" => "lead",
+            _ => "worker",
+        };
+        try
+        {
+            var body = JsonSerializer.Serialize(new
+            {
+                name = v["name"],
+                title = v["title"],
+                level,
+                departmentId = departmentOptions.TryGetValue(v["department"], out var id) ? id : "",
+                description = v["description"],
+                model = v["model"],
+                apiKey = v["apiKey"],
+            });
+            var response = await Http.PostAsync($"{BaseUrl}/api/employee",
+                new StringContent(body, Encoding.UTF8, "application/json"));
+            if (!response.IsSuccessStatusCode)
+            {
+                MessageBox.Show($"添加失败：{await response.Content.ReadAsStringAsync()}", "蜂群 HIVE");
+                return;
+            }
+            await RefreshStateAsync();
+            Log($"已加员工：{v["name"]}");
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show($"添加失败：{error.Message}", "蜂群 HIVE");
+        }
+    }
+
+    private void OnToggleOrphans(object sender, RoutedEventArgs e)
+    {
+        OrphanList.Visibility = OrphanList.Visibility == Visibility.Visible
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+    }
+
+    private async void OnOpenSettings(object sender, RoutedEventArgs e) => await OnOpenSettings();
+
+    private async Task OnOpenSettings()
+    {
+        var dialog = new FormDialog("全局设置",
+            new[]
+            {
+                new FormField("apiKey", _hasKey ? "API Key（已设置，留空则不改）" : "API Key", "sk-…", "", null, true),
+                new FormField("baseUrl", "接口地址", "https://api.deepseek.com", "https://api.deepseek.com"),
+                new FormField("model", "默认模型", "deepseek-chat", "deepseek-chat"),
+            },
+            "这里填的是默认通道：没有单独配 API 的员工都用它。");
+        if (dialog.ShowDialog() != true) return;
+        var v = dialog.Values;
+        try
+        {
+            var payload = new Dictionary<string, object>
+            {
+                ["baseUrl"] = v["baseUrl"],
+                ["model"] = v["model"],
+                ["onboarded"] = true,
+            };
+            if (!string.IsNullOrEmpty(v["apiKey"])) payload["apiKey"] = v["apiKey"];
+            var body = JsonSerializer.Serialize(payload);
+            await Http.PostAsync($"{BaseUrl}/api/settings", new StringContent(body, Encoding.UTF8, "application/json"));
+            await RefreshStateAsync();
+            Log("全局设置已保存");
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show($"保存失败：{error.Message}", "蜂群 HIVE");
+        }
+    }
+
+    private void ShowDepartmentMenu(DepartmentInfo department, UIElement anchor)
+    {
+        var menu = new ContextMenu();
+        var addItem = new MenuItem { Header = "添加员工…" };
+        addItem.Click += async (_, _) =>
+        {
+            await OnAddEmployee();
+        };
+        var deleteItem = new MenuItem { Header = "删除部门" };
+        deleteItem.Click += async (_, _) =>
+        {
+            if (MessageBox.Show($"确定删除部门「{department.Name}」？员工不会被删除，只会变成未分配。",
+                    "蜂群 HIVE", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
+            await Http.PostAsync($"{BaseUrl}/api/department/delete",
+                new StringContent(JsonSerializer.Serialize(new { id = department.Id }), Encoding.UTF8, "application/json"));
+            await RefreshStateAsync();
+        };
+        menu.Items.Add(addItem);
+        menu.Items.Add(deleteItem);
+        menu.PlacementTarget = anchor;
+        menu.IsOpen = true;
+    }
+
+    private void ShowEmployeeMenu(EmployeeInfo employee, UIElement anchor)
+    {
+        var menu = new ContextMenu();
+        var editItem = new MenuItem { Header = "设置（模型 / API）…" };
+        editItem.Click += async (_, _) =>
+        {
+            var dialog = new FormDialog($"设置 · {employee.Name}", new[]
+            {
+                new FormField("title", "职能", "", employee.Title),
+                new FormField("model", "调用模型（留空用全局默认）", "例如 deepseek-chat", employee.Model),
+                new FormField("baseUrl", "接口地址（留空用全局默认）", "https://api.deepseek.com", employee.BaseUrl),
+                new FormField("apiKey", "API Key（留空保持不变）", "", "", null, true),
+            }, "这位员工可以单独用自己的一套 API 与模型——留空就跟随全局设置。");
+            if (dialog.ShowDialog() != true) return;
+            var v = dialog.Values;
+            var payload = new Dictionary<string, object>
+            {
+                ["id"] = employee.Id,
+                ["name"] = employee.Name,
+                ["title"] = v["title"],
+                ["level"] = employee.Level,
+                ["departmentId"] = employee.DepartmentId,
+                ["model"] = v["model"],
+                ["baseUrl"] = v["baseUrl"],
+            };
+            if (!string.IsNullOrEmpty(v["apiKey"])) payload["apiKey"] = v["apiKey"];
+            await Http.PostAsync($"{BaseUrl}/api/employee",
+                new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"));
+            await RefreshStateAsync();
+        };
+        var deleteItem = new MenuItem { Header = "删除员工" };
+        deleteItem.Click += async (_, _) =>
+        {
+            if (MessageBox.Show($"确定删除「{employee.Name}」？他的对话会保留。",
+                    "蜂群 HIVE", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
+            await Http.PostAsync($"{BaseUrl}/api/employee/delete",
+                new StringContent(JsonSerializer.Serialize(new { id = employee.Id }), Encoding.UTF8, "application/json"));
+            await RefreshStateAsync();
+        };
+        menu.Items.Add(editItem);
+        menu.Items.Add(deleteItem);
+        menu.PlacementTarget = anchor;
+        menu.IsOpen = true;
     }
 
     private void OnClosing(object? sender, CancelEventArgs e)
     {
-        Log("=== 外壳关闭 ===");
+        // 点关闭不是退出，而是收进托盘继续在后台跑（服务器也跟着活着）
+        if (!_reallyExit)
+        {
+            e.Cancel = true;
+            Hide();
+            Log("窗口收进托盘，后台继续运行");
+            try
+            {
+                _tray?.ShowBalloonTip(2000, "蜂群 HIVE", "已在后台运行。双击托盘图标可以重新打开面板。",
+                    Forms.ToolTipIcon.Info);
+            }
+            catch
+            {
+                /* 气泡提示失败不影响 */
+            }
+            return;
+        }
+
+        Log("=== 外壳退出 ===");
+        _timer?.Stop();
+        _tray?.Dispose();
+        _tray = null;
         if (!_startedByUs || _server is not { HasExited: false }) return;
         try
         {
@@ -398,7 +829,165 @@ public partial class MainWindow : Window
         }
         catch
         {
-            /* 关不掉就算了，别因为一个残留进程卡住关闭 */
+            /* 关不掉就算了 */
         }
+    }
+
+    /* ── 托盘 ───────────────────────────────────────────── */
+
+    private void SetupTray()
+    {
+        try
+        {
+            var menu = new Forms.ContextMenuStrip();
+            menu.Items.Add("打开面板", null, (_, _) => RestoreWindow());
+            menu.Items.Add(new Forms.ToolStripSeparator());
+            menu.Items.Add("退出", null, (_, _) =>
+            {
+                _reallyExit = true;
+                Close();
+            });
+
+            _tray = new Forms.NotifyIcon
+            {
+                Icon = Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? Drawing.SystemIcons.Application,
+                Text = "蜂群 HIVE · AI 员工面板",
+                Visible = true,
+                ContextMenuStrip = menu,
+            };
+            _tray.DoubleClick += (_, _) => RestoreWindow();
+            Log("托盘图标已就绪");
+        }
+        catch (Exception error)
+        {
+            Log($"托盘创建失败：{error.Message}");
+        }
+    }
+
+    private void RestoreWindow()
+    {
+        Show();
+        WindowState = WindowState.Normal;
+        Activate();
+        Topmost = true;
+        Topmost = false;
+    }
+
+    /* ── 消息视图模型 ───────────────────────────────────── */
+
+    private sealed class MessageVm
+    {
+        public string Who { get; init; } = "";
+        public string When { get; init; } = "";
+        public string Text { get; init; } = "";
+        public string Model { get; init; } = "";
+        public Visibility ModelVisibility { get; init; }
+        public HorizontalAlignment Align { get; init; }
+        public string Bubble { get; init; } = "#FFFFFF";
+        public string BubbleLine { get; init; } = "#E9E6E1";
+        public string TextColor { get; init; } = "#1E1E1E";
+    }
+}
+
+/// <summary>一个字段：关键字、标签、占位、默认值、可选下拉项、是否密码。</summary>
+public sealed record FormField(
+    string Key, string Label, string Placeholder = "", string Value = "",
+    string[]? Options = null, bool IsSecret = false);
+
+/// <summary>够用就好的原生输入对话框：一列字段 + 确定/取消。</summary>
+public sealed class FormDialog : Window
+{
+    private readonly Dictionary<string, TextBox> _boxes = new();
+    private readonly Dictionary<string, ComboBox> _combos = new();
+
+    public Dictionary<string, string> Values { get; } = new();
+
+    public FormDialog(string title, IEnumerable<FormField> fields, string? note = null)
+    {
+        Title = title;
+        Width = 440;
+        SizeToContent = SizeToContent.Height;
+        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        Background = new SolidColorBrush(Color.FromRgb(250, 249, 247));
+        FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI");
+        FontSize = 13;
+
+        var stack = new StackPanel { Margin = new Thickness(20, 18, 20, 16) };
+        if (note is not null)
+        {
+            stack.Children.Add(new TextBlock
+            {
+                Text = note,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = new SolidColorBrush(Color.FromRgb(107, 114, 128)),
+                Margin = new Thickness(0, 0, 0, 12),
+            });
+        }
+
+        foreach (var field in fields)
+        {
+            stack.Children.Add(new TextBlock
+            {
+                Text = field.Label,
+                Foreground = new SolidColorBrush(Color.FromRgb(107, 114, 128)),
+                FontSize = 12,
+                Margin = new Thickness(0, 0, 0, 4),
+            });
+            if (field.Options is { Length: > 0 })
+            {
+                var combo = new ComboBox { Margin = new Thickness(0, 0, 0, 12) };
+                foreach (var option in field.Options) combo.Items.Add(option);
+                combo.SelectedItem = field.Options.Contains(field.Value) ? field.Value : field.Options[0];
+                _combos[field.Key] = combo;
+                stack.Children.Add(combo);
+            }
+            else
+            {
+                var box = new TextBox
+                {
+                    Text = field.Value,
+                    Margin = new Thickness(0, 0, 0, 12),
+                    Padding = new Thickness(8, 6, 8, 6),
+                };
+                if (field.Placeholder != "") box.ToolTip = field.Placeholder;
+                if (field.IsSecret) box.FontFamily = new FontFamily("Consolas");
+                _boxes[field.Key] = box;
+                stack.Children.Add(box);
+            }
+        }
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        var cancel = new Button { Content = "取消", Width = 84, Margin = new Thickness(0, 0, 8, 0) };
+        cancel.Click += (_, _) => { DialogResult = false; Close(); };
+        var ok = new Button
+        {
+            Content = "确定",
+            Width = 84,
+            Background = new SolidColorBrush(Color.FromRgb(59, 130, 246)),
+            Foreground = Brushes.White,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0, 7, 0, 7),
+            Cursor = Cursors.Hand,
+        };
+        ok.Click += (_, _) =>
+        {
+            foreach (var (key, box) in _boxes) Values[key] = box.Text.Trim();
+            foreach (var (key, combo) in _combos) Values[key] = combo.SelectedItem?.ToString() ?? "";
+            DialogResult = true;
+            Close();
+        };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(ok);
+        stack.Children.Add(buttons);
+
+        Content = new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        Loaded += (_, _) =>
+        {
+            if (_boxes.Count > 0) _boxes.Values.First().Focus();
+        };
     }
 }
