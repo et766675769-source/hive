@@ -142,7 +142,7 @@
           <Button x:Name="SendModeButton" DockPanel.Dock="Right" Content="Enter 发送"
                   Click="OnToggleSendMode" Margin="10,0,0,0" Foreground="#6B7280" />
           <TextBox x:Name="InputBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="44" MaxHeight="140"
-                   VerticalScrollBarVisibility="Auto" KeyDown="OnInputKeyDown" />
+                   VerticalScrollBarVisibility="Auto" PreviewKeyDown="OnInputKeyDown" />
         </DockPanel>
       </Border>
 

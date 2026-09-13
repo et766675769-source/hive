@@ -759,20 +759,24 @@ public partial class MainWindow : Window
 
     private async void OnInputKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape && MentionPopup.IsOpen)
+        // Alt 组合键在 WPF 里 Key 会变成 System，真实按键在 SystemKey —— 不处理这个
+        // 就永远收不到 Alt+Enter。
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+
+        if (key == Key.Escape && MentionPopup.IsOpen)
         {
             e.Handled = true;
             HideMentions();
             return;
         }
-        if (e.Key == Key.Tab && MentionPopup.IsOpen)
+        if (key == Key.Tab && MentionPopup.IsOpen)
         {
             // Tab 补全第一个候选，不用鼠标
             e.Handled = true;
             InsertMention(_mentionPeople[0]);
             return;
         }
-        if (e.Key == Key.Enter)
+        if (key == Key.Enter)
         {
             var modifiers = Keyboard.Modifiers;
             var hasAlt = (modifiers & ModifierKeys.Alt) != 0;
