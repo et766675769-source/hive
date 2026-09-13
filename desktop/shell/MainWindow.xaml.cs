@@ -1055,7 +1055,10 @@ public partial class MainWindow : Window
 
     private void RenderHeader()
     {
-        if (_threadId == "")
+        var hasThread = _threadId != "";
+        ExportThreadButton.IsEnabled = hasThread;
+        ClearThreadButton.IsEnabled = hasThread;
+        if (!hasThread)
         {
             ShowStatus(_departments.Count == 0 ? "先建一个部门，再添加员工" : "在左侧选一个部门或员工");
             return;
@@ -1094,6 +1097,70 @@ public partial class MainWindow : Window
     }
 
     /* ── 交互 ───────────────────────────────────────────── */
+
+    /// <summary>导出当前面板的全部对话（Markdown），让用户选存哪儿。</summary>
+    private async void OnExportThread(object sender, RoutedEventArgs e)
+    {
+        if (_threadId == "") return;
+        var url = $"{BaseUrl}/api/thread/export?mode={Uri.EscapeDataString(_mode)}&id={Uri.EscapeDataString(_threadId)}";
+        try
+        {
+            var content = await Http.GetStringAsync(url);
+            using var dialog = new Forms.SaveFileDialog
+            {
+                Title = "导出对话",
+                Filter = "Markdown 文件 (*.md)|*.md|文本文件 (*.txt)|*.txt",
+                FileName = $"HIVE-{PanelTitle.Text}-{DateTime.Now:yyyyMMdd-HHmm}.md",
+                AddExtension = true,
+                OverwritePrompt = true,
+            };
+            if (dialog.ShowDialog() != Forms.DialogResult.OK) return;
+            await File.WriteAllTextAsync(dialog.FileName, content, new UTF8Encoding(true));
+            Log($"已导出对话：{dialog.FileName}");
+            var openFolder = MessageBox.Show(
+                $"已导出 {PanelTitle.Text} 的全部对话到：\n{dialog.FileName}\n\n要打开所在文件夹吗？",
+                "蜂群 HIVE", MessageBoxButton.YesNo);
+            if (openFolder == MessageBoxResult.Yes)
+            {
+                Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{dialog.FileName}\"") { UseShellExecute = true });
+            }
+        }
+        catch (Exception error)
+        {
+            Log($"导出对话失败：{error.Message}");
+            MessageBox.Show($"导出失败：{error.Message}", "蜂群 HIVE");
+        }
+    }
+
+    /// <summary>清空当前面板的全部对话（服务端会先把原文件留档）。</summary>
+    private async void OnClearThread(object sender, RoutedEventArgs e)
+    {
+        if (_threadId == "") return;
+        var confirm = MessageBox.Show(
+            $"确定清空「{PanelTitle.Text}」面板的全部对话记录？\n\n" +
+            "面板上会立刻变空，且不可从界面恢复（服务端会在 data/threads/_cleared/ 留一份原文件备份）。",
+            "清空记录", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.OK) return;
+        try
+        {
+            var body = JsonSerializer.Serialize(new { mode = _mode, threadId = _threadId });
+            var response = await Http.PostAsync($"{BaseUrl}/api/thread/clear",
+                new StringContent(body, Encoding.UTF8, "application/json"));
+            var text = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+            {
+                MessageBox.Show($"清空失败：{text}", "蜂群 HIVE");
+                return;
+            }
+            await RefreshThreadAsync();
+            Log($"已清空面板记录：{PanelTitle.Text}");
+        }
+        catch (Exception error)
+        {
+            Log($"清空面板失败：{error.Message}");
+            MessageBox.Show($"清空失败：{error.Message}", "蜂群 HIVE");
+        }
+    }
 
     private async void OnSend(object sender, RoutedEventArgs e) => await SendAsync();
 

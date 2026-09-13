@@ -139,13 +139,24 @@
       <DockPanel Grid.Column="1" Background="{DynamicResource Bg}">
         <Border DockPanel.Dock="Top" Background="{DynamicResource Surface}"
                 BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="24,16">
-          <StackPanel>
-            <TextBlock x:Name="PanelKind" Text="部门" FontSize="11.5" Foreground="{DynamicResource Accent}" />
-            <TextBlock x:Name="PanelTitle" Text="还没有内容" FontSize="19" FontWeight="SemiBold"
-                       Foreground="{DynamicResource Ink}" Margin="0,3,0,0" />
-            <TextBlock x:Name="PanelSub" Text="先在左侧建一个部门，再加几位员工"
-                       FontSize="12.5" Foreground="{DynamicResource Ink2}" Margin="0,3,0,0" TextWrapping="Wrap" />
-          </StackPanel>
+          <DockPanel>
+            <!-- 右上角：导出本面板全部对话 / 清空本面板记录 -->
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
+              <Button x:Name="ExportThreadButton" Content="导出对话" Click="OnExportThread"
+                      Padding="12,6" FontSize="12" ToolTip="把本面板的全部对话导出成 Markdown 文件" />
+              <Button x:Name="ClearThreadButton" Content="清空记录" Click="OnClearThread"
+                      Padding="12,6" FontSize="12" Margin="8,0,0,0"
+                      Foreground="{DynamicResource Danger}" BorderBrush="{DynamicResource DangerLine}"
+                      ToolTip="清空本面板的全部对话（不可恢复）" />
+            </StackPanel>
+            <StackPanel>
+              <TextBlock x:Name="PanelKind" Text="部门" FontSize="11.5" Foreground="{DynamicResource Accent}" />
+              <TextBlock x:Name="PanelTitle" Text="还没有内容" FontSize="19" FontWeight="SemiBold"
+                         Foreground="{DynamicResource Ink}" Margin="0,3,0,0" />
+              <TextBlock x:Name="PanelSub" Text="先在左侧建一个部门，再加几位员工"
+                         FontSize="12.5" Foreground="{DynamicResource Ink2}" Margin="0,3,0,0" TextWrapping="Wrap" />
+            </StackPanel>
+          </DockPanel>
         </Border>
 
         <Border DockPanel.Dock="Bottom" Background="{DynamicResource Surface}"

@@ -189,6 +189,28 @@ export class Store {
     return message;
   }
 
+  /**
+   * 清空一条线程的全部记录。
+   * 先把原文件改名留档到 data/threads/_cleared/<模式>/<id>-<时间>.jsonl（误删可找回），
+   * 再删掉正式文件。返回这次清掉了多少条。
+   */
+  clearThread(mode, id) {
+    const file = this.threadFile(mode, id);
+    const messages = this.readThread(mode, id, { limit: 100000 });
+    if (!fs.existsSync(file)) return { cleared: 0, backup: '' };
+    const backupDir = path.join(this.threadsDir, '_cleared', THREAD_MODES.includes(mode) ? mode : 'department');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backup = path.join(backupDir, `${path.basename(file, '.jsonl')}-${stamp}.jsonl`);
+    try {
+      fs.renameSync(file, backup);
+    } catch {
+      fs.writeFileSync(backup, fs.readFileSync(file));
+      fs.unlinkSync(file);
+    }
+    return { cleared: messages.length, backup };
+  }
+
   /** 线程里最后一条留言（左侧栏和项目卡片用它显示摘要）。 */
   lastMessage(mode, id) {
     const messages = this.readThread(mode, id, { limit: 1 });

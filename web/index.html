@@ -54,7 +54,13 @@
             <h1 class="main__title" id="panelTitle">还没有内容</h1>
             <p class="main__sub" id="panelSub">先在左侧建一个部门，再加几位员工</p>
           </div>
-          <div class="roster" id="panelRoster"></div>
+          <div class="main__side">
+            <div class="main__actions">
+              <button class="ghost" id="exportThreadBtn" type="button" title="把本面板的全部对话导出成 Markdown">导出对话</button>
+              <button class="ghost is-danger" id="clearThreadBtn" type="button" title="清空本面板的全部对话">清空记录</button>
+            </div>
+            <div class="roster" id="panelRoster"></div>
+          </div>
         </header>
 
         <div class="stream" id="stream"></div>

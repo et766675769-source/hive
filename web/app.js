@@ -23,6 +23,8 @@ const el = {
   stream: $('stream'),
   composer: $('composer'),
   mentionAllBtn: $('mentionAllBtn'),
+  exportThreadBtn: $('exportThreadBtn'),
+  clearThreadBtn: $('clearThreadBtn'),
   composerInput: $('composerInput'),
   sendBtn: $('sendBtn'),
   modal: $('modal'),
@@ -942,6 +944,30 @@ el.composer.addEventListener('submit', (event) => {
 });
 
 if (el.mentionAllBtn) el.mentionAllBtn.onclick = () => insertMentionAll();
+
+/* 面板右上角：导出全部对话 / 清空记录 */
+if (el.exportThreadBtn) {
+  el.exportThreadBtn.onclick = () => {
+    const { mode, id } = state.context;
+    if (!id) return toast('先选一个面板');
+    window.location.href = `/api/thread/export?mode=${encodeURIComponent(mode)}&id=${encodeURIComponent(id)}`;
+  };
+}
+if (el.clearThreadBtn) {
+  el.clearThreadBtn.onclick = async () => {
+    const { mode, id } = state.context;
+    if (!id) return toast('先选一个面板');
+    const name = el.panelTitle.textContent || '这个面板';
+    if (!window.confirm(`确定清空「${name}」的全部对话记录？不可从界面恢复（服务端会留一份原文件备份）。`)) return;
+    try {
+      const result = await api('/api/thread/clear', { method: 'POST', body: JSON.stringify({ mode, threadId: id }) });
+      toast(`已清空 ${result.cleared ?? 0} 条记录`);
+      await loadThread();
+    } catch (error) {
+      toast(`清空失败：${error.message}`);
+    }
+  };
+}
 
 el.composerInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey) {

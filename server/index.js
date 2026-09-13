@@ -372,12 +372,24 @@ function keyHintOf(key) {
   return `${value.slice(0, 6)}…${value.slice(-4)}`;
 }
 
+/** 面板名字（导出文件标题用）：部门名 / 项目名 / 员工名。 */
+const THREAD_MODE_LABEL = { department: '部门面板', project: '项目面板', employee: '员工面板' };
+
+function threadTitle(mode, id) {
+  if (mode === 'department') {
+    return store.readOrg().departments.find((d) => d.id === id)?.name || '部门';
+  }
+  if (mode === 'project') {
+    return store.readProjects().projects.find((p) => p.id === id)?.name || '项目';
+  }
+  return store.readOrg().employees.find((e) => e.id === id)?.name || '员工';
+}
+
 /**
  * 一个对话线程里"参与的所有人"，跟桌面端 @ 候选是同一套口径：
  *   部门面板 = 该部门成员；项目面板 = 参与部门的人；员工面板 = 他本人。
  * 给 @所有人 用。
- */
-function employeesInThread(mode, threadId, employees) {
+ */function employeesInThread(mode, threadId, employees) {
   if (mode === 'department') {
     return employees.filter((item) => item.departmentId === threadId).map((item) => item.id);
   }
@@ -581,6 +593,52 @@ const server = http.createServer(async (req, res) => {
       const id = String(url.searchParams.get('id') || '');
       if (!THREAD_MODES.includes(mode)) return json(res, 400, { ok: false, error: `未知面板模式：${mode}` });
       return json(res, 200, { ok: true, mode, id, messages: store.readThread(mode, id) });
+    }
+
+    /* ---- 导出这条线程的全部对话（Markdown 附件）---- */
+    if (pathname === '/api/thread/export' && req.method === 'GET') {
+      const mode = String(url.searchParams.get('mode') || 'department');
+      const id = String(url.searchParams.get('id') || '');
+      if (!THREAD_MODES.includes(mode)) return json(res, 400, { ok: false, error: `未知面板模式：${mode}` });
+      const thread = store.readThread(mode, id, { limit: 100000 });
+      const title = threadTitle(mode, id);
+      const lines = [
+        `# ${title} · ${THREAD_MODE_LABEL[mode] || mode}对话记录`,
+        '',
+        `- 导出时间：${new Date().toLocaleString('zh-CN')}`,
+        `- 消息条数：${thread.length}`,
+        '',
+        '---',
+        '',
+      ];
+      for (const message of thread) {
+        const when = message.at ? new Date(message.at).toLocaleString('zh-CN') : '';
+        const head = [`**${message.fromName || message.from || '未知'}**`, when];
+        if (message.kind === 'ack') head.push('（回执）');
+        if (message.kind === 'notice') head.push(`（系统提示 · ${message.status || ''}）`);
+        if (message.model) head.push(`模型：${message.model}`);
+        lines.push(head.filter(Boolean).join(' · '), '', String(message.text || '').trim(), '');
+      }
+      const body = `\uFEFF${lines.join('\n')}`;
+      res.writeHead(200, {
+        'Content-Type': 'text/markdown; charset=utf-8',
+        'Content-Disposition': `attachment; filename="hive-${encodeURIComponent(id || mode)}-${Date.now()}.md"`,
+        'Content-Length': Buffer.byteLength(body),
+      });
+      res.end(body);
+      return;
+    }
+
+    /* ---- 清空这条线程的全部记录 ---- */
+    if (pathname === '/api/thread/clear' && req.method === 'POST') {
+      const payload = await readJson(req);
+      const mode = String(payload.mode || 'department');
+      const id = String(payload.threadId || '');
+      if (!THREAD_MODES.includes(mode)) return json(res, 400, { ok: false, error: `未知面板模式：${mode}` });
+      if (!id) return json(res, 400, { ok: false, error: '缺少 threadId' });
+      const result = store.clearThread(mode, id);
+      broadcast('cleared', { mode, threadId: id, cleared: result.cleared });
+      return json(res, 200, { ok: true, mode, id, cleared: result.cleared, backup: result.backup });
     }
 
     /* ---- 发消息（人说话 → 可能触发员工）---- */
