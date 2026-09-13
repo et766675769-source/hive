@@ -189,7 +189,7 @@ public partial class MainWindow : Window
     /* ── 数据 ───────────────────────────────────────────── */
 
     private sealed record DepartmentInfo(string Id, string Name, string Description);
-    private sealed record EmployeeInfo(string Id, string Name, string Title, string Level, string DepartmentId, string Model, string BaseUrl, int AvatarSeed);
+    private sealed record EmployeeInfo(string Id, string Name, string Title, string Level, string DepartmentId, string Model, string BaseUrl, int AvatarSeed, string AvatarFile);
     private sealed record ProjectInfo(string Id, string Name, string Description, string[] DepartmentIds);
 
     private async Task RefreshStateAsync()
@@ -213,7 +213,8 @@ public partial class MainWindow : Window
                 e.TryGetProperty("departmentId", out var dp) ? dp.GetString() ?? "" : "",
                 e.TryGetProperty("model", out var m) ? m.GetString() ?? "" : "",
                 e.TryGetProperty("baseUrl", out var bu) ? bu.GetString() ?? "" : "",
-                e.TryGetProperty("avatar", out var av) && av.TryGetProperty("seed", out var sd) ? sd.GetInt32() : 0)).ToList();
+                e.TryGetProperty("avatar", out var av) && av.TryGetProperty("seed", out var sd) ? sd.GetInt32() : 0,
+                e.TryGetProperty("avatar", out var av2) && av2.TryGetProperty("file", out var af) ? af.GetString() ?? "" : "")).ToList();
             _projects = root.GetProperty("projects").EnumerateArray().Select(p => new ProjectInfo(
                 p.GetProperty("id").GetString() ?? "",
                 p.GetProperty("name").GetString() ?? "",
@@ -392,13 +393,27 @@ public partial class MainWindow : Window
         var active = _mode == "employee" && _threadId == employee.Id;
 
         var panel = new StackPanel { Orientation = Orientation.Horizontal };
-        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, 24));
+        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, employee.AvatarFile, 26));
+        // 名字稍大、职位跟在后面且颜色更淡
         panel.Children.Add(new TextBlock
         {
             Text = employee.Name,
-            Margin = new Thickness(8, 0, 0, 0),
+            FontSize = 14.5,
+            Margin = new Thickness(9, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
+            Foreground = (Brush)FindResource("Ink"),
         });
+        if (!string.IsNullOrEmpty(employee.Title))
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = employee.Title,
+                FontSize = 11.5,
+                Margin = new Thickness(6, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = (Brush)FindResource("Ink3"),
+            });
+        }
 
         var button = new Button
         {
@@ -415,9 +430,31 @@ public partial class MainWindow : Window
         return button;
     }
 
-    /// <summary>随机极简头像：种子 → 色相，取名字首字。零素材、零依赖。</summary>
-    private static Border Avatar(string name, int seed, double size)
+    /// <summary>头像：头像库里有图就用图（圆形裁剪），没有就退回"种子 → 色相 + 首字"。</summary>
+    private static UIElement Avatar(string name, int seed, string file, double size)
     {
+        if (!string.IsNullOrEmpty(file))
+        {
+            try
+            {
+                var image = new BitmapImage();
+                image.BeginInit();
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.UriSource = new Uri($"{BaseUrl}/api/avatar/{Uri.EscapeDataString(file)}");
+                image.EndInit();
+                return new System.Windows.Shapes.Ellipse
+                {
+                    Width = size,
+                    Height = size,
+                    Fill = new ImageBrush(image) { Stretch = Stretch.UniformToFill },
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+            }
+            catch (Exception error)
+            {
+                Log($"头像加载失败（{file}）：{error.Message}");
+            }
+        }
         return new Border
         {
             Width = size,

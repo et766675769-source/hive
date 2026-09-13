@@ -65,6 +65,53 @@ const config = {
 
 const store = new Store({ dataDir: config.dataDir });
 
+/* ── 头像库 ────────────────────────────────────────────────
+   从一个目录里给员工随机挑头像；库里没图就回退到"种子 → 色相 + 首字"。
+   目录按顺序找第一个有图的：环境变量 → D:\随机头像库 → 项目内 web/avatars。
+   （不涉及性别之类的字段：头像纯粹是随机挑一张。）
+   ─────────────────────────────────────────────────────────── */
+
+const AVATAR_DIRS = [
+  process.env.HIVE_AVATAR_DIR,
+  'D:\\随机头像库',
+  path.join(ROOT, 'web', 'avatars'),
+].filter((dir) => typeof dir === 'string' && dir.length > 0);
+
+const AVATAR_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+
+let avatarCache = { at: 0, dir: null, files: [] };
+
+/** 扫出第一个可用的头像库（10 秒缓存，免得每次建员工都读盘）。 */
+function avatarLibrary() {
+  const now = Date.now();
+  if (now - avatarCache.at < 10000) return avatarCache;
+  for (const dir of AVATAR_DIRS) {
+    try {
+      const files = fs
+        .readdirSync(dir)
+        .filter((name) => AVATAR_EXT.has(path.extname(name).toLowerCase()))
+        .sort();
+      if (files.length) {
+        avatarCache = { at: now, dir, files };
+        return avatarCache;
+      }
+    } catch {
+      /* 目录不存在就试下一个 */
+    }
+  }
+  avatarCache = { at: now, dir: null, files: [] };
+  return avatarCache;
+}
+
+/** 给一个新员工挑头像：库里优先随机挑，挑不到就只留种子。 */
+function pickAvatar(existing) {
+  const seed = existing?.avatar?.seed || Math.floor(Math.random() * 1e9);
+  if (existing?.avatar?.file) return { seed, file: existing.avatar.file };
+  const library = avatarLibrary();
+  if (!library.files.length) return { seed };
+  return { seed, file: library.files[Math.floor(Math.random() * library.files.length)] };
+}
+
 /* ── SSE：把新留言和员工忙闲实时推给面板 ─────────────────── */
 
 const clients = new Set();
@@ -179,8 +226,8 @@ function normalizeEmployee(input, existing = null) {
     model: String(input.model ?? existing?.model ?? '').trim().slice(0, 80),
     apiKey: String(input.apiKey ?? existing?.apiKey ?? '').trim().slice(0, 200),
     baseUrl: String(input.baseUrl ?? existing?.baseUrl ?? '').trim().slice(0, 200),
-    // 头像：存一个种子，前端据此确定性生成颜色与首字（简单随机，零依赖）
-    avatar: existing?.avatar?.seed ? existing.avatar : { seed: Math.floor(Math.random() * 1e9) },
+    // 头像：优先从头像库随机挑一张，库里没有就退回"种子 → 色相 + 首字"
+    avatar: pickAvatar(existing),
     createdAt: existing?.createdAt || new Date().toISOString(),
   };
 }
@@ -220,6 +267,16 @@ const server = http.createServer(async (req, res) => {
   const pathname = decodeURIComponent(url.pathname);
 
   try {
+    /* ---- 头像文件：从头像库里直接发给前端 / 桌面端 ---- */
+    if (pathname.startsWith('/api/avatar/') && req.method === 'GET') {
+      const name = decodeURIComponent(pathname.slice('/api/avatar/'.length));
+      const library = avatarLibrary();
+      if (!library.dir || !library.files.includes(name) || name.includes('..')) {
+        return json(res, 404, { ok: false, error: '头像库里没有这个文件' });
+      }
+      return serveStatic(res, path.join(library.dir, name));
+    }
+
     /* ---- 实时流 ---- */
     if (pathname === '/api/stream') {
       res.writeHead(200, {
@@ -267,6 +324,10 @@ const server = http.createServer(async (req, res) => {
         projects,
         busy: worker.busyIds(),
         summary: store.summary(),
+        avatar: (() => {
+          const library = avatarLibrary();
+          return { dir: library.dir, count: library.files.length };
+        })(),
       });
     }
 
