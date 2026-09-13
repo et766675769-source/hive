@@ -53,6 +53,8 @@ public partial class MainWindow : Window
     private bool _altEnterToSend;
     private bool _darkTheme;
     private string _dataDir = "";
+    private string _baseUrl = "";
+    private string _model = "";
 
     public MainWindow()
     {
@@ -442,7 +444,10 @@ public partial class MainWindow : Window
             using var doc = JsonDocument.Parse(text);
             var root = doc.RootElement;
 
-            _hasKey = root.GetProperty("settings").GetProperty("hasKey").GetBoolean();
+            var settings = root.GetProperty("settings");
+            _hasKey = settings.GetProperty("hasKey").GetBoolean();
+            _baseUrl = settings.TryGetProperty("baseUrl", out var bu) ? bu.GetString() ?? "" : "";
+            _model = settings.TryGetProperty("model", out var md) ? md.GetString() ?? "" : "";
             _departments = root.GetProperty("departments").EnumerateArray().Select(d => new DepartmentInfo(
                 d.GetProperty("id").GetString() ?? "",
                 d.GetProperty("name").GetString() ?? "",
@@ -1048,21 +1053,20 @@ public partial class MainWindow : Window
     private async void OnOpenAppSettings(object sender, RoutedEventArgs e)
     {
         var autoStart = IsAutoStart();
-        var dialog = new FormDialog("设置", new[]
+        var dialog = new SettingsWindow(
+            _darkTheme,
+            autoStart,
+            _dataDir,
+            _hasKey,
+            string.IsNullOrEmpty(_baseUrl) ? "https://api.deepseek.com" : _baseUrl,
+            string.IsNullOrEmpty(_model) ? "deepseek-chat" : _model)
         {
-            new FormField("theme", "面板风格", "", _darkTheme ? "深色" : "浅色", new[] { "浅色", "深色" }),
-            new FormField("startup", "开机自动启动", "", autoStart ? "开启" : "关闭", new[] { "开启", "关闭" }),
-            new FormField("dataDir", "数据存储位置（选好后立即切换）", "",
-                string.IsNullOrEmpty(_dataDir) ? "" : _dataDir, null, false, true),
-            new FormField("apiKey", _hasKey ? "全局 API Key（已设置，留空不改）" : "全局 API Key", "sk-…", "", null, true),
-            new FormField("baseUrl", "接口地址", "https://api.deepseek.com", "https://api.deepseek.com"),
-            new FormField("model", "默认模型", "deepseek-chat", "deepseek-chat"),
-        }, "这里的 API 是「默认通道」：没有单独配 Key 的员工都用它。数据存储位置留空则用项目内的 data 目录。");
+            Owner = this,
+        };
         if (dialog.ShowDialog() != true) return;
-        var v = dialog.Values;
 
         // 主题：立刻生效
-        var wantDark = v["theme"] == "深色";
+        var wantDark = dialog.DarkTheme;
         if (wantDark != _darkTheme)
         {
             _darkTheme = wantDark;
@@ -1074,11 +1078,11 @@ public partial class MainWindow : Window
         }
 
         // 开机启动：写当前用户的 Run 键
-        var wantStartup = v["startup"] == "开启";
+        var wantStartup = dialog.AutoStart;
         if (wantStartup != autoStart) SetAutoStart(wantStartup);
 
         // 存储位置：换了就重启服务端，让新位置立刻生效（所有数据都跟着走）
-        var dir = v["dataDir"].Trim();
+        var dir = dialog.DataDirValue;
         var newDir = dir.Contains("默认") ? "" : dir;
         var dirChanged = !string.Equals(newDir, _dataDir, StringComparison.OrdinalIgnoreCase);
         _dataDir = newDir;
@@ -1116,11 +1120,11 @@ public partial class MainWindow : Window
         // 全局 API
         var payload = new Dictionary<string, object>
         {
-            ["baseUrl"] = v["baseUrl"],
-            ["model"] = v["model"],
+            ["baseUrl"] = dialog.BaseUrlValue,
+            ["model"] = dialog.ModelValue,
             ["onboarded"] = true,
         };
-        if (!string.IsNullOrEmpty(v["apiKey"])) payload["apiKey"] = v["apiKey"];
+        if (!string.IsNullOrEmpty(dialog.ApiKeyValue)) payload["apiKey"] = dialog.ApiKeyValue;
         try
         {
             await Http.PostAsync($"{BaseUrl}/api/settings",
@@ -1370,6 +1374,161 @@ public partial class MainWindow : Window
 public sealed record FormField(
     string Key, string Label, string Placeholder = "", string Value = "",
     string[]? Options = null, bool IsSecret = false, bool IsFolder = false);
+
+/// <summary>设置窗口：分组呈现；「API 设置」单独一块，点标题才展开。</summary>
+public sealed class SettingsWindow : Window
+{
+    private readonly ComboBox _theme;
+    private readonly ComboBox _startup;
+    private readonly TextBox _dataDir;
+    private readonly TextBox _apiKey;
+    private readonly TextBox _baseUrl;
+    private readonly TextBox _model;
+
+    public bool DarkTheme => _theme.SelectedItem?.ToString() == "深色";
+    public bool AutoStart => _startup.SelectedItem?.ToString() == "开启";
+    public string DataDirValue => _dataDir.Text.Trim();
+    public string ApiKeyValue => _apiKey.Text.Trim();
+    public string BaseUrlValue => _baseUrl.Text.Trim();
+    public string ModelValue => _model.Text.Trim();
+
+    public SettingsWindow(bool darkTheme, bool autoStart, string dataDir, bool hasKey, string baseUrl, string model)
+    {
+        Title = "设置";
+        Width = 470;
+        SizeToContent = SizeToContent.Height;
+        MaxHeight = 700;
+        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        Background = (Brush)Application.Current.Resources["Bg"];
+        Foreground = (Brush)Application.Current.Resources["Ink"];
+        FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI");
+        FontSize = 13;
+
+        var ink2 = (Brush)Application.Current.Resources["Ink2"];
+        var line = (Brush)Application.Current.Resources["Line"];
+        var surface = (Brush)Application.Current.Resources["Surface"];
+        var accent = (Brush)Application.Current.Resources["Accent"];
+        var stack = new StackPanel { Margin = new Thickness(20, 18, 20, 16) };
+
+        /* 外观 */
+        stack.Children.Add(Caption("面板风格", ink2));
+        _theme = Combo(new[] { "浅色", "深色" }, darkTheme ? "深色" : "浅色");
+        stack.Children.Add(_theme);
+
+        stack.Children.Add(Caption("开机自动启动", ink2));
+        _startup = Combo(new[] { "关闭", "开启" }, autoStart ? "开启" : "关闭");
+        stack.Children.Add(_startup);
+
+        /* 存储位置 */
+        stack.Children.Add(Caption("数据存储位置", ink2));
+        _dataDir = new TextBox { Text = dataDir, Padding = new Thickness(8, 6, 8, 6) };
+        var browse = new Button
+        {
+            Content = "浏览…",
+            Width = 80,
+            Margin = new Thickness(8, 0, 0, 0),
+            Padding = new Thickness(0, 6, 0, 6),
+            Cursor = Cursors.Hand,
+        };
+        browse.Click += (_, _) =>
+        {
+            using var picker = new Forms.FolderBrowserDialog
+            {
+                Description = "选择数据存储位置（部门、员工、项目、全部对话都会存在这里）",
+                UseDescriptionForTitle = true,
+                ShowNewFolderButton = true,
+            };
+            if (!string.IsNullOrEmpty(_dataDir.Text) && Directory.Exists(_dataDir.Text))
+            {
+                picker.SelectedPath = _dataDir.Text;
+            }
+            if (picker.ShowDialog() == Forms.DialogResult.OK) _dataDir.Text = picker.SelectedPath;
+        };
+        var dirRow = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
+        DockPanel.SetDock(browse, Dock.Right);
+        dirRow.Children.Add(browse);
+        dirRow.Children.Add(_dataDir);
+        stack.Children.Add(dirRow);
+        stack.Children.Add(new TextBlock
+        {
+            Text = "留空 = 项目内的 data 目录。切换后会重启面板服务，所有数据都改存到新位置。",
+            FontSize = 11.5,
+            Foreground = ink2,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 14),
+        });
+
+        /* API 设置：单独一块，折叠着，点标题才展开 */
+        var apiPanel = new StackPanel();
+        apiPanel.Children.Add(Caption(hasKey ? "API Key（已设置，留空不改）" : "API Key", ink2));
+        _apiKey = new TextBox { Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 0, 0, 10) };
+        apiPanel.Children.Add(_apiKey);
+        apiPanel.Children.Add(Caption("接口地址", ink2));
+        _baseUrl = new TextBox { Text = baseUrl, Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 0, 0, 10) };
+        apiPanel.Children.Add(_baseUrl);
+        apiPanel.Children.Add(Caption("默认模型", ink2));
+        _model = new TextBox { Text = model, Padding = new Thickness(8, 6, 8, 6) };
+        apiPanel.Children.Add(_model);
+        apiPanel.Children.Add(new TextBlock
+        {
+            Text = "这是「默认通道」：没有单独配 Key 的员工都用它。",
+            FontSize = 11.5,
+            Foreground = ink2,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 8, 0, 0),
+        });
+
+        var expander = new Expander
+        {
+            Header = "API 设置（默认通道）",
+            IsExpanded = false,
+            Content = apiPanel,
+            Padding = new Thickness(12, 10, 12, 12),
+            Margin = new Thickness(0, 0, 0, 16),
+            Background = surface,
+            BorderBrush = line,
+            BorderThickness = new Thickness(1),
+        };
+        stack.Children.Add(expander);
+
+        /* 按钮 */
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var cancel = new Button { Content = "取消", Width = 84, Margin = new Thickness(0, 0, 8, 0), Cursor = Cursors.Hand };
+        cancel.Click += (_, _) => { DialogResult = false; Close(); };
+        var ok = new Button
+        {
+            Content = "保存",
+            Width = 84,
+            Background = accent,
+            Foreground = Brushes.White,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0, 7, 0, 7),
+            Cursor = Cursors.Hand,
+        };
+        ok.Click += (_, _) => { DialogResult = true; Close(); };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(ok);
+        stack.Children.Add(buttons);
+
+        Content = new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
+    private static TextBlock Caption(string text, Brush brush) => new()
+    {
+        Text = text,
+        FontSize = 12,
+        Foreground = brush,
+        Margin = new Thickness(0, 0, 0, 4),
+    };
+
+    private static ComboBox Combo(string[] options, string selected)
+    {
+        var combo = new ComboBox { Margin = new Thickness(0, 0, 0, 12) };
+        foreach (var option in options) combo.Items.Add(option);
+        combo.SelectedItem = selected;
+        return combo;
+    }
+}
 
 /// <summary>够用就好的原生输入对话框：一列字段 + 确定/取消。</summary>
 public sealed class FormDialog : Window
