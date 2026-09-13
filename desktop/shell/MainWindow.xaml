@@ -220,21 +220,25 @@
           <ItemsControl x:Name="MessageList">
             <ItemsControl.ItemTemplate>
               <DataTemplate>
-                <Border Margin="0,0,0,12" Padding="13,10" CornerRadius="12"
-                        Background="{Binding Bubble}" BorderBrush="{Binding BubbleLine}" BorderThickness="1"
-                        HorizontalAlignment="{Binding Align}" MaxWidth="720">
-                  <StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                      <TextBlock Text="{Binding Who}" FontWeight="SemiBold" FontSize="12.5"
-                                 Foreground="{DynamicResource Ink}" />
-                      <TextBlock Text="{Binding When}" FontSize="11" Foreground="{DynamicResource Ink3}" Margin="8,0,0,0" />
-                      <TextBlock Text="{Binding Model}" FontSize="11" Foreground="{DynamicResource Ink3}" Margin="8,0,0,0"
-                                 Visibility="{Binding ModelVisibility}" />
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,14" HorizontalAlignment="{Binding Align}">
+                  <!-- 发言人头像：只有员工有，"你"自己的消息不显示 -->
+                  <ContentPresenter Content="{Binding Avatar}" Visibility="{Binding AvatarVisibility}"
+                                    VerticalAlignment="Top" Margin="0,2,10,0" />
+                  <Border Padding="13,10" CornerRadius="12" MaxWidth="640"
+                          Background="{Binding Bubble}" BorderBrush="{Binding BubbleLine}" BorderThickness="1">
+                    <StackPanel>
+                      <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <TextBlock Text="{Binding Who}" FontWeight="SemiBold" FontSize="12.5"
+                                   Foreground="{DynamicResource Ink}" />
+                        <TextBlock Text="{Binding When}" FontSize="11" Foreground="{DynamicResource Ink3}" Margin="8,0,0,0" />
+                        <TextBlock Text="{Binding Model}" FontSize="11" Foreground="{DynamicResource Ink3}" Margin="8,0,0,0"
+                                   Visibility="{Binding ModelVisibility}" />
+                      </StackPanel>
+                      <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Foreground="{Binding TextColor}"
+                                 LineHeight="21" />
                     </StackPanel>
-                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Foreground="{Binding TextColor}"
-                               LineHeight="21" />
-                  </StackPanel>
-                </Border>
+                  </Border>
+                </StackPanel>
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>

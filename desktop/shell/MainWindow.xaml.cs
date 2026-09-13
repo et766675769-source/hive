@@ -549,6 +549,8 @@ public partial class MainWindow : Window
                 var model = m.TryGetProperty("model", out var md) ? md.GetString() ?? "" : "";
                 var isLocal = from == "local";
                 var failed = kind == "notice" && status == "failed";
+                // 发言人的头像：员工才有，"你"自己的消息不带头像
+                var speaker = isLocal ? null : _employees.FirstOrDefault(e => e.Id == from);
                 items.Add(new MessageVm
                 {
                     Who = m.TryGetProperty("fromName", out var n) ? n.GetString() ?? from : from,
@@ -560,6 +562,10 @@ public partial class MainWindow : Window
                     Bubble = isLocal ? Themed("BubbleLocal") : Themed("Surface"),
                     BubbleLine = failed ? Themed("DangerLine") : isLocal ? Themed("BubbleLocalLine") : Themed("Line"),
                     TextColor = failed ? Themed("Danger") : kind == "ack" ? Themed("Ink2") : Themed("Ink"),
+                    Avatar = speaker is null
+                        ? null
+                        : Avatar(speaker.Name, speaker.AvatarSeed, speaker.AvatarFile, speaker.AvatarHair, 34),
+                    AvatarVisibility = speaker is null ? Visibility.Collapsed : Visibility.Visible,
                 });
             }
             MessageList.ItemsSource = items;
@@ -1646,6 +1652,8 @@ public partial class MainWindow : Window
         public Brush Bubble { get; init; } = Brushes.White;
         public Brush BubbleLine { get; init; } = Brushes.Transparent;
         public Brush TextColor { get; init; } = Brushes.Black;
+        public UIElement? Avatar { get; init; }
+        public Visibility AvatarVisibility { get; init; } = Visibility.Collapsed;
     }
 }
 
