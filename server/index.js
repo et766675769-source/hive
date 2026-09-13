@@ -83,8 +83,9 @@ const AVATAR_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 let avatarCache = { at: 0, dir: null, kind: 'none', face: '', hairs: [], files: [] };
 
 /**
- * 扫出头像库。支持两种形态：
- *   composed —— face/base-face-reference.png + hair/hair-XX.png（固定脸型 + 随机发型，叠加合成）
+ * 扫出头像库。支持三种形态（按优先级）：
+ *   complete —— avatars/avatar-XX.png 直接就是完整头像，运行时原样用（新库的形态）
+ *   composed —— face/base-face-reference.png + hair/hair-XX.png，两层叠加合成（老库的形态）
  *   flat     —— 目录里直接放一堆完整头像
  * 10 秒缓存，免得每次建员工都读盘。
  */
@@ -98,22 +99,49 @@ function avatarLibrary() {
           .readdirSync(path.join(dir, sub))
           .filter((name) => AVATAR_EXT.has(path.extname(name).toLowerCase()))
           .sort();
+      let manifest = null;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8').replace(/^\uFEFF/, ''));
+        if (parsed && typeof parsed === 'object') manifest = parsed;
+      } catch {
+        /* 没有 manifest 就靠目录结构判断 */
+      }
+      // 完整头像优先：manifest 里写了 complete-avatar，或者存在 avatars/ 目录
+      const wantsComplete = manifest?.mode === 'complete-avatar' || manifest?.runtime?.includes?.('complete avatar');
+      const hasAvatarsDir = fs.existsSync(path.join(dir, 'avatars'));
+      if (wantsComplete || hasAvatarsDir) {
+        const removed = new Set(
+          Array.isArray(manifest?.removedAvatarIds) ? manifest.removedAvatarIds.map((id) => Number(id)) : [],
+        );
+        const files = hasAvatarsDir
+          ? pick('avatars')
+              .filter((name) => {
+                const id = Number(String(name).replace(/[^0-9]/g, ''));
+                return !removed.has(id);
+              })
+              .map((name) => `avatars/${name}`)
+          : [];
+        if (files.length) {
+          avatarCache = { at: now, dir, kind: 'complete', face: '', hairs: [], files, manifest };
+          return avatarCache;
+        }
+      }
       const face = path.join(dir, 'face', 'base-face-reference.png');
       const hairs = fs.existsSync(path.join(dir, 'hair')) ? pick('hair') : [];
       if (fs.existsSync(face) && hairs.length) {
-        avatarCache = { at: now, dir, kind: 'composed', face: 'face/base-face-reference.png', hairs, files: [] };
+        avatarCache = { at: now, dir, kind: 'composed', face: 'face/base-face-reference.png', hairs, files: [], manifest };
         return avatarCache;
       }
       const files = pick('.').filter((name) => name !== 'base-face-reference.png');
       if (files.length) {
-        avatarCache = { at: now, dir, kind: 'flat', face: '', hairs: [], files };
+        avatarCache = { at: now, dir, kind: 'flat', face: '', hairs: [], files, manifest };
         return avatarCache;
       }
     } catch {
       /* 目录不存在就试下一个 */
     }
   }
-  avatarCache = { at: now, dir: null, kind: 'none', face: '', hairs: [], files: [] };
+  avatarCache = { at: now, dir: null, kind: 'none', face: '', hairs: [], files: [], manifest: null };
   return avatarCache;
 }
 
@@ -143,36 +171,64 @@ function avatarAlign(employee) {
   return faceAlign(path.join(library.dir, 'hair', hair));
 }
 
-/** 统计现在各发型被用了几次（用来尽量避免整组撞脸）。 */
+/** 统计现在各头像被用了几次（用来尽量避免整组撞脸）。完整头像按 file 记，老库按 hair 记。 */
 function avatarUsage() {
   const used = new Map();
   for (const employee of store.readOrg().employees) {
-    const hair = employee.avatar?.hair;
-    if (hair) used.set(hair, (used.get(hair) || 0) + 1);
+    const key = employee.avatar?.file || employee.avatar?.hair;
+    if (key) used.set(key, (used.get(key) || 0) + 1);
   }
   return used;
+}
+
+/** 从库里的候选头像里挑一个"用得最少"的。 */
+function pickFromLibrary(library) {
+  const used = avatarUsage();
+  const list = library.kind === 'composed' ? library.hairs : library.files;
+  if (!list.length) return null;
+  const leastUsed = Math.min(...list.map((name) => used.get(name) || 0));
+  const fresh = list.filter((name) => (used.get(name) || 0) === leastUsed);
+  return fresh[Math.floor(Math.random() * fresh.length)];
 }
 
 /** 给一个新员工挑头像：优先挑"用得最少"的，实在用完才允许重复。 */
 function pickAvatar(existing) {
   const seed = existing?.avatar?.seed || Math.floor(Math.random() * 1e9);
   const current = existing?.avatar;
-  if (current?.file || current?.hair) return { ...current, seed };
   const library = avatarLibrary();
+  // 库改成「完整头像」之后，老的 hair（脸+发型两层）引用已经对不上了，得重挑一张完整头像
+  const staleHair = library.kind !== 'composed' && Boolean(current?.hair);
+  if (!staleHair && (current?.file || current?.hair)) return { ...current, seed };
 
-  if (library.kind === 'composed') {
-    const used = avatarUsage();
-    const leastUsed = Math.min(...library.hairs.map((name) => used.get(name) || 0));
-    const fresh = library.hairs.filter((name) => (used.get(name) || 0) === leastUsed);
-    return { seed, hair: fresh[Math.floor(Math.random() * fresh.length)] };
+  if (library.kind === 'complete' || library.kind === 'flat') {
+    const picked = pickFromLibrary(library);
+    return picked ? { seed, file: picked } : { seed };
   }
-  if (library.kind === 'flat') {
-    const used = avatarUsage();
-    const leastUsed = Math.min(...library.files.map((name) => used.get(name) || 0));
-    const fresh = library.files.filter((name) => (used.get(name) || 0) === leastUsed);
-    return { seed, file: fresh[Math.floor(Math.random() * fresh.length)] };
+  if (library.kind === 'composed') {
+    const picked = pickFromLibrary(library);
+    return picked ? { seed, hair: picked } : { seed };
   }
   return { seed };
+}
+
+/**
+ * 启动时的一次性迁移：库已经是「完整头像」形态，但员工还存着老的 hair 引用时，
+ * 直接给他们换成完整头像并落盘（否则面板上会一直画两层合成的老图）。
+ */
+function migrateAvatarStyle() {
+  const library = avatarLibrary();
+  if (library.kind !== 'complete' && library.kind !== 'flat') return 0;
+  const org = store.readOrg();
+  let migrated = 0;
+  const employees = org.employees.map((employee) => {
+    if (!employee.avatar?.hair) return employee;
+    const picked = pickFromLibrary(library);
+    if (!picked) return employee;
+    migrated++;
+    return { ...employee, avatar: { seed: employee.avatar.seed || Math.floor(Math.random() * 1e9), file: picked } };
+  });
+  if (migrated) store.writeOrg({ ...org, employees });
+  return migrated;
 }
 
 /* ── SSE：把新留言和员工忙闲实时推给面板 ─────────────────── */
@@ -190,6 +246,10 @@ function broadcast(event, data) {
 }
 
 const worker = new Worker({ store, onEvent: broadcast });
+
+// 头像库形态换了（比如从"脸+发型两层"换成"完整头像"）就把存量员工迁移过去
+const migratedAvatars = migrateAvatarStyle();
+if (migratedAvatars) console.log(`头像库已是完整头像形态，已为 ${migratedAvatars} 位员工重新分配头像`);
 
 /**
  * 派活，并顺着回复里的 @点名 继续派下去。
