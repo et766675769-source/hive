@@ -99,9 +99,9 @@
       </Border>
 
       <StackPanel DockPanel.Dock="Bottom" Margin="12,8,12,12">
-        <Button x:Name="AddProjectButton" Content="＋ 新建项目" Click="OnAddProject" Margin="0,0,0,6" />
-        <Button x:Name="AddEmployeeButton" Content="＋ 添加员工" Click="OnAddEmployee" Margin="0,0,0,6" />
-        <Button x:Name="AddDepartmentButton" Content="＋ 新建部门" Click="OnAddDepartment" Margin="0,0,0,6" />
+        <Button x:Name="AddProjectButton" Content="新建项目" Click="OnAddProject" Margin="0,0,0,6" />
+        <Button x:Name="AddEmployeeButton" Content="添加员工" Click="OnAddEmployee" Margin="0,0,0,6" />
+        <Button x:Name="AddDepartmentButton" Content="新建部门" Click="OnAddDepartment" Margin="0,0,0,6" />
         <Button x:Name="SettingsButton" Content="全局设置（API Key）" Click="OnOpenSettings" />
       </StackPanel>
 
