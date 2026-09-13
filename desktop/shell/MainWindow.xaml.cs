@@ -805,14 +805,19 @@ public partial class MainWindow : Window
     /// </summary>
     private static Geometry RoundedHexagonGeometry(double size, double radiusRatio = 0.18)
     {
+        // 正六边形（尖顶朝上）的宽高比是 √3 : 2 ≈ 0.866 : 1。
+        // 之前把顶点直接铺满正方形，等于横向压扁了 13%，所以比例看着不对。
+        var height = size;
+        var width = size * 0.866;
+        var left = (size - width) / 2;
         var pts = new[]
         {
-            new Point(size * 0.5, 0),
-            new Point(size, size * 0.25),
-            new Point(size, size * 0.75),
-            new Point(size * 0.5, size),
-            new Point(0, size * 0.75),
-            new Point(0, size * 0.25),
+            new Point(left + width * 0.5, 0),
+            new Point(left + width, height * 0.25),
+            new Point(left + width, height * 0.75),
+            new Point(left + width * 0.5, height),
+            new Point(left, height * 0.75),
+            new Point(left, height * 0.25),
         };
         var radius = size * radiusRatio;
         var ins = new Point[6];
