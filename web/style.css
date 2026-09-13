@@ -1,4 +1,4 @@
-/* ──────────────────────────────────────────────────────────────
+﻿/* ──────────────────────────────────────────────────────────────
    蜂群 HIVE · AI 员工面板
    风格：style-compass → clean-minimal（素雅极简 · 干净呼吸）
    纪律：米白底、近黑字、单一低饱和强调色、极细分隔线、大留白、
@@ -261,7 +261,7 @@ code, pre, .mono { font-family: var(--mono); }
 /* ── 头像（随机生成：种子 → 颜色 + 首字）──────────────── */
 
 .avatar {
-  --size: 26px;
+  --size: 30px;
   width: var(--size);
   height: var(--size);
   flex: none;
@@ -275,8 +275,8 @@ code, pre, .mono { font-family: var(--mono); }
   user-select: none;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
 }
-.avatar--lg { --size: 36px; }
-.avatar--sm { --size: 22px; }
+.avatar--lg { --size: 44px; }
+.avatar--sm { --size: 26px; }
 
 /* 图片头像：组装式（脸 + 发型）两层叠加。形状由 .avatar 的 border-radius:50% 决定 */
 .avatar--pic {
@@ -287,11 +287,11 @@ code, pre, .mono { font-family: var(--mono); }
   box-shadow: none;
 }
 .avatar--pic img {
-  /* 合成素材最远像素约在画布宽度的 0.54 半径处，缩到 90% 正好完整落在圆内不被切边 */
+  /* 合成素材最远像素约在画布宽度的 0.545 半径处，缩到 92% 仍落在圆内（最多掉不到 1px 边缘） */
   position: absolute;
-  inset: 5%;
-  width: 90%;
-  height: 90%;
+  inset: 4%;
+  width: 92%;
+  height: 92%;
   object-fit: contain;
 }
 

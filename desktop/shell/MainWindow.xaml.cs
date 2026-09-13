@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -281,7 +281,7 @@ public partial class MainWindow : Window
         foreach (var person in people)
         {
             var content = new StackPanel { Orientation = Orientation.Horizontal };
-            content.Children.Add(Avatar(person.Name, person.AvatarSeed, person.AvatarFile, person.AvatarHair, 30));
+            content.Children.Add(Avatar(person.Name, person.AvatarSeed, person.AvatarFile, person.AvatarHair, 34));
             content.Children.Add(new TextBlock
             {
                 Text = person.Name,
@@ -571,7 +571,7 @@ public partial class MainWindow : Window
                     TextColor = failed ? Themed("Danger") : kind == "ack" ? Themed("Ink2") : Themed("Ink"),
                     Avatar = speaker is null
                         ? null
-                        : Avatar(speaker.Name, speaker.AvatarSeed, speaker.AvatarFile, speaker.AvatarHair, 34),
+                        : Avatar(speaker.Name, speaker.AvatarSeed, speaker.AvatarFile, speaker.AvatarHair, 42),
                     AvatarVisibility = speaker is null ? Visibility.Collapsed : Visibility.Visible,
                 });
             }
@@ -732,7 +732,7 @@ public partial class MainWindow : Window
         var active = _mode == "employee" && _threadId == employee.Id;
 
         var panel = new StackPanel { Orientation = Orientation.Horizontal };
-        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, employee.AvatarFile, employee.AvatarHair, 40));
+        panel.Children.Add(Avatar(employee.Name, employee.AvatarSeed, employee.AvatarFile, employee.AvatarHair, 44));
         // 名字稍大、职位跟在后面且颜色更淡
         panel.Children.Add(new TextBlock
         {
@@ -861,7 +861,7 @@ public partial class MainWindow : Window
     /// </summary>
     private static UIElement WrapAvatar(IEnumerable<ImageSource> layers, double size)
     {
-        var art = size * 0.9;
+        var art = size * 0.92;
         var stack = new Grid { Width = size, Height = size };
 
         stack.Children.Add(new System.Windows.Shapes.Ellipse
