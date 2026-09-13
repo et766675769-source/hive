@@ -1877,7 +1877,7 @@ public sealed class SettingsWindow : Window
         Title = "设置";
         Width = 470;
         SizeToContent = SizeToContent.Height;
-        MaxHeight = 700;
+        MaxHeight = 780;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = (Brush)Application.Current.Resources["Bg"];
         Foreground = (Brush)Application.Current.Resources["Ink"];
@@ -1980,37 +1980,67 @@ public sealed class SettingsWindow : Window
             apiPanel.Children.Add(new TextBlock
             {
                 Text = label,
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = (Brush)Application.Current.Resources["Ink"],
+                Margin = new Thickness(0, 12, 0, 2),
+            });
+
+            apiPanel.Children.Add(new TextBlock
+            {
+                Text = "① 模型名 —— 可填多个，逗号分隔（同职级的人轮着用）；留空 = 用上面的默认模型",
                 FontSize = 11.5,
                 Foreground = ink2,
-                Margin = new Thickness(0, 8, 0, 4),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 6, 0, 3),
             });
             _levelModels[i] = new TextBox
             {
                 Text = current is null ? "" : string.Join(", ", current.Models),
                 Padding = new Thickness(8, 5, 8, 5),
-                Margin = new Thickness(0, 0, 0, 6),
-                ToolTip = "可以填多个模型名（逗号分隔），同一职级的人会轮着用。留空 = 用上面的默认模型。",
+                Margin = new Thickness(0, 0, 0, 8),
+                ToolTip = "例如 deepseek-v4-pro，或 P1 填 glm-4-flash, glm-4.7-flash",
             };
             apiPanel.Children.Add(_levelModels[i]);
+
+            apiPanel.Children.Add(new TextBlock
+            {
+                Text = "② 接口地址 —— 留空 = 用上面的默认地址（P1 填免费厂商的地址）",
+                FontSize = 11.5,
+                Foreground = ink2,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 3),
+            });
             _levelBaseUrls[i] = new TextBox
             {
                 Text = current?.BaseUrl ?? "",
                 Padding = new Thickness(8, 5, 8, 5),
-                Margin = new Thickness(0, 0, 0, 6),
-                ToolTip = "留空 = 用上面的默认接口地址。填免费厂商的地址（如 https://open.bigmodel.cn/api/paas/v4）",
+                Margin = new Thickness(0, 0, 0, 8),
+                ToolTip = "例如 P1 填 https://open.bigmodel.cn/api/paas/v4（智谱）或 https://api.siliconflow.cn/v1（硅基流动）",
             };
             apiPanel.Children.Add(_levelBaseUrls[i]);
+
+            apiPanel.Children.Add(new TextBlock
+            {
+                Text = current?.HasKey == true
+                    ? "③ API Key —— 已设置，留空则不改"
+                    : "③ API Key —— 这一档专用的 Key；留空 = 用上面的全局 Key",
+                FontSize = 11.5,
+                Foreground = ink2,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 3),
+            });
             _levelKeys[i] = new TextBox
             {
                 Padding = new Thickness(8, 5, 8, 5),
                 Margin = new Thickness(0, 0, 0, 2),
-                ToolTip = current?.HasKey == true ? "已设置，留空不改" : "这一档自己接口地址的 Key，留空 = 用全局的",
+                ToolTip = "只存在本机 data/settings.json，不会回传给前端",
             };
             apiPanel.Children.Add(_levelKeys[i]);
         }
         apiPanel.Children.Add(new TextBlock
         {
-            Text = "P1 想用免费小模型：把模型名（可多个）和免费厂商的接口地址、Key 填在 P1 那三行即可。",
+            Text = "例：P1 想用免费小模型 —— ① 填 glm-4-flash, glm-4.7-flash  ② 填 https://open.bigmodel.cn/api/paas/v4  ③ 粘智谱的 Key。",
             FontSize = 11.5,
             Foreground = ink2,
             TextWrapping = TextWrapping.Wrap,
