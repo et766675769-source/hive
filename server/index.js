@@ -372,6 +372,24 @@ function keyHintOf(key) {
   return `${value.slice(0, 6)}…${value.slice(-4)}`;
 }
 
+/**
+ * 一个对话线程里"参与的所有人"，跟桌面端 @ 候选是同一套口径：
+ *   部门面板 = 该部门成员；项目面板 = 参与部门的人；员工面板 = 他本人。
+ * 给 @所有人 用。
+ */
+function employeesInThread(mode, threadId, employees) {
+  if (mode === 'department') {
+    return employees.filter((item) => item.departmentId === threadId).map((item) => item.id);
+  }
+  if (mode === 'project') {
+    const project = store.readProjects().projects.find((item) => item.id === threadId);
+    if (!project) return [];
+    const deptIds = new Set(project.departmentIds || []);
+    return employees.filter((item) => deptIds.has(item.departmentId)).map((item) => item.id);
+  }
+  return employees.some((item) => item.id === threadId) ? [threadId] : [];
+}
+
 function normalizeLevelChannels(input, current = {}) {
   const result = {};
   for (const key of LEVEL_CHANNEL_KEYS) {
@@ -592,6 +610,10 @@ const server = http.createServer(async (req, res) => {
 
       const { employees } = store.readOrg();
       let targets = worker.parseMentions(text, employees);
+      // @所有人 / @全体：把当前对话里的参与人员全叫上（项目面板 = 参与部门的人）
+      if (/@\s*(所有人|全体|all)/i.test(text)) {
+        targets = Array.from(new Set([...targets, ...employeesInThread(mode, threadId, employees)]));
+      }
       // 员工面板里说话 = 直接派给他（不必写 @）
       if (!targets.length && mode === 'employee' && employees.some((item) => item.id === threadId)) {
         targets = [threadId];

@@ -51,6 +51,7 @@ public partial class MainWindow : Window
     private int _mentionStart = -1;
     private bool _suppressMention;
     private List<EmployeeInfo> _mentionPeople = new();
+    private bool _mentionHasAll;
     private bool _altEnterToSend;
     private bool _darkTheme;
     private string _dataDir = "";
@@ -287,21 +288,79 @@ public partial class MainWindow : Window
         if (start < 0 || caret <= start) { HideMentions(); return; }
 
         var query = text.Substring(start + 1, caret - start - 1);
+        // "@所有人"：当前对话里所有人都叫上（跟服务器端 @所有人 的展开口径一致）
+        var allMatches = query == "" || "所有人".Contains(query, StringComparison.OrdinalIgnoreCase) || "全体".Contains(query, StringComparison.OrdinalIgnoreCase);
         var people = PeopleInContext()
             .Where(p => query == ""
                 || p.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
                 || (p.Title ?? "").Contains(query, StringComparison.OrdinalIgnoreCase))
             .ToList();
-        if (people.Count == 0) { HideMentions(); return; }
+        if (people.Count == 0 && !allMatches) { HideMentions(); return; }
 
         _mentionStart = start;
-        ShowMentions(people);
+        ShowMentions(people, allMatches);
     }
 
-    private void ShowMentions(List<EmployeeInfo> people)
+    private void ShowMentions(List<EmployeeInfo> people, bool showAll = false)
     {
         _mentionPeople = people;
+        _mentionHasAll = showAll;
         var panel = new StackPanel();
+
+        if (showAll)
+        {
+            var allContent = new StackPanel { Orientation = Orientation.Horizontal };
+            allContent.Children.Add(new Border
+            {
+                Background = Themed("AccentSoft"),
+                CornerRadius = new CornerRadius(999),
+                Width = 34,
+                Height = 34,
+                Child = new TextBlock
+                {
+                    Text = "全",
+                    FontSize = 14,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = Themed("Accent"),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+            });
+            allContent.Children.Add(new TextBlock
+            {
+                Text = "所有人",
+                FontSize = 14,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = (Brush)FindResource("Ink"),
+                Margin = new Thickness(9, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            allContent.Children.Add(new TextBlock
+            {
+                Text = $"本对话 {people.Count} 人一起叫",
+                FontSize = 11.5,
+                Foreground = (Brush)FindResource("Ink3"),
+                Margin = new Thickness(6, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            var allRow = new Border
+            {
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(8, 6, 8, 6),
+                Cursor = Cursors.Hand,
+                Background = Brushes.Transparent,
+                Child = allContent,
+            };
+            allRow.MouseLeftButtonUp += (_, args) =>
+            {
+                args.Handled = true;
+                InsertMentionAll();
+            };
+            allRow.MouseEnter += (_, _) => allRow.Background = Themed("Hover");
+            allRow.MouseLeave += (_, _) => allRow.Background = Brushes.Transparent;
+            panel.Children.Add(allRow);
+        }
+
         foreach (var person in people)
         {
             var content = new StackPanel { Orientation = Orientation.Horizontal };
@@ -351,13 +410,24 @@ public partial class MainWindow : Window
 
     private void InsertMention(EmployeeInfo person)
     {
+        InsertText($"{person.Name} ", person.Name.Length + 2);
+    }
+
+    /// <summary>插入 @所有人（服务器端会展开成当前对话里的全部参与人员）。</summary>
+    private void InsertMentionAll()
+    {
+        InsertText("所有人 ", 5);
+    }
+
+    private void InsertText(string insert, int caretOffset)
+    {
         var text = InputBox.Text;
         var caret = Math.Min(InputBox.CaretIndex, text.Length);
         var before = text[.._mentionStart];
         var after = text[caret..];
         _suppressMention = true;
-        InputBox.Text = $"{before}@{person.Name} {after}";
-        InputBox.CaretIndex = before.Length + person.Name.Length + 2;
+        InputBox.Text = $"{before}@{insert}{after}";
+        InputBox.CaretIndex = before.Length + caretOffset + 1;
         _suppressMention = false;
         HideMentions();
         InputBox.Focus();
@@ -1041,9 +1111,11 @@ public partial class MainWindow : Window
         }
         if (key == Key.Tab && MentionPopup.IsOpen)
         {
-            // Tab 补全第一个候选，不用鼠标
+            // Tab 补全第一个候选，不用鼠标；没有候选人（只搜到"所有人"）时补 @所有人
             e.Handled = true;
-            InsertMention(_mentionPeople[0]);
+            if (_mentionPeople.Count > 0) InsertMention(_mentionPeople[0]);
+            else if (_mentionHasAll) InsertMentionAll();
+            else HideMentions();
             return;
         }
         if (key == Key.Enter)
@@ -1056,10 +1128,15 @@ public partial class MainWindow : Window
             if (!isSend) return;
 
             e.Handled = true;
-            // 候选还开着时，先补全第一个，而不是直接发出去
+            // 候选还开着时，先补全第一个（人优先，其次"所有人"），而不是直接发出去
             if (MentionPopup.IsOpen && _mentionPeople.Count > 0)
             {
                 InsertMention(_mentionPeople[0]);
+                return;
+            }
+            if (MentionPopup.IsOpen && _mentionHasAll)
+            {
+                InsertMentionAll();
                 return;
             }
             await SendAsync();

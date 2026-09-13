@@ -491,6 +491,22 @@ code, pre, .mono { font-family: var(--mono); }
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+/* 一键 @所有人 */
+.mention-all {
+  flex: none;
+  height: 42px;
+  margin-bottom: 0;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.16s var(--ease);
+}
+.mention-all:hover { filter: brightness(0.96); }
+
 .send {
   padding: 11px 20px;
   border: 0;

@@ -22,6 +22,7 @@ const el = {
   panelRoster: $('panelRoster'),
   stream: $('stream'),
   composer: $('composer'),
+  mentionAllBtn: $('mentionAllBtn'),
   composerInput: $('composerInput'),
   sendBtn: $('sendBtn'),
   modal: $('modal'),
@@ -335,6 +336,16 @@ function switchContext(mode, id) {
 }
 
 /* ── 发消息 ───────────────────────────────────────────── */
+
+/** 一键把 @所有人 插到输入框（服务器端会展开成当前对话的全部参与人员）。 */
+function insertMentionAll() {
+  const input = el.composerInput;
+  const needsSpace = input.value.length > 0 && !/\s$/.test(input.value);
+  input.value = `${input.value}${needsSpace ? ' ' : ''}@所有人 `;
+  input.focus();
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+}
 
 async function send() {
   const text = el.composerInput.value.trim();
@@ -929,6 +940,8 @@ el.composer.addEventListener('submit', (event) => {
   event.preventDefault();
   void send();
 });
+
+if (el.mentionAllBtn) el.mentionAllBtn.onclick = () => insertMentionAll();
 
 el.composerInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey) {
