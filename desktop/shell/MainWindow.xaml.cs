@@ -51,6 +51,8 @@ public partial class MainWindow : Window
     private bool _suppressMention;
     private List<EmployeeInfo> _mentionPeople = new();
     private bool _altEnterToSend;
+    private bool _darkTheme;
+    private string _dataDir = "";
 
     public MainWindow()
     {
@@ -78,12 +80,16 @@ public partial class MainWindow : Window
         try
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(PrefsFile));
-            if (doc.RootElement.TryGetProperty("altEnterToSend", out var value)) _altEnterToSend = value.GetBoolean();
+            var root = doc.RootElement;
+            if (root.TryGetProperty("altEnterToSend", out var a)) _altEnterToSend = a.GetBoolean();
+            if (root.TryGetProperty("darkTheme", out var d)) _darkTheme = d.GetBoolean();
+            if (root.TryGetProperty("dataDir", out var p)) _dataDir = p.GetString() ?? "";
         }
         catch
         {
-            /* 没有偏好文件就用默认（Enter 发送） */
+            /* 没有偏好文件就用默认 */
         }
+        ApplyTheme();
     }
 
     private void SavePrefs()
@@ -91,12 +97,50 @@ public partial class MainWindow : Window
         try
         {
             Directory.CreateDirectory(LogDir);
-            File.WriteAllText(PrefsFile, JsonSerializer.Serialize(new { altEnterToSend = _altEnterToSend }));
+            File.WriteAllText(PrefsFile, JsonSerializer.Serialize(new
+            {
+                altEnterToSend = _altEnterToSend,
+                darkTheme = _darkTheme,
+                dataDir = _dataDir,
+            }));
         }
         catch
         {
             /* 存不了只是下次回到默认 */
         }
+    }
+
+    /* ── 主题：浅色 / 深色 ───────────────────────────────── */
+
+    private static Brush Themed(string key) => (Brush)Application.Current.Resources[key];
+
+    private void ApplyTheme()
+    {
+        var res = Application.Current.Resources;
+        void Set(string key, string light, string dark)
+        {
+            res[key] = new SolidColorBrush((Color)ColorConverter.ConvertFromString(_darkTheme ? dark : light)!);
+        }
+
+        Set("Bg", "#FAF9F7", "#151517");
+        Set("Surface", "#FFFFFF", "#1C1C1F");
+        Set("Surface2", "#F3F1ED", "#232327");
+        Set("Ink", "#1E1E1E", "#F1F0EC");
+        Set("Ink2", "#6B7280", "#A2A2A8");
+        Set("Ink3", "#A3A29E", "#77777E");
+        Set("Line", "#E9E6E1", "#2A2A2F");
+        Set("LineStrong", "#DCD8D0", "#38383F");
+        Set("Accent", "#3B82F6", "#74A9FF");
+        Set("AccentSoft", "#E9F0FE", "#22304A");
+        Set("Hover", "#F3F1ED", "#2B2B31");
+        Set("CaretBg", "#E9E6E0", "#33333A");
+        Set("CaretBgOpen", "#E2E8F2", "#2A3550");
+        Set("CaretLine", "#D6D1C9", "#3E3E46");
+        Set("CaretInk", "#5A606A", "#C2C2C8");
+        Set("BubbleLocal", "#EFF5FF", "#22304A");
+        Set("BubbleLocalLine", "#BFD6FB", "#35507F");
+        Set("Danger", "#C2554F", "#E0857E");
+        Set("DangerLine", "#E3B4B0", "#6B3E3B");
     }
 
     /// <summary>点发送按钮后面的小箭头：弹出可以选的发送方式，当前那个打勾。</summary>
@@ -224,7 +268,7 @@ public partial class MainWindow : Window
                 args.Handled = true;
                 InsertMention(captured);
             };
-            row.MouseEnter += (_, _) => row.Background = new SolidColorBrush(Color.FromRgb(243, 241, 237));
+            row.MouseEnter += (_, _) => row.Background = Themed("Hover");
             row.MouseLeave += (_, _) => row.Background = Brushes.Transparent;
             panel.Children.Add(row);
         }
@@ -308,6 +352,14 @@ public partial class MainWindow : Window
         _timer.Start();
     }
 
+    /// <summary>拉起服务端的命令行；带上用户在设置里指定的数据目录。</summary>
+    private string ServerArguments()
+    {
+        var args = $"server/index.js --port {Port} --host 127.0.0.1";
+        if (!string.IsNullOrEmpty(_dataDir)) args += $" --data-dir \"{_dataDir}\"";
+        return args;
+    }
+
     private bool StartServer()
     {
         var root = FindProjectRoot();
@@ -317,7 +369,7 @@ public partial class MainWindow : Window
             _server = Process.Start(new ProcessStartInfo
             {
                 FileName = "node",
-                Arguments = $"server/index.js --port {Port} --host 127.0.0.1",
+                Arguments = ServerArguments(),
                 WorkingDirectory = root,
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -458,9 +510,9 @@ public partial class MainWindow : Window
                     Model = model == "" ? "" : $"模型：{model}",
                     ModelVisibility = model == "" ? Visibility.Collapsed : Visibility.Visible,
                     Align = isLocal ? HorizontalAlignment.Right : HorizontalAlignment.Left,
-                    Bubble = isLocal ? "#EFF5FF" : kind == "ack" ? "#FFFFFF" : "#FFFFFF",
-                    BubbleLine = failed ? "#E3B4B0" : isLocal ? "#BFD6FB" : "#E9E6E1",
-                    TextColor = failed ? "#C2554F" : kind == "ack" ? "#6B7280" : "#1E1E1E",
+                    Bubble = isLocal ? Themed("BubbleLocal") : Themed("Surface"),
+                    BubbleLine = failed ? Themed("DangerLine") : isLocal ? Themed("BubbleLocalLine") : Themed("Line"),
+                    TextColor = failed ? Themed("Danger") : kind == "ack" ? Themed("Ink2") : Themed("Ink"),
                 });
             }
             MessageList.ItemsSource = items;
@@ -528,7 +580,7 @@ public partial class MainWindow : Window
             Content = new TextBlock { Text = project.Name, TextTrimming = TextTrimming.CharacterEllipsis },
             HorizontalContentAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(0, 1, 0, 1),
-            Background = active ? new SolidColorBrush(Color.FromRgb(233, 240, 254)) : Brushes.Transparent,
+            Background = active ? Themed("AccentSoft") : Brushes.Transparent,
             BorderThickness = new Thickness(0),
             Padding = new Thickness(8, 7, 8, 7),
         };
@@ -555,8 +607,8 @@ public partial class MainWindow : Window
             Width = 22,
             Height = 22,
             CornerRadius = new CornerRadius(6),
-            Background = new SolidColorBrush(open ? Color.FromRgb(226, 232, 242) : Color.FromRgb(233, 230, 224)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(214, 209, 201)),
+            Background = (open ? Themed("CaretBgOpen") : Themed("CaretBg")),
+            BorderBrush = Themed("CaretLine"),
             BorderThickness = new Thickness(1),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(2, 0, 0, 0),
@@ -567,7 +619,7 @@ public partial class MainWindow : Window
                 Text = open ? "▾" : "▸",
                 FontSize = 12,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = new SolidColorBrush(Color.FromRgb(90, 96, 106)),
+                Foreground = Themed("CaretInk"),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
             },
@@ -586,7 +638,7 @@ public partial class MainWindow : Window
         var label = new Border
         {
             CornerRadius = new CornerRadius(8),
-            Background = active ? new SolidColorBrush(Color.FromRgb(233, 240, 254)) : Brushes.Transparent,
+            Background = active ? Themed("AccentSoft") : Brushes.Transparent,
             Padding = new Thickness(9, 6, 8, 6),
             Margin = new Thickness(4, 0, 0, 0),
             Cursor = Cursors.Hand,
@@ -647,7 +699,7 @@ public partial class MainWindow : Window
             Content = panel,
             HorizontalContentAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(indent, 1, 0, 1),
-            Background = active ? new SolidColorBrush(Color.FromRgb(233, 240, 254)) : Brushes.Transparent,
+            Background = active ? Themed("AccentSoft") : Brushes.Transparent,
             BorderThickness = new Thickness(0),
             Padding = new Thickness(8, 5, 8, 5),
             ToolTip = string.IsNullOrEmpty(employee.Title) ? null : employee.Title,
@@ -991,6 +1043,105 @@ public partial class MainWindow : Window
             : Visibility.Visible;
     }
 
+    /* ── 应用设置：主题 / 开机启动 / 存储位置 / 全局 API ──── */
+
+    private async void OnOpenAppSettings(object sender, RoutedEventArgs e)
+    {
+        var autoStart = IsAutoStart();
+        var dialog = new FormDialog("设置", new[]
+        {
+            new FormField("theme", "面板风格", "", _darkTheme ? "深色" : "浅色", new[] { "浅色", "深色" }),
+            new FormField("startup", "开机自动启动", "", autoStart ? "开启" : "关闭", new[] { "开启", "关闭" }),
+            new FormField("dataDir", "数据存储位置（下次启动生效）", "",
+                string.IsNullOrEmpty(_dataDir) ? "" : _dataDir),
+            new FormField("apiKey", _hasKey ? "全局 API Key（已设置，留空不改）" : "全局 API Key", "sk-…", "", null, true),
+            new FormField("baseUrl", "接口地址", "https://api.deepseek.com", "https://api.deepseek.com"),
+            new FormField("model", "默认模型", "deepseek-chat", "deepseek-chat"),
+        }, "这里的 API 是「默认通道」：没有单独配 Key 的员工都用它。数据存储位置留空则用项目内的 data 目录。");
+        if (dialog.ShowDialog() != true) return;
+        var v = dialog.Values;
+
+        // 主题：立刻生效
+        var wantDark = v["theme"] == "深色";
+        if (wantDark != _darkTheme)
+        {
+            _darkTheme = wantDark;
+            ApplyTheme();
+            RenderSidebar();
+            RenderHeader();
+            await RefreshThreadAsync();
+            Log($"面板风格切换为{(_darkTheme ? "深色" : "浅色")}");
+        }
+
+        // 开机启动：写当前用户的 Run 键
+        var wantStartup = v["startup"] == "开启";
+        if (wantStartup != autoStart) SetAutoStart(wantStartup);
+
+        // 存储位置：记在偏好里，下次拉起服务时带上
+        var dir = v["dataDir"].Trim();
+        _dataDir = dir.Contains("默认") ? "" : dir;
+        SavePrefs();
+
+        // 全局 API
+        var payload = new Dictionary<string, object>
+        {
+            ["baseUrl"] = v["baseUrl"],
+            ["model"] = v["model"],
+            ["onboarded"] = true,
+        };
+        if (!string.IsNullOrEmpty(v["apiKey"])) payload["apiKey"] = v["apiKey"];
+        try
+        {
+            await Http.PostAsync($"{BaseUrl}/api/settings",
+                new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"));
+            await RefreshStateAsync();
+            Log("设置已保存");
+        }
+        catch (Exception error)
+        {
+            Log($"保存全局设置失败：{error.Message}");
+            MessageBox.Show($"保存全局设置失败：{error.Message}", "蜂群 HIVE");
+        }
+    }
+
+    private static bool IsAutoStart()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Run");
+            return key?.GetValue("HiveShell") is not null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void SetAutoStart(bool enabled)
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Run", true);
+            if (key is null) return;
+            if (enabled)
+            {
+                key.SetValue("HiveShell", $"\"{Environment.ProcessPath}\"");
+                Log("已开启开机启动");
+            }
+            else
+            {
+                key.DeleteValue("HiveShell", false);
+                Log("已关闭开机启动");
+            }
+        }
+        catch (Exception error)
+        {
+            Log($"设置开机启动失败：{error.Message}");
+        }
+    }
+
     private async void OnOpenSettings(object sender, RoutedEventArgs e) => await OnOpenSettings();
 
     private async Task OnOpenSettings()
@@ -1178,9 +1329,9 @@ public partial class MainWindow : Window
         public string Model { get; init; } = "";
         public Visibility ModelVisibility { get; init; }
         public HorizontalAlignment Align { get; init; }
-        public string Bubble { get; init; } = "#FFFFFF";
-        public string BubbleLine { get; init; } = "#E9E6E1";
-        public string TextColor { get; init; } = "#1E1E1E";
+        public Brush Bubble { get; init; } = Brushes.White;
+        public Brush BubbleLine { get; init; } = Brushes.Transparent;
+        public Brush TextColor { get; init; } = Brushes.Black;
     }
 }
 

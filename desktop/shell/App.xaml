@@ -2,5 +2,28 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              StartupUri="MainWindow.xaml">
-  <Application.Resources />
+  <Application.Resources>
+    <ResourceDictionary>
+      <!-- 全部颜色都走这里：切浅色/深色时整包替换，界面立刻跟着变 -->
+      <SolidColorBrush x:Key="Bg" Color="#FAF9F7" />
+      <SolidColorBrush x:Key="Surface" Color="#FFFFFF" />
+      <SolidColorBrush x:Key="Surface2" Color="#F3F1ED" />
+      <SolidColorBrush x:Key="Ink" Color="#1E1E1E" />
+      <SolidColorBrush x:Key="Ink2" Color="#6B7280" />
+      <SolidColorBrush x:Key="Ink3" Color="#A3A29E" />
+      <SolidColorBrush x:Key="Line" Color="#E9E6E1" />
+      <SolidColorBrush x:Key="LineStrong" Color="#DCD8D0" />
+      <SolidColorBrush x:Key="Accent" Color="#3B82F6" />
+      <SolidColorBrush x:Key="AccentSoft" Color="#E9F0FE" />
+      <SolidColorBrush x:Key="Hover" Color="#F3F1ED" />
+      <SolidColorBrush x:Key="CaretBg" Color="#E9E6E0" />
+      <SolidColorBrush x:Key="CaretBgOpen" Color="#E2E8F2" />
+      <SolidColorBrush x:Key="CaretLine" Color="#D6D1C9" />
+      <SolidColorBrush x:Key="CaretInk" Color="#5A606A" />
+      <SolidColorBrush x:Key="BubbleLocal" Color="#EFF5FF" />
+      <SolidColorBrush x:Key="BubbleLocalLine" Color="#BFD6FB" />
+      <SolidColorBrush x:Key="Danger" Color="#C2554F" />
+      <SolidColorBrush x:Key="DangerLine" Color="#E3B4B0" />
+    </ResourceDictionary>
+  </Application.Resources>
 </Application>
