@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 
 import { Store, THREAD_MODES } from './store.js';
 import { Worker } from './worker.js';
+import { faceAlign } from './align.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -129,6 +130,17 @@ function avatarManifest() {
   } catch {
     return null;
   }
+}
+
+/**
+ * 某个员工发型层的对齐修正（见 align.js）。
+ * 取不到就返回 null，前端按库里「左上角对齐、直接叠加」的原始约定画。
+ */
+function avatarAlign(employee) {
+  const hair = employee?.avatar?.hair;
+  const library = avatarLibrary();
+  if (!hair || library.kind !== 'composed' || !library.dir) return null;
+  return faceAlign(path.join(library.dir, 'hair', hair));
 }
 
 /** 统计现在各发型被用了几次（用来尽量避免整组撞脸）。 */
@@ -377,6 +389,9 @@ const server = http.createServer(async (req, res) => {
           apiKey: undefined,
           hasOwnKey: Boolean(String(employee.apiKey || '').trim()),
           channel: store.channelFor(employee),
+          // 发型图里"头的开口"每张都不一样，这里现算一个脸层平移量，
+          // 让每款发型出来都是同一套比例（见 server/align.js）
+          align: avatarAlign(employee),
         })),
         projects,
         busy: worker.busyIds(),
