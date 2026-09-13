@@ -29,8 +29,8 @@
         </button>
 
         <button class="join join--ghost" id="settingsButton" type="button">
-          <span class="join__label">设置助手</span>
-          <span class="join__hint">填一次 API Key，内置助手就从"规则应答"变成真 AI</span>
+          <span class="join__label">设置团队</span>
+          <span class="join__hint">填一次 API Key，领队用强模型、员工用便宜模型</span>
         </button>
 
         <section class="roster" aria-label="成员契约履行状态">
@@ -160,13 +160,13 @@
       </div>
     </div>
 
-    <!-- ── 设置助手弹层：填 Key → 一键换真 AI ────────────────── -->
+    <!-- ── 设置团队弹层：填 Key → 领导强模型 + 员工便宜模型 ────── -->
     <div class="modal" id="settingsModal" hidden>
       <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
         <header class="modal__head">
           <div>
-            <h3 class="modal__title" id="settingsTitle">设置助手</h3>
-            <p class="modal__sub" id="settingsSub">内置助手现在用本地规则应答。填一个 API Key，它就能真正回答你的问题。</p>
+            <h3 class="modal__title" id="settingsTitle">设置团队</h3>
+            <p class="modal__sub" id="settingsSub">内置团队现在用本地规则应答。填一个 API Key，领队用强模型、工程师和审查员用便宜模型。</p>
           </div>
           <button class="ghost ghost--sm" id="settingsClose" type="button" aria-label="关闭">✕</button>
         </header>
@@ -177,8 +177,12 @@
             <input class="input" id="settingsKey" type="password" placeholder="sk-…" autocomplete="off" />
           </label>
           <label class="field">
-            <span class="field__label">模型</span>
-            <input class="input" id="settingsModel" placeholder="deepseek-chat" />
+            <span class="field__label">强模型（领队用）</span>
+            <input class="input" id="settingsStrong" placeholder="deepseek-chat" />
+          </label>
+          <label class="field">
+            <span class="field__label">便宜模型（员工用）</span>
+            <input class="input" id="settingsCheap" placeholder="deepseek-chat" />
           </label>
           <label class="field">
             <span class="field__label">接口地址（留空用 DeepSeek 默认）</span>
@@ -189,7 +193,7 @@
         <div class="modal__foot">
           <button class="send send--wide" id="settingsSave" type="button">保存并切换</button>
           <p class="modal__note">
-            Key 只写进本机 <code>data/assistant.json</code>，不上传、不进留言。想换回规则应答，把 Key 清空再保存即可。
+            Key 只写进本机 <code>data/team.json</code>，不上传、不进留言。想换回规则应答，把 Key 清空再保存即可。
           </p>
         </div>
       </div>

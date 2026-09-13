@@ -177,73 +177,113 @@ export function createBoardServer(overrides = {}) {
   // 只是把"这 1 分钟里它在写什么"实时投给面板的临时视图。成员最终贴出 reply 时草稿即清除。
   const drafts = new Map();
 
-  // 内置助手：由服务端自己拥有与管理（不交给 watchdog）。
-  // 一个没用过 AI 的人打开应用就该看到一个会回应的成员；填一次 Key 后它就换成真 AI。
-  const ASSISTANT = { id: 'assistant', name: '助手' };
-  const assistantSettingsFile = () => path.join(config.board.dataDir, 'assistant.json');
-  let assistantChild = null;
+  // 内置虚拟团队：由服务端自己拥有与管理（不交给 watchdog）。
+  // 一个没用过 AI 的人打开应用就该看到一个会协作的团队（领导 + 员工）；
+  // 填一次 Key 后它们就换成真 AI——领导用强模型，员工用便宜模型。
+  // 团队定义在 data/team.json（角色 + 模型档位）；缺省用下面这份默认团队。
+  const teamFile = () => path.join(config.board.dataDir, 'team.json');
 
-  function readAssistantSettings() {
+  function defaultTeam() {
+    return {
+      model: {
+        apiKey: '',
+        baseUrl: 'https://api.deepseek.com',
+        strong: 'deepseek-chat',
+        cheap: 'deepseek-chat',
+      },
+      roles: [
+        { id: 'lead', name: '领队', title: '项目负责人', mission: '拆解任务、分配工作、整合结果、把关最终交付', persona: '你是团队领导：先理解目标，再拆解成可执行步骤分配给合适的成员，最后整合并审查结果。语气沉稳，抓重点，敢做决定。', tier: 'strong' },
+        { id: 'builder', name: '工程师', title: '实现工程师', mission: '按指派完成任务，交付可运行、可验证的结果', persona: '你是执行者：专注把手头任务做扎实，交付时给结论、依据、可复现步骤。不抢话，不越权做决定。', tier: 'cheap' },
+        { id: 'reviewer', name: '审查员', title: '质量审查', mission: '审查交付物，找问题、挑毛病、提改进', persona: '你是挑剔的审查者：专注发现漏洞、边界情况和未验证的推断，给出明确的通过/不通过意见。', tier: 'cheap' },
+      ],
+    };
+  }
+
+  function readTeam() {
     try {
-      const parsed = JSON.parse(fs.readFileSync(assistantSettingsFile(), 'utf8'));
-      return parsed && typeof parsed === 'object' ? parsed : {};
+      const parsed = JSON.parse(fs.readFileSync(teamFile(), 'utf8'));
+      if (!parsed || typeof parsed !== 'object') return defaultTeam();
+      const base = defaultTeam();
+      const model = { ...base.model, ...(parsed.model || {}) };
+      const roles = Array.isArray(parsed.roles) && parsed.roles.length ? parsed.roles : base.roles;
+      return { model, roles };
     } catch {
-      return {};
+      return defaultTeam();
     }
   }
 
-  function assistantEngineArgs(settings) {
-    const key = String(settings.apiKey || '').trim();
-    if (!key) return ['--engine', 'rule-based'];
-    const model = String(settings.model || 'deepseek-chat').trim();
-    const base = String(settings.baseUrl || process.env.DEEPSEEK_BASE_URL || '').trim();
-    return ['--engine', 'openai-compatible', '--engine-key', key, '--engine-model', model, ...(base ? ['--engine-base-url', base] : [])];
+  function writeTeam(team) {
+    fs.mkdirSync(path.dirname(teamFile()), { recursive: true });
+    fs.writeFileSync(teamFile(), JSON.stringify(team, null, 2), 'utf8');
   }
 
-  // 上一任服务端被重启/崩溃时，它的助手是 detached 子进程，会留下"孤儿"继续占着归属锁，
-  // 导致本服务端新拉起的助手拿不到锁、静默退出（用户填了 Key 也不生效）。这里按锁文件把孤儿清掉。
-  function killAssistantHolder() {
-    const runtimeDir = path.join(config.board.dataDir, 'runner', ASSISTANT.id);
+  // 上一任服务端被重启/崩溃时，它 spawn 的角色是 detached 子进程，会留下"孤儿"继续占着归属锁，
+  // 导致本服务端新拉起的同 id 角色拿不到锁、静默退出。这里按锁文件把孤儿清掉。
+  function killHolder(roleId) {
+    const runtimeDir = path.join(config.board.dataDir, 'runner', roleId);
     const lock = readLock(runtimeDir);
     if (lock && lock.pid && pidAlive(lock.pid)) {
       try {
         process.kill(Number(lock.pid), 'SIGTERM');
-        audit(`assistant: 清理遗留进程 ${lock.pid}（旧服务端的孤儿助手）`);
+        audit(`team: 清理遗留进程 ${lock.pid}（角色 ${roleId}）`);
       } catch {
         /* 可能刚退出，忽略 */
       }
     }
   }
 
-  function startAssistant() {
-    if (assistantChild) {
+  /** 每个角色该用哪套引擎参数：没 Key 用规则应答（永远会回话），有 Key 按档位选模型。 */
+  function engineArgsFor(team, role) {
+    const key = String(team.model.apiKey || '').trim();
+    if (!key) return ['--engine', 'rule-based'];
+    const strong = String(team.model.strong || 'deepseek-chat').trim();
+    const cheap = String(team.model.cheap || strong).trim();
+    const model = role.tier === 'strong' ? strong : cheap;
+    const base = String(team.model.baseUrl || '').trim();
+    return ['--engine', 'openai-compatible', '--engine-key', key, '--engine-model', model, ...(base ? ['--engine-base-url', base] : [])];
+  }
+
+  let teamChildren = [];
+
+  function startTeam() {
+    for (const child of teamChildren) {
       try {
-        assistantChild.kill();
+        child.kill();
       } catch {
         /* 忽略 */
       }
-      assistantChild = null;
     }
-    killAssistantHolder();
-    const settings = readAssistantSettings();
-    const args = [
-      'tools/mb.js',
-      'serve',
-      ASSISTANT.id,
-      '--name',
-      ASSISTANT.name,
-      '--title',
-      '内置助手',
-      '--board',
-      `http://127.0.0.1:${config.board.port}`,
-      ...assistantEngineArgs(settings),
-    ];
-    try {
-      assistantChild = spawn(process.execPath, args, { cwd: config.root, stdio: 'ignore', detached: true, windowsHide: true });
-      assistantChild.unref();
-      audit(`assistant: 启动（引擎 ${settings.apiKey ? 'openai-compatible' : 'rule-based'}）`);
-    } catch (error) {
-      audit(`assistant: 启动失败：${error.message}`);
+    teamChildren = [];
+    const team = readTeam();
+    // 迁移清理：上一版内置助手 id 是 assistant，已改名为团队角色。清掉旧孤儿，避免面板残留一个"助手"。
+    killHolder('assistant');
+    for (const role of team.roles) {
+      const id = String(role.id || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'assistant';
+      killHolder(id);
+      const args = [
+        'tools/mb.js',
+        'serve',
+        id,
+        '--name',
+        String(role.name || id),
+        '--title',
+        String(role.title || '成员'),
+        '--mission',
+        String(role.mission || ''),
+        '--persona',
+        String(role.persona || ''),
+        '--board',
+        `http://127.0.0.1:${config.board.port}`,
+        ...engineArgsFor(team, role),
+      ];
+      try {
+        const child = spawn(process.execPath, args, { cwd: config.root, stdio: 'ignore', detached: true, windowsHide: true });
+        child.unref();
+        teamChildren.push(child);
+        audit(`team: 启动角色 ${id}（${team.model.apiKey ? 'openai-compatible' : 'rule-based'}，档位 ${role.tier || 'cheap'}）`);
+      } catch (error) {
+        audit(`team: 启动角色 ${id} 失败：${error.message}`);
+      }
     }
   }
 
@@ -409,8 +449,8 @@ export function createBoardServer(overrides = {}) {
   // 对账放在补投之后：先按留言事实把"其实已经答了"的投递纠正为 replied，
   // 免得它们又被当成未回应的活重新投一遍。
   const reconciled = reconcileDeliveries();
-  // 内置助手：服务端自己拉起（一个没用过 AI 的人打开应用就能 @ 助手）
-  startAssistant();
+  // 内置虚拟团队：服务端自己拉起（一个没用过 AI 的人打开应用就能 @领队/@工程师/@审查员）
+  startTeam();
 
   let presenceSignature = '';
   presence.onChange((snapshot) => {
@@ -734,15 +774,16 @@ export function createBoardServer(overrides = {}) {
         return json(res, 200, { ok: true, topics: store.topics() });
       }
 
-      // ---- 内置助手设置：填一次 Key，助手从规则应答换成真 AI ----
+      // ---- 内置团队设置：填一次 Key，团队从规则应答换成真 AI（领导强模型、员工便宜模型）----
       if (pathname === '/api/assistant/setup' && req.method === 'GET') {
-        const settings = readAssistantSettings();
-        const key = String(settings.apiKey || '').trim();
+        const team = readTeam();
+        const key = String(team.model.apiKey || '').trim();
         return json(res, 200, {
           ok: true,
-          assistant: ASSISTANT.id,
+          team: true,
           engine: key ? 'openai-compatible' : 'rule-based',
-          model: settings.model || 'deepseek-chat',
+          model: team.model,
+          roles: team.roles.map((role) => ({ id: role.id, name: role.name, title: role.title, tier: role.tier || 'cheap' })),
           hasKey: Boolean(key),
           maskedKey: key ? `${key.slice(0, 6)}…${key.slice(-4)}` : '',
         });
@@ -750,29 +791,30 @@ export function createBoardServer(overrides = {}) {
       if (pathname === '/api/assistant/setup' && req.method === 'POST') {
         const payload = await readJson(req, res);
         if (!payload) return undefined;
+        const team = readTeam();
         const apiKey = String(payload.apiKey || '').trim();
-        const model = String(payload.model || 'deepseek-chat').trim().slice(0, 80);
-        const baseUrl = String(payload.baseUrl || '').trim().slice(0, 200);
+        // 兼容旧字段 model（单模型）与新的 strong/cheap（领导/员工分档）
+        const strong = String(payload.strong || payload.model || team.model.strong || 'deepseek-chat').trim().slice(0, 80);
+        const cheap = String(payload.cheap || payload.model || team.model.cheap || strong).trim().slice(0, 80);
+        const baseUrl = String(payload.baseUrl || team.model.baseUrl || '').trim().slice(0, 200);
+        team.model = { apiKey, strong, cheap, baseUrl };
         try {
-          fs.mkdirSync(path.dirname(assistantSettingsFile()), { recursive: true });
-          fs.writeFileSync(
-            assistantSettingsFile(),
-            JSON.stringify({ apiKey, model, baseUrl, updatedAt: new Date().toISOString() }, null, 2),
-            'utf8',
-          );
+          writeTeam(team);
         } catch (error) {
           return json(res, 500, { ok: false, code: 'WRITE_FAILED', error: `设置保存失败：${error.message}` });
         }
-        startAssistant();
-        audit(`assistant: 设置已更新（引擎 ${apiKey ? 'openai-compatible' : 'rule-based'}，model=${model}）`);
+        startTeam();
+        audit(`team: 设置已更新（引擎 ${apiKey ? 'openai-compatible' : 'rule-based'}，strong=${strong}，cheap=${cheap}）`);
         return json(res, 200, {
           ok: true,
-          assistant: ASSISTANT.id,
+          team: true,
           engine: apiKey ? 'openai-compatible' : 'rule-based',
-          model,
+          strong,
+          cheap,
+          roles: team.roles.map((role) => ({ id: role.id, name: role.name, title: role.title, tier: role.tier || 'cheap' })),
           hint: apiKey
-            ? '助手已切换为真 AI（openai-compatible）。等它重新上线后 @助手 试试。'
-            : '已清除 Key，助手回到本地规则应答。',
+            ? '团队已切换为真 AI：领队用强模型、工程师/审查员用便宜模型。等它们上线后 @领队/@工程师/@审查员 试试。'
+            : '已清除 Key，团队回到本地规则应答。',
         });
       }
 

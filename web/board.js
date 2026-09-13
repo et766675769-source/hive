@@ -32,7 +32,8 @@ const el = {
   settingsClose: $('settingsClose'),
   settingsSave: $('settingsSave'),
   settingsKey: $('settingsKey'),
-  settingsModel: $('settingsModel'),
+  settingsStrong: $('settingsStrong'),
+  settingsCheap: $('settingsCheap'),
   settingsBaseUrl: $('settingsBaseUrl'),
   settingsSub: $('settingsSub'),
   composer: $('composer'),
@@ -844,20 +845,22 @@ function closeJoinModal() {
   el.joinModal.hidden = true;
 }
 
-/* ── 设置助手：填 Key → 一键换真 AI ──────────────────────── */
+/* ── 设置团队：填 Key → 领导强模型 + 员工便宜模型 ──────────── */
 
 async function openSettingsModal() {
   el.settingsModal.hidden = false;
   el.settingsSave.disabled = true;
   try {
     const current = await api('/api/assistant/setup');
-    el.settingsModel.value = current.model || 'deepseek-chat';
-    el.settingsBaseUrl.value = '';
+    const model = current.model || {};
+    el.settingsStrong.value = model.strong || 'deepseek-chat';
+    el.settingsCheap.value = model.cheap || model.strong || 'deepseek-chat';
+    el.settingsBaseUrl.value = model.baseUrl || '';
     el.settingsKey.value = '';
     el.settingsKey.placeholder = current.hasKey ? `已保存 ${current.maskedKey}（留空则清除）` : 'sk-…';
     el.settingsSub.textContent = current.hasKey
-      ? `助手当前用的是真 AI（引擎 ${current.engine}）。留空 Key 并保存可换回规则应答。`
-      : '内置助手现在用本地规则应答。填一个 API Key，它就能真正回答你的问题。';
+      ? `团队当前用的是真 AI（引擎 ${current.engine}）。留空 Key 并保存可换回规则应答。`
+      : '内置团队现在用本地规则应答。填一个 API Key，领队用强模型、工程师和审查员用便宜模型。';
   } catch (error) {
     el.settingsSub.textContent = `读取当前设置失败：${error.message}`;
   }
@@ -874,7 +877,8 @@ async function saveAssistantSettings() {
   try {
     const body = {
       apiKey: el.settingsKey.value.trim(),
-      model: el.settingsModel.value.trim() || 'deepseek-chat',
+      strong: el.settingsStrong.value.trim() || 'deepseek-chat',
+      cheap: el.settingsCheap.value.trim() || 'deepseek-chat',
       baseUrl: el.settingsBaseUrl.value.trim(),
     };
     const result = await api('/api/assistant/setup', { method: 'POST', body: JSON.stringify(body) });

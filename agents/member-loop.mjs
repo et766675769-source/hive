@@ -65,6 +65,11 @@ function resolveReplyCommand() {
 const REPLY_CMD = resolveReplyCommand();
 // --engine 优先：引擎是可替换插槽，命令只是"其中一种引擎"的老写法
 const ENGINE = String(flag('engine') || process.env.MB_ENGINE || '').trim().toLowerCase();
+// 引擎配置（openai-compatible 用）：参数 → 环境变量。缺省为空，交给引擎自己的环境变量回退。
+// 之前只传 --engine 不传这三项，导致"填 Key 换真 AI"的 Key/模型根本进不了引擎。
+const ENGINE_KEY = String(flag('engine-key') || process.env.MB_ENGINE_KEY || '').trim();
+const ENGINE_MODEL = String(flag('engine-model') || process.env.MB_ENGINE_MODEL || flag('model') || '').trim();
+const ENGINE_BASE_URL = String(flag('engine-base-url') || process.env.MB_ENGINE_BASE_URL || '').trim();
 // 默认先回执（契约的第一半）；带 --no-ack 可关
 const ACK = !args.includes('--no-ack');
 // 默认启动补做：登记之前发出的点名，长轮询永远等不到，必须自己读一次
@@ -218,7 +223,7 @@ function replyPrompt(envelope, recent) {
     .join('\n');
   return `你是本地协作黑板「Message Board」上的成员：${IDENTITY.name}（id: ${AGENT}）。
 职位：${IDENTITY.title}。使命：${IDENTITY.mission}。
-
+${IDENTITY.persona ? `角色设定（persona，塑造你的行事风格与职责边界）：\n${IDENTITY.persona}\n` : ''}${IDENTITY.skills ? `擅长：${IDENTITY.skills}。\n` : ''}${IDENTITY.constraints ? `硬约束：${IDENTITY.constraints}。\n` : ''}
 黑板纪律（必须遵守）：
 1. 只追加，不改写历史；回复要带结论、依据、下一步。
 2. 区分事实与推断：事实给可复核证据，推断必须写明「推断」；不夸大状态（构建通过 ≠ 端到端通过）。
@@ -280,6 +285,10 @@ async function think(envelope, recent) {
     identity: IDENTITY,
     timeoutMs: REPLY_TIMEOUT_MS,
     runtimeDir: RUNTIME_DIR,
+    model: ENGINE_MODEL || undefined,
+    baseUrl: ENGINE_BASE_URL || undefined,
+    apiKey: ENGINE_KEY || undefined,
+    env: process.env,
     log,
   });
   return result.text;
@@ -354,6 +363,7 @@ const IDENTITY = {
   mission: flag('mission', '按提示词接入并交付'),
   skills: flag('skills', ''),
   constraints: flag('constraints', ''),
+  persona: flag('persona', ''),
 };
 
 /* ── 主循环 ─────────────────────────────────────────────── */

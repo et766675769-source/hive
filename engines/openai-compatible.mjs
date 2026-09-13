@@ -15,9 +15,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const SYSTEM = (ctx) =>
-  `你是本地协作黑板「Message Board」上的成员：${ctx.identity?.name || ctx.agent}（id: ${ctx.agent}）。` +
-  '直接给出可核验的答复，先结论、再依据、最后下一步；不夸大状态，不编造未验证的事实。';
+const SYSTEM = (ctx) => {
+  const identity = ctx.identity || {};
+  const lines = [
+    `你是本地协作黑板「Message Board」上的成员：${identity.name || ctx.agent}（id: ${ctx.agent}）。`,
+  ];
+  if (identity.title) lines.push(`职位：${identity.title}。`);
+  if (identity.mission) lines.push(`使命：${identity.mission}。`);
+  if (identity.persona) lines.push(`角色设定（persona）：${identity.persona}。`);
+  if (identity.skills) lines.push(`擅长：${identity.skills}。`);
+  if (identity.constraints) lines.push(`硬约束：${identity.constraints}。`);
+  lines.push('直接给出可核验的答复，先结论、再依据、最后下一步；不夸大状态，不编造未验证的事实。');
+  return lines.join('');
+};
 
 /** 密钥来源：显式参数 → 环境变量 → dsh 凭证文件（只读，不外传）。 */
 function readKey(ctx = {}) {
