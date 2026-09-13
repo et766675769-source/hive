@@ -62,12 +62,7 @@
       </Setter>
     </Style>
 
-    <Style TargetType="ComboBox">
-      <Setter Property="Padding" Value="8,6" />
-      <Setter Property="BorderBrush" Value="{DynamicResource LineStrong}" />
-      <Setter Property="Background" Value="{DynamicResource Surface}" />
-      <Setter Property="Foreground" Value="{DynamicResource Ink}" />
-    </Style>
+    <!-- ComboBox / ContextMenu / MenuItem / Expander 的圆角样式在 App.xaml（全局） -->
 
     <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
       <Setter Property="Background" Value="{DynamicResource Accent}" />

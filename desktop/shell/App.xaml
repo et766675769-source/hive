@@ -4,7 +4,10 @@
              StartupUri="MainWindow.xaml">
   <Application.Resources>
     <ResourceDictionary>
-      <!-- 全部颜色都走这里：切浅色/深色时整包替换，界面立刻跟着变 -->
+      <!-- ══ 主题色：全部颜色只走这里 ═══════════════════════════
+           浅色/深色两套值在 MainWindow.ApplyTheme() 里替换。
+           界面一律用 DynamicResource 引用，切主题才能整屏立刻生效。
+           ══════════════════════════════════════════════════════ -->
       <SolidColorBrush x:Key="Bg" Color="#FAF9F7" />
       <SolidColorBrush x:Key="Surface" Color="#FFFFFF" />
       <SolidColorBrush x:Key="Surface2" Color="#F3F1ED" />
@@ -24,6 +27,171 @@
       <SolidColorBrush x:Key="BubbleLocalLine" Color="#BFD6FB" />
       <SolidColorBrush x:Key="Danger" Color="#C2554F" />
       <SolidColorBrush x:Key="DangerLine" Color="#E3B4B0" />
+
+      <!-- ══ 圆角控件样式 ═══════════════════════════════════════
+           约定见 AGENTS.md：界面不出现直角块。
+           Button / TextBox 的模板在 MainWindow.xaml（页面级），
+           下面这些是全局控件，放这里所有窗口都能用。
+           ══════════════════════════════════════════════════════ -->
+
+      <!-- 下拉框：圆角外壳 + 圆角弹层 -->
+      <Style TargetType="ComboBox">
+        <Setter Property="Padding" Value="9,6" />
+        <Setter Property="Background" Value="{DynamicResource Surface}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource LineStrong}" />
+        <Setter Property="Foreground" Value="{DynamicResource Ink}" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ComboBox">
+              <Grid>
+                <Border CornerRadius="9"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="1">
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center"
+                                      Content="{TemplateBinding SelectionBoxItem}" />
+                    <TextBlock Grid.Column="1" Text="▾" FontSize="11" Margin="6,0,10,0"
+                               VerticalAlignment="Center" Foreground="{DynamicResource Ink2}" />
+                  </Grid>
+                </Border>
+                <ToggleButton Focusable="False" ClickMode="Press"
+                              IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                  <ToggleButton.Template>
+                    <ControlTemplate TargetType="ToggleButton">
+                      <Border Background="Transparent" />
+                    </ControlTemplate>
+                  </ToggleButton.Template>
+                </ToggleButton>
+                <Popup IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom"
+                       AllowsTransparency="True" PopupAnimation="Fade" Focusable="False">
+                  <Border Margin="0,4,0,0" Padding="4" CornerRadius="10"
+                          Background="{DynamicResource Surface}"
+                          BorderBrush="{DynamicResource Line}" BorderThickness="1"
+                          MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+                    <ScrollViewer MaxHeight="240">
+                      <ItemsPresenter />
+                    </ScrollViewer>
+                  </Border>
+                </Popup>
+              </Grid>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <Style TargetType="ComboBoxItem">
+        <Setter Property="Padding" Value="9,6" />
+        <Setter Property="Foreground" Value="{DynamicResource Ink}" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ComboBoxItem">
+              <Border x:Name="Bd" CornerRadius="7" Padding="{TemplateBinding Padding}" Background="Transparent">
+                <ContentPresenter />
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                  <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Hover}" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <!-- 右键菜单：外层圆角、每一项也圆角 -->
+      <Style TargetType="ContextMenu">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ContextMenu">
+              <Border Padding="5" CornerRadius="10" Background="{DynamicResource Surface}"
+                      BorderBrush="{DynamicResource Line}" BorderThickness="1">
+                <StackPanel IsItemsHost="True" />
+              </Border>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <Style TargetType="MenuItem">
+        <Setter Property="Padding" Value="10,7" />
+        <Setter Property="Foreground" Value="{DynamicResource Ink}" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="MenuItem">
+              <Border x:Name="Bd" CornerRadius="7" Padding="{TemplateBinding Padding}" Background="Transparent">
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="18" />
+                    <ColumnDefinition Width="*" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock x:Name="Tick" Grid.Column="0" Text="✓" Visibility="Collapsed"
+                             Foreground="{DynamicResource Accent}" VerticalAlignment="Center" />
+                  <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="True"
+                                    VerticalAlignment="Center" />
+                </Grid>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                  <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Hover}" />
+                </Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                  <Setter TargetName="Tick" Property="Visibility" Value="Visible" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <!-- 折叠块：整体圆角，标题行的箭头也跟着变 -->
+      <Style TargetType="Expander">
+        <Setter Property="Foreground" Value="{DynamicResource Ink}" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Expander">
+              <Border CornerRadius="10" Background="{TemplateBinding Background}"
+                      BorderBrush="{TemplateBinding BorderBrush}"
+                      BorderThickness="{TemplateBinding BorderThickness}">
+                <StackPanel>
+                  <ToggleButton Focusable="False" Cursor="Hand"
+                                IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                    <ToggleButton.Template>
+                      <ControlTemplate TargetType="ToggleButton">
+                        <Border Background="Transparent" Padding="12,10">
+                          <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="Arrow" Text="▸" FontSize="11" Margin="0,0,9,0"
+                                       VerticalAlignment="Center" Foreground="{DynamicResource Ink2}" />
+                            <ContentPresenter ContentSource="Content" VerticalAlignment="Center" />
+                          </StackPanel>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                          <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Arrow" Property="Text" Value="▾" />
+                          </Trigger>
+                        </ControlTemplate.Triggers>
+                      </ControlTemplate>
+                    </ToggleButton.Template>
+                  </ToggleButton>
+                  <ContentPresenter x:Name="Body" Visibility="Collapsed" Margin="{TemplateBinding Padding}" />
+                </StackPanel>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsExpanded" Value="True">
+                  <Setter TargetName="Body" Property="Visibility" Value="Visible" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
     </ResourceDictionary>
   </Application.Resources>
 </Application>
