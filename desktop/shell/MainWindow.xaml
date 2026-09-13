@@ -138,6 +138,9 @@
         <DockPanel>
           <Button x:Name="SendButton" DockPanel.Dock="Right" Style="{StaticResource Primary}"
                   Content="发送" Click="OnSend" Margin="10,0,0,0" />
+          <!-- 发送方式：点一下就切换，立刻生效 -->
+          <Button x:Name="SendModeButton" DockPanel.Dock="Right" Content="Enter 发送"
+                  Click="OnToggleSendMode" Margin="10,0,0,0" Foreground="#6B7280" />
           <TextBox x:Name="InputBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="44" MaxHeight="140"
                    VerticalScrollBarVisibility="Auto" KeyDown="OnInputKeyDown" />
         </DockPanel>

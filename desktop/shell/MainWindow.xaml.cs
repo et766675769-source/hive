@@ -50,6 +50,7 @@ public partial class MainWindow : Window
     private int _mentionStart = -1;
     private bool _suppressMention;
     private List<EmployeeInfo> _mentionPeople = new();
+    private bool _altEnterToSend;
 
     public MainWindow()
     {
@@ -65,6 +66,54 @@ public partial class MainWindow : Window
         Loaded += OnLoadedAsync;
         Closing += OnClosing;
         InputBox.TextChanged += OnInputChanged;
+        LoadPrefs();
+        UpdateSendModeButton();
+    }
+
+    /* ── 发送方式：Enter 还是 Alt+Enter，点了立刻生效 ─────── */
+
+    private static readonly string PrefsFile = Path.Combine(LogDir, "prefs.json");
+
+    private void LoadPrefs()
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(PrefsFile));
+            if (doc.RootElement.TryGetProperty("altEnterToSend", out var value)) _altEnterToSend = value.GetBoolean();
+        }
+        catch
+        {
+            /* 没有偏好文件就用默认（Enter 发送） */
+        }
+    }
+
+    private void SavePrefs()
+    {
+        try
+        {
+            Directory.CreateDirectory(LogDir);
+            File.WriteAllText(PrefsFile, JsonSerializer.Serialize(new { altEnterToSend = _altEnterToSend }));
+        }
+        catch
+        {
+            /* 存不了只是下次回到默认 */
+        }
+    }
+
+    private void OnToggleSendMode(object sender, RoutedEventArgs e)
+    {
+        _altEnterToSend = !_altEnterToSend;
+        UpdateSendModeButton();
+        SavePrefs();
+        InputBox.Focus();
+    }
+
+    private void UpdateSendModeButton()
+    {
+        SendModeButton.Content = _altEnterToSend ? "Alt+Enter 发送" : "Enter 发送";
+        SendModeButton.ToolTip = _altEnterToSend
+            ? "当前：Alt+Enter 发送，Enter 换行。点一下改成 Enter 发送。"
+            : "当前：Enter 发送，Shift+Enter 换行。点一下改成 Alt+Enter 发送。";
     }
 
     /* ── @ 提及：列出当前对话里的所有人 ─────────────────── */
@@ -723,10 +772,17 @@ public partial class MainWindow : Window
             InsertMention(_mentionPeople[0]);
             return;
         }
-        if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Shift) == 0)
+        if (e.Key == Key.Enter)
         {
+            var modifiers = Keyboard.Modifiers;
+            var hasAlt = (modifiers & ModifierKeys.Alt) != 0;
+            var hasShift = (modifiers & ModifierKeys.Shift) != 0;
+            // 按当前发送方式判断这次回车算不算"发送"；不算就放它正常换行
+            var isSend = _altEnterToSend ? hasAlt : !hasShift && !hasAlt;
+            if (!isSend) return;
+
             e.Handled = true;
-            // 候选还开着时，回车先补全第一个，而不是直接发出去
+            // 候选还开着时，先补全第一个，而不是直接发出去
             if (MentionPopup.IsOpen && _mentionPeople.Count > 0)
             {
                 InsertMention(_mentionPeople[0]);
