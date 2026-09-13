@@ -259,6 +259,7 @@ public partial class MainWindow : Window
             {
                 Text = person.Name,
                 FontSize = 14,
+                Foreground = (Brush)FindResource("Ink"),
                 Margin = new Thickness(9, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
             });
@@ -600,7 +601,7 @@ public partial class MainWindow : Window
         var active = _mode == "project" && _threadId == project.Id;
         var button = new Button
         {
-            Content = new TextBlock { Text = project.Name, TextTrimming = TextTrimming.CharacterEllipsis },
+            Content = new TextBlock { Text = project.Name, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = (Brush)FindResource("Ink"), VerticalAlignment = VerticalAlignment.Center },
             HorizontalContentAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(0, 1, 0, 1),
             Background = active ? Themed("AccentSoft") : Brushes.Transparent,
@@ -665,7 +666,7 @@ public partial class MainWindow : Window
             Padding = new Thickness(9, 6, 8, 6),
             Margin = new Thickness(4, 0, 0, 0),
             Cursor = Cursors.Hand,
-            Child = new TextBlock { Text = department.Name, FontWeight = FontWeights.Medium, VerticalAlignment = VerticalAlignment.Center },
+            Child = new TextBlock { Text = department.Name, FontWeight = FontWeights.Medium, VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Ink") },
         };
         label.MouseLeftButtonUp += (_, args) =>
         {

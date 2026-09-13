@@ -43,6 +43,22 @@ Danger  DangerLine
 
 浅色与深色两套值定义在 `MainWindow.ApplyTheme()` 里，切换时整屏立刻跟着变（用 `DynamicResource` 才能做到，`StaticResource` 不行）。
 
+### 两条硬规矩（都踩过坑，别再犯）
+
+**1. 每一处文字都必须显式写 `Foreground`，不要依赖继承。**
+
+`new TextBlock { Text = ... }` 如果不写 `Foreground`，它会继承控件默认色（**黑**）——深色主题下就是黑字压深底，等于没显示。
+本项已经因此漏过三处：**部门名、项目名、@ 候选里的名字**。窗口自身也必须有 `Foreground="{DynamicResource Ink}"` 兜底。
+
+**2. 文字颜色只能从这几个键里取，它们全部随主题切换：**
+
+```
+Ink（正文）   Ink2（次要）   Ink3（更淡）   Accent（强调）   Danger（错误）
+```
+
+判据很简单：**不允许存在"只在浅色下看得清"的文字**。改完主题一定要切到深色扫一眼。
+
+
 ## 三、交互约定
 
 - **发送方式**可选 `Enter` 或 `Alt+Enter`，点发送按钮后面的小箭头切换，选择记在 `%LOCALAPPDATA%\Hive\prefs.json`
