@@ -139,6 +139,7 @@ public partial class MainWindow : Window
         Set("DangerLine", "#E3B4B0", "#6B3E3B");
 
         UpdateBrandIcon();
+        ApplyWindowIcon();   // 任务栏按钮图标也跟着任务栏深浅走
     }
 
     /// <summary>
@@ -1610,6 +1611,32 @@ public partial class MainWindow : Window
             }
         }
         return Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? Drawing.SystemIcons.Application;
+    }
+
+    /// <summary>
+    /// 任务栏按钮图标：跟托盘同一套规则 —— 任务栏是深色就用白色 logo，
+    /// 否则深底上黑图标根本看不见（exe 里嵌的是黑色版）。
+    /// 只改运行时窗口图标，不动 exe 图标（资源管理器里是浅底，黑色版才对）。
+    /// </summary>
+    private void ApplyWindowIcon()
+    {
+        var root = FindProjectRoot();
+        var fileName = TaskbarIsLight() ? "hive.ico" : "hive-tray.ico";
+        var candidate = root is null ? null : Path.Combine(root, "desktop", fileName);
+        if (candidate is null || !File.Exists(candidate)) return;
+        try
+        {
+            using var stream = File.OpenRead(candidate);
+            var decoder = new IconBitmapDecoder(stream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+            // 任务栏按钮大约 32px，挑最接近的一帧最清楚
+            var frame = decoder.Frames.OrderBy(f => Math.Abs(f.PixelWidth - 32)).First();
+            Icon = frame;
+            Log($"任务栏图标：{fileName}（{frame.PixelWidth}px）");
+        }
+        catch (Exception error)
+        {
+            Log($"任务栏图标加载失败：{error.Message}");
+        }
     }
 
     private void RestoreWindow()
