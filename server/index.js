@@ -116,6 +116,21 @@ function avatarLibrary() {
   return avatarCache;
 }
 
+/**
+ * 读头像库的 manifest.json —— 里面有画布尺寸与「脸 + 发型」的合成规则，
+ * 以后如果加了比例 / 安全区之类的约定，也会从这里透出去。
+ */
+function avatarManifest() {
+  const library = avatarLibrary();
+  if (!library.dir) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(library.dir, 'manifest.json'), 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 统计现在各发型被用了几次（用来尽量避免整组撞脸）。 */
 function avatarUsage() {
   const used = new Map();
@@ -374,6 +389,7 @@ const server = http.createServer(async (req, res) => {
             face: library.face,
             hairs: library.hairs.length,
             files: library.files.length,
+            manifest: avatarManifest(),
           };
         })(),
       });
