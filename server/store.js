@@ -1,4 +1,4 @@
-// Message Board · 数据层
+// 蜂群 HIVE · 数据层
 //
 // 一切都在本机 data/ 下，零依赖（只用 Node 内置模块）：
 //   settings.json         全局 API 通道（Key / 接口地址 / 默认模型）

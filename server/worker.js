@@ -1,4 +1,4 @@
-// Message Board · 员工驱动
+// 蜂群 HIVE · 员工驱动
 //
 // 一个「员工」= 一份身份（名字 / 部门 / 职能 / 描述）+ 一个 API 通道（可覆盖全局默认）。
 // 这里只负责让它们干活，一共三步：
@@ -87,7 +87,7 @@ export class Worker {
     if (employee.description) lines.push(`你的职责与专长：${employee.description}`);
     if (department?.description) lines.push(`你所属部门：${department.name}——${department.description}`);
     lines.push(
-      '你在一家由 AI 员工组成的公司里工作，通过「Message Board」面板与负责人和同事沟通。',
+      '你在一家由 AI 员工组成的公司里工作，通过「蜂群 HIVE」面板与负责人和同事沟通。',
       '工作纪律：',
       '1. 先结论、再依据、最后下一步，别绕圈子。',
       '2. 不夸大状态：做完了 ≠ 验证通过；没验证的事必须写明「未验证」。',

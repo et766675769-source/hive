@@ -1,5 +1,5 @@
 /* ──────────────────────────────────────────────────────────────
-   Message Board · AI 员工面板
+   蜂群 HIVE · AI 员工面板
    风格：style-compass → clean-minimal（素雅极简 · 干净呼吸）
    纪律：米白底、近黑字、单一低饱和强调色、极细分隔线、大留白、
         圆角 8–12、极淡阴影、只做淡入与轻微上移的动效。
@@ -104,12 +104,21 @@ code, pre, .mono { font-family: var(--mono); }
 }
 
 .brand__logo {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  object-fit: contain;
+  position: relative;
+  width: 42px;
+  height: 42px;
   flex: none;
 }
+.brand__logo .logo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.logo--dark { display: none; }
+[data-theme='dark'] .logo--light { display: none; }
+[data-theme='dark'] .logo--dark { display: block; }
 
 .brand__text {
   display: flex;

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Message Board · 服务端
+// 蜂群 HIVE · 服务端
 //
 // 一个本地面板：一个你，指挥一群绑定不同模型的 AI 员工。
 // 零依赖，只用 Node 内置模块；数据全在本机 data/ 下。
@@ -398,7 +398,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(config.port, config.host, () => {
   const url = `http://${config.host}:${config.port}`;
   console.log('');
-  console.log('  Message Board 已启动');
+  console.log('  蜂群 HIVE 已启动');
   console.log(`  面板       ${url}`);
   console.log(`  数据目录   ${config.dataDir}`);
   console.log('');

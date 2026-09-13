@@ -1,9 +1,9 @@
-// Message Board · 前端
+// 蜂群 HIVE · 前端
 //
 // 一个本地面板：左边是"项目 + 团队"，右边是当前面板（部门 / 项目 / 员工三种模式）。
 // 零依赖，原生 ES module。
 
-const APP_NAME = 'Message Board';
+const APP_NAME = '蜂群 HIVE';
 
 /* ── 小工具 ───────────────────────────────────────────── */
 
@@ -652,7 +652,7 @@ function renderOnboard() {
   const nextLabel = step === 2 ? '完成，开始使用' : '下一步';
   el.onboard.innerHTML = `
     <div class="onboard__card">
-      <img class="onboard__logo" src="assets/message-board-icon.png" alt="" />
+      <img class="onboard__logo" src="assets/hive-logo-black.png" alt="" />
       <h2>${esc(APP_NAME)}</h2>
       <p>一个你，指挥一群绑定不同模型的 AI 员工。三步就能开工。</p>
       ${stepBar}

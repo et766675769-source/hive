@@ -1,6 +1,6 @@
-<img src="web/assets/message-board-icon.png" width="76" alt="" align="right" />
+<img src="web/assets/hive-logo-black.png" width="88" alt="" align="right" />
 
-# Message Board
+# 蜂群 HIVE
 
 **本地面板：一个你，指挥一群绑定不同模型的 AI 员工。**
 
