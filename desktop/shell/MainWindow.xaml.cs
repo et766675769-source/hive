@@ -155,6 +155,7 @@ public partial class MainWindow : Window
             image.UriSource = new Uri(path);
             image.EndInit();
             BrandIcon.Source = image;
+            if (TitleIcon is not null) TitleIcon.Source = image;
         }
         catch (Exception error)
         {
@@ -1295,6 +1296,42 @@ public partial class MainWindow : Window
         menu.PlacementTarget = anchor;
         menu.IsOpen = true;
     }
+
+    /* ── 窗口控制（无边框，标题栏自己画）──────────────────── */
+
+    private void OnTitleBarMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount == 2)
+        {
+            ToggleMaximize();
+            return;
+        }
+        if (e.ButtonState != MouseButtonState.Pressed) return;
+        try
+        {
+            DragMove();
+        }
+        catch
+        {
+            /* 拖动过程中松开鼠标会抛，忽略 */
+        }
+    }
+
+    private void OnMinimizeWindow(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+    private void OnToggleMaximize(object sender, RoutedEventArgs e) => ToggleMaximize();
+
+    private void ToggleMaximize()
+    {
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+        if (MaximizeButton is not null)
+        {
+            MaximizeButton.Content = WindowState == WindowState.Maximized ? "❐" : "□";
+        }
+    }
+
+    /// <summary>点关闭不是退出：走 OnClosing 那条路收进托盘。</summary>
+    private void OnCloseWindow(object sender, RoutedEventArgs e) => Close();
 
     private void OnClosing(object? sender, CancelEventArgs e)
     {
