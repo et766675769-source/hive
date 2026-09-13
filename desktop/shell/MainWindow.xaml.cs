@@ -347,45 +347,82 @@ public partial class MainWindow : Window
         return button;
     }
 
-    private Button DepartmentRow(DepartmentInfo department)
+    /// <summary>部门行：左边一个明显的方块折叠按钮（只管展开/收起），右边点名字切面板。</summary>
+    private UIElement DepartmentRow(DepartmentInfo department)
     {
         var open = _expandedDepartments.Contains(department.Id);
         var active = _mode == "department" && _threadId == department.Id;
         var count = _employees.Count(e => e.DepartmentId == department.Id);
 
-        var panel = new StackPanel { Orientation = Orientation.Horizontal };
-        panel.Children.Add(new TextBlock
-        {
-            Text = open ? "▾" : "▸",
-            Width = 16,
-            Foreground = (Brush)FindResource("Ink3"),
-        });
-        panel.Children.Add(new TextBlock { Text = department.Name, FontWeight = FontWeights.Medium });
-        panel.Children.Add(new TextBlock
-        {
-            Text = count.ToString(),
-            Margin = new Thickness(8, 0, 0, 0),
-            FontSize = 11.5,
-            Foreground = (Brush)FindResource("Ink3"),
-        });
+        var grid = new Grid { Margin = new Thickness(0, 1, 0, 1) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        var button = new Button
+        // 折叠按钮：给个底色方块，一眼就能看出"这里能点"
+        var caret = new Border
         {
-            Content = panel,
-            HorizontalContentAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 1, 0, 1),
-            Background = active ? new SolidColorBrush(Color.FromRgb(233, 240, 254)) : Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(8, 7, 8, 7),
+            Width = 22,
+            Height = 22,
+            CornerRadius = new CornerRadius(6),
+            Background = new SolidColorBrush(open ? Color.FromRgb(226, 232, 242) : Color.FromRgb(233, 230, 224)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(214, 209, 201)),
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(2, 0, 0, 0),
+            Cursor = Cursors.Hand,
+            ToolTip = open ? "收起这个部门" : "展开这个部门",
+            Child = new TextBlock
+            {
+                Text = open ? "▾" : "▸",
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(90, 96, 106)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
         };
-        button.Click += (_, _) =>
+        caret.MouseLeftButtonUp += (_, args) =>
         {
-            if (_expandedDepartments.Contains(department.Id)) _expandedDepartments.Remove(department.Id);
+            args.Handled = true;
+            if (open) _expandedDepartments.Remove(department.Id);
             else _expandedDepartments.Add(department.Id);
+            RenderSidebar();
+        };
+        Grid.SetColumn(caret, 0);
+        grid.Children.Add(caret);
+
+        // 名字区：点它切到部门面板
+        var label = new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = active ? new SolidColorBrush(Color.FromRgb(233, 240, 254)) : Brushes.Transparent,
+            Padding = new Thickness(9, 6, 8, 6),
+            Margin = new Thickness(4, 0, 0, 0),
+            Cursor = Cursors.Hand,
+            Child = new TextBlock { Text = department.Name, FontWeight = FontWeights.Medium, VerticalAlignment = VerticalAlignment.Center },
+        };
+        label.MouseLeftButtonUp += (_, args) =>
+        {
+            args.Handled = true;
             SetContext("department", department.Id);
         };
-        button.MouseRightButtonUp += (_, _) => ShowDepartmentMenu(department, button);
-        return button;
+        label.MouseRightButtonUp += (_, _) => ShowDepartmentMenu(department, label);
+        Grid.SetColumn(label, 1);
+        grid.Children.Add(label);
+
+        var badge = new TextBlock
+        {
+            Text = count.ToString(),
+            FontSize = 11.5,
+            Foreground = (Brush)FindResource("Ink3"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(6, 0, 6, 0),
+        };
+        Grid.SetColumn(badge, 2);
+        grid.Children.Add(badge);
+
+        return grid;
     }
 
     private Button EmployeeRow(EmployeeInfo employee, double indent)
@@ -499,7 +536,8 @@ public partial class MainWindow : Window
     {
         _mode = mode;
         _threadId = id;
-        if (mode == "department") _expandedDepartments.Add(id);
+        // 注意：这里不强制展开。之前加上"展开"会导致部门永远收不起来——
+        // 展开/收起只归左边那个方块按钮管。
         RenderSidebar();
         RenderHeader();
         _ = RefreshThreadAsync();
