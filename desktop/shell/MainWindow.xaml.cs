@@ -47,6 +47,9 @@ public partial class MainWindow : Window
     private bool _hasKey;
 
     private DispatcherTimer? _timer;
+    private int _mentionStart = -1;
+    private bool _suppressMention;
+    private List<EmployeeInfo> _mentionPeople = new();
 
     public MainWindow()
     {
@@ -61,6 +64,124 @@ public partial class MainWindow : Window
 
         Loaded += OnLoadedAsync;
         Closing += OnClosing;
+        InputBox.TextChanged += OnInputChanged;
+    }
+
+    /* ── @ 提及：列出当前对话里的所有人 ─────────────────── */
+
+    /// <summary>当前面板"包含的所有人"：部门=部门成员，项目=参与部门的人，员工=他本人。</summary>
+    private List<EmployeeInfo> PeopleInContext()
+    {
+        if (_mode == "department")
+            return _employees.Where(e => e.DepartmentId == _threadId).ToList();
+        if (_mode == "project")
+        {
+            var project = _projects.FirstOrDefault(p => p.Id == _threadId);
+            if (project is null) return new List<EmployeeInfo>();
+            var deptIds = project.DepartmentIds.ToHashSet();
+            return _employees.Where(e => deptIds.Contains(e.DepartmentId)).ToList();
+        }
+        return _employees.Where(e => e.Id == _threadId).ToList();
+    }
+
+    private void OnInputChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressMention) return;
+        if (_threadId == "") { HideMentions(); return; }
+
+        var caret = InputBox.CaretIndex;
+        var text = InputBox.Text;
+
+        // 从光标往前找最近的 @；中间遇到空白就不算提及
+        var start = -1;
+        for (var i = caret - 1; i >= 0; i--)
+        {
+            var ch = text[i];
+            if (ch == '@') { start = i; break; }
+            if (char.IsWhiteSpace(ch)) break;
+        }
+        if (start < 0 || caret <= start) { HideMentions(); return; }
+
+        var query = text.Substring(start + 1, caret - start - 1);
+        var people = PeopleInContext()
+            .Where(p => query == ""
+                || p.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || (p.Title ?? "").Contains(query, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (people.Count == 0) { HideMentions(); return; }
+
+        _mentionStart = start;
+        ShowMentions(people);
+    }
+
+    private void ShowMentions(List<EmployeeInfo> people)
+    {
+        _mentionPeople = people;
+        var panel = new StackPanel();
+        foreach (var person in people)
+        {
+            var content = new StackPanel { Orientation = Orientation.Horizontal };
+            content.Children.Add(Avatar(person.Name, person.AvatarSeed, person.AvatarFile, 24));
+            content.Children.Add(new TextBlock
+            {
+                Text = person.Name,
+                FontSize = 14,
+                Margin = new Thickness(9, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            if (!string.IsNullOrEmpty(person.Title))
+            {
+                content.Children.Add(new TextBlock
+                {
+                    Text = person.Title,
+                    FontSize = 11.5,
+                    Margin = new Thickness(6, 0, 0, 0),
+                    Foreground = (Brush)FindResource("Ink3"),
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+            }
+
+            var row = new Border
+            {
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(8, 6, 8, 6),
+                Cursor = Cursors.Hand,
+                Background = Brushes.Transparent,
+                Child = content,
+            };
+            var captured = person;
+            row.MouseLeftButtonUp += (_, args) =>
+            {
+                args.Handled = true;
+                InsertMention(captured);
+            };
+            row.MouseEnter += (_, _) => row.Background = new SolidColorBrush(Color.FromRgb(243, 241, 237));
+            row.MouseLeave += (_, _) => row.Background = Brushes.Transparent;
+            panel.Children.Add(row);
+        }
+        MentionPanel.Children.Clear();
+        MentionPanel.Children.Add(panel);
+        MentionPopup.IsOpen = true;
+    }
+
+    private void InsertMention(EmployeeInfo person)
+    {
+        var text = InputBox.Text;
+        var caret = Math.Min(InputBox.CaretIndex, text.Length);
+        var before = text[.._mentionStart];
+        var after = text[caret..];
+        _suppressMention = true;
+        InputBox.Text = $"{before}@{person.Name} {after}";
+        InputBox.CaretIndex = before.Length + person.Name.Length + 2;
+        _suppressMention = false;
+        HideMentions();
+        InputBox.Focus();
+    }
+
+    private void HideMentions()
+    {
+        MentionPopup.IsOpen = false;
+        _mentionStart = -1;
     }
 
     /* ── 日志 ───────────────────────────────────────────── */
@@ -589,9 +710,28 @@ public partial class MainWindow : Window
 
     private async void OnInputKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Escape && MentionPopup.IsOpen)
+        {
+            e.Handled = true;
+            HideMentions();
+            return;
+        }
+        if (e.Key == Key.Tab && MentionPopup.IsOpen)
+        {
+            // Tab 补全第一个候选，不用鼠标
+            e.Handled = true;
+            InsertMention(_mentionPeople[0]);
+            return;
+        }
         if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Shift) == 0)
         {
             e.Handled = true;
+            // 候选还开着时，回车先补全第一个，而不是直接发出去
+            if (MentionPopup.IsOpen && _mentionPeople.Count > 0)
+            {
+                InsertMention(_mentionPeople[0]);
+                return;
+            }
             await SendAsync();
         }
     }

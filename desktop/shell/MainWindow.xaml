@@ -167,5 +167,16 @@
         </ItemsControl>
       </ScrollViewer>
     </DockPanel>
+
+    <!-- @ 提及候选：列出当前对话里的所有人 -->
+    <Popup x:Name="MentionPopup" Placement="Top" PlacementTarget="{Binding ElementName=InputBox}"
+           StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
+      <Border Background="White" BorderBrush="#E9E6E1" BorderThickness="1" CornerRadius="10"
+              Padding="6" Margin="0,0,0,8" MinWidth="280" MaxWidth="380">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="280">
+          <StackPanel x:Name="MentionPanel" />
+        </ScrollViewer>
+      </Border>
+    </Popup>
   </Grid>
 </Window>
