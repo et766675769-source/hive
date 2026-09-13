@@ -74,7 +74,8 @@ const store = new Store({ dataDir: config.dataDir });
 
 const AVATAR_DIRS = [
   process.env.HIVE_AVATAR_DIR,
-  'D:\\随机头像库',
+  'D:\\随机头像库',                       // 本机自建的头像库（优先，方便随时换素材）
+  path.join(ROOT, 'library'),            // 仓库里随代码附带的头像库快照（换机器也能直接跑）
   path.join(ROOT, 'web', 'avatars'),
 ].filter((dir) => typeof dir === 'string' && dir.length > 0);
 

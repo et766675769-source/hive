@@ -155,3 +155,17 @@ node server/index.js --port 8787 --host 127.0.0.1 --data-dir data
 ## License
 
 MIT
+
+## 头像库（随仓库附带）
+
+仓库里 `library/` 是一份可直接使用的**头像库快照**（100 张完整头像 + 预览图 + manifest），
+所以 clone 下来不配任何东西就能跑。程序按这个顺序找库，用第一个存在的：
+
+1. 环境变量 `HIVE_AVATAR_DIR`
+2. `D:\随机头像库`（本机自建库的默认位置，方便随时换素材）
+3. **`library/`（仓库自带快照）**
+4. `web/avatars`
+
+想换成自己的库：把 `HIVE_AVATAR_DIR` 指过去，或直接放到 `D:\随机头像库`。
+库的格式见 `library/README.md`（`manifest.json` 里声明 `mode` 与文件清单）；
+`source/`（设计图集）不随仓库走，需要的话在本机库里保留即可。

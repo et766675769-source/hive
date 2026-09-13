@@ -80,7 +80,7 @@ Ink（正文）   Ink2（次要）   Ink3（更淡）   Accent（强调）   Dan
 
 ## 五、头像：优先用库里的「完整头像」
 
-头像库（默认 `D:\随机头像库`，可用 `HIVE_AVATAR_DIR` 覆盖）现在有两种形态，
+头像库（查找顺序：`HIVE_AVATAR_DIR` → `D:\随机头像库` → 仓库自带 `library/` → `web/avatars`，见 server/index.js 的 AVATAR_DIRS）现在有两种形态，
 `server/index.js` 的 `avatarLibrary()` 按下面优先级自动识别：
 
 | 形态 | 判断依据 | 运行时怎么画 |
