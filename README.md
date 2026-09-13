@@ -1,4 +1,4 @@
-<img src="web/assets/hive-logo-black.png" width="88" alt="" align="right" />
+<img src="web/assets/hive-icon-black.png" width="88" alt="" align="right" />
 
 # 蜂群 HIVE
 
@@ -47,8 +47,8 @@
 需要 Node.js ≥ 18：
 
 ```bash
-git clone https://github.com/et766675769-source/message-board.git
-cd message-board
+git clone https://github.com/et766675769-source/hive.git
+cd hive
 npm start
 ```
 

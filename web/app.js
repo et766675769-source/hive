@@ -652,7 +652,7 @@ function renderOnboard() {
   const nextLabel = step === 2 ? '完成，开始使用' : '下一步';
   el.onboard.innerHTML = `
     <div class="onboard__card">
-      <img class="onboard__logo" src="assets/hive-logo-black.png" alt="" />
+      <img class="onboard__logo" src="assets/hive-icon-black.png" alt="" />
       <h2>${esc(APP_NAME)}</h2>
       <p>一个你，指挥一群绑定不同模型的 AI 员工。三步就能开工。</p>
       ${stepBar}
