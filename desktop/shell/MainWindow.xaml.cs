@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -1556,7 +1556,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 托盘图标：任务栏底色通常是深的，所以优先用白色版 desktop/hive-tray.ico；
+    /// 托盘图标：任务栏底色通常是深的，所以用白色版 desktop/hive-white.ico；
     /// 找不到就退回 exe 自带图标，保证不会没有图标。
     /// </summary>
     /// <summary>系统任务栏是不是浅色（Windows 个人化设置里的"系统模式"）。</summary>
@@ -1578,7 +1578,7 @@ public partial class MainWindow : Window
     {
         var root = FindProjectRoot();
         // 任务栏是浅色的用黑图标、深色的用白图标，两种设置下都看得清
-        var fileName = TaskbarIsLight() ? "hive.ico" : "hive-tray.ico";
+        var fileName = TaskbarIsLight() ? "hive-black.ico" : "hive-white.ico";
         var candidate = root is null ? null : Path.Combine(root, "desktop", fileName);
         if (candidate is not null && File.Exists(candidate))
         {
@@ -1602,7 +1602,7 @@ public partial class MainWindow : Window
     private void ApplyWindowIcon()
     {
         var root = FindProjectRoot();
-        var fileName = TaskbarIsLight() ? "hive.ico" : "hive-tray.ico";
+        var fileName = TaskbarIsLight() ? "hive-black.ico" : "hive-white.ico";
         var candidate = root is null ? null : Path.Combine(root, "desktop", fileName);
         if (candidate is null || !File.Exists(candidate)) return;
         try
