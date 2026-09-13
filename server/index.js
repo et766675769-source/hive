@@ -678,14 +678,28 @@ const server = http.createServer(async (req, res) => {
       if (!threadId) return json(res, 400, { ok: false, error: '缺少 threadId' });
       if (!text) return json(res, 400, { ok: false, error: '消息不能为空' });
 
+      // 发言身份：不传就是"你"；传 as 表示这次不是主人本人在说
+      //   as = 员工 id → 以那位员工的身份说（名字、头像都对得上）
+      //   as = 别的文本 → 系统留言，署名用它
+      const allEmployees = store.readOrg().employees;
+      const asRaw = payload.as === undefined || payload.as === null ? '' : String(payload.as).trim();
+      const asEmployee = asRaw ? allEmployees.find((item) => item.id === asRaw || item.name === asRaw) : null;
+      const identity = !asRaw
+        ? { from: 'local', name: '你' }
+        : asEmployee
+          ? { from: asEmployee.id, name: asEmployee.name }
+          : { from: 'system', name: asRaw.slice(0, 16) };
+
       const message = {
         id: `m_${randomUUID().slice(0, 8)}`,
         at: new Date().toISOString(),
         mode,
         threadId,
-        // as = 脚本/测试留言用的署名：给了就用它，别再冒充"你"
-        from: payload.as ? 'system' : 'local',
-        fromName: payload.as ? String(payload.as).slice(0, 16) : '你',
+        // as = 发言身份（脚本 / AI 助手用这个，别再冒充"你"）：
+        //   传员工 id  → 就当作那位员工在说（头像、名字都对得上）
+        //   传别的文本 → 记成系统留言，署名用它
+        from: identity.from,
+        fromName: identity.name,
         kind: 'message',
         status: 'done',
         replyTo: null,
@@ -693,7 +707,6 @@ const server = http.createServer(async (req, res) => {
       };
       store.appendMessage(mode, threadId, message);
       broadcast('message', message);
-
       const { employees } = store.readOrg();
       let targets = worker.parseMentions(text, employees);
       // @所有人 / @全体：把当前对话里的参与人员全叫上（项目面板 = 参与部门的人）
