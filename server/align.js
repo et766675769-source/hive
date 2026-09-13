@@ -175,10 +175,27 @@ function measureHair(image) {
 }
 
 const cache = new Map();
+
+/**
+ * 只量不修：读出这张发型图的原始指标（发帘位置、发块质心、不透明范围）。
+ * 给 tools/fix-avatar-library.mjs 重裁库素材用。
+ */
+export function hairMetrics(file) {
+  try {
+    const image = decodeAlpha(fs.readFileSync(file));
+    return image ? measureHair(image) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 算出一张发型图的修正量（单位是 256 画布坐标）：
  *   hair —— 发型层平移；face —— 发型挪不动时脸层补的余量。
  * 返回 null 表示这张图没有可用像素，按库里「左上角对齐、直接叠加」的原始约定画。
+ *
+ * 注意：这只是**诊断/参考**。库的「组合规则」要求两层同左上角直接叠加，
+ * 所以 App 不会套用这个结果（见 AGENTS.md 第五节）。
  */
 export function faceAlign(file) {
   if (!file) return null;
