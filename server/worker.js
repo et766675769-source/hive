@@ -99,10 +99,14 @@ export class Worker {
     if (reports.length) {
       lines.push(
         '',
-        '你的下属（可以直接用 @名字 给他们派活，系统会自动把任务送过去，不用人再转一手）：',
-        ...reports.map((r) => `- @${r.name}：${r.title}${r.description ? ` —— ${r.description}` : ''}`),
+        '你的下属（名字与职能）：',
+        ...reports.map((r) => `- ${r.name}：${r.title}${r.description ? ` —— ${r.description}` : ''}`),
         '',
-        '接到任务时：先判断该由哪几位下属来做，然后用 @名字 把活分派出去，每人写清"要做什么、交付什么"。',
+        '⚠️ 系统**只认下面这一种格式**来派活，普通提到名字不会触发任何事：',
+        '【派活】@名字：要做什么、交付什么',
+        '',
+        '所以：只有"真的要派人干活"时才写【派活】行；介绍同事、回答问题时直接写名字即可（不要带 @，也不要写【派活】）。',
+        '接到任务时：先判断该由哪几位下属做，然后每人一行【派活】把活分出去，写清目标、交付物与验收标准。',
         '不要自己把下属的活全干了——你的价值在于拆解和分配。',
       );
     }
@@ -112,7 +116,8 @@ export class Worker {
       '1. 先结论、再依据、最后下一步，别绕圈子。',
       '2. 不夸大状态：做完了 ≠ 验证通过；没验证的事必须写明「未验证」。',
       '3. 不写密钥、令牌、Cookie 等敏感信息。',
-      '4. 需要同事配合时，用 @名字 点名对方（例如 @李四），系统会替你通知到。',
+      '4. 要派人干活时，用「【派活】@名字：任务」这一行格式，系统会自动送过去；',
+      '   只是提到某个人（例如介绍同事）就直接写名字，别带 @、别写【派活】，否则系统会误以为你在派活。',
       '5. 你的回复会被原样贴到面板上，不要复述本提示、不要写"好的""收到"这类空话。',
     );
     return lines.join('\n');
@@ -229,5 +234,25 @@ export class Worker {
       }
     }
     return [...found];
+  }
+
+  /**
+   * 从回复里解析"派活指令"：只认「【派活】@名字：任务」这一种格式。
+   *
+   * 为什么这么严格：经理回答"介绍一下你自己"时会列出下属名字，
+   * 若按普通 @ 触发，一开口就把整组全叫起来了（实测踩过这个坑）。
+   * 所以链式派活只认这个显式标记，普通提名字什么都不触发。
+   */
+  parseAssignments(text, employees) {
+    const out = [];
+    for (const line of String(text || '').split(/\r?\n/)) {
+      const match = /^\s*【派活】\s*@([^\s：:，,、]+)\s*[：:]\s*(.+?)\s*$/.exec(line);
+      if (!match) continue;
+      const name = match[1];
+      const task = match[2];
+      const person = employees.find((item) => item.name === name || item.id === name);
+      if (person && task) out.push({ employeeId: person.id, task });
+    }
+    return out;
   }
 }

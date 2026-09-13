@@ -151,17 +151,21 @@ async function dispatchChain({ employeeId, mode, threadId, taskText, fromName, r
   if (!result.reply || result.error) return;
 
   const { employees } = store.readOrg();
-  const mentioned = worker.parseMentions(result.reply.text, employees);
-  if (!mentioned.length) return;
+  // 只认「【派活】@名字：任务」这一种格式。
+  // 不能按普通 @ 触发：经理回答"介绍一下你自己"时会列出下属名字，
+  // 那样一开口就把整组全叫起来了（实测踩过）。
+  const assignments = worker.parseAssignments(result.reply.text, employees);
+  if (!assignments.length) return;
 
   const me = employees.find((item) => item.id === employeeId);
-  for (const id of mentioned) {
-    if (nextChain.includes(id)) continue;
+  for (const item of assignments) {
+    if (nextChain.includes(item.employeeId)) continue;
+    broadcast('assign', { from: employeeId, fromName: me?.name || '', to: item.employeeId, task: item.task });
     void dispatchChain({
-      employeeId: id,
+      employeeId: item.employeeId,
       mode,
       threadId,
-      taskText: result.reply.text,
+      taskText: item.task,
       fromName: me?.name || '同事',
       replyTo: result.reply.id,
       depth: depth + 1,
